@@ -19,6 +19,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
   stays `main`.
 - `install.sh` trims trailing blank lines of the agent-instructions file with
   awk instead of GNU `sed -i`, which BSD sed on macOS reads differently.
+- `install.sh` runs under macOS's bash 3.2: an empty tool or skill list no
+  longer stops it with `unbound variable` before the intended message (bash
+  before 4.4 treats an empty array as unset under `set -u`).
 - The canonical repository is now `github.com/BlackVS/aiskills`, published as
   a fresh snapshot of 1.21.0. `boot.sh` and `boot.ps1` download the GitHub
   archive of `AI_SKILLS_REF` from `BlackVS/aiskills`; with
