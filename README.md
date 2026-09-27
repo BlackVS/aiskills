@@ -130,7 +130,8 @@ links to.
 
 Clients, checked by `.github/check-clients.py` (the Clients workflow): each
 client lists what it discovered, without a model call, after a user-level
-install, a Claude Code only install and a project install.
+install, a Claude Code only install, a user-level install with
+`XDG_CONFIG_HOME` set, and a project install.
 
 | Client | Version checked | Skills | Review-gates block |
 | --- | --- | --- | --- |
@@ -360,7 +361,9 @@ and commands (`/api/command`) as separate catalogs, so whether skills also
 appear among the `/` commands is taken from the v2 documentation, not
 observed. 1.x and v2 keep their data in the same place, and 1.x refuses to
 start on data v2 has written ("Database is not empty and has no session
-table"): use one version per home directory.
+table"): use one version per home directory. Both read their config from
+`$XDG_CONFIG_HOME/opencode` when `XDG_CONFIG_HOME` is set, and the installers
+write there too; `~/.config/opencode` below stands for that directory.
 
 ## Enabling in Codex CLI
 

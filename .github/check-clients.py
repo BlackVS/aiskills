@@ -7,12 +7,14 @@ calling a model.
     python3 .github/check-clients.py --latest-clients  # each client's latest npm version instead of the pins
 
 The clients are installed from npm at the versions pinned below into a work
-directory. Three scenarios run in fresh home directories:
+directory. Four scenarios run in fresh home directories:
 
   user     the one-liner's defaults (--user -s all -p -a) in a home where Codex,
            Gemini CLI and OpenCode are already set up;
   claude   a Claude Code only user install (--user -t claude -s core), which
            OpenCode must find in ~/.claude/skills;
+  xdg      the user defaults with XDG_CONFIG_HOME set, which moves OpenCode's
+           config dir;
   project  a project install (<repo> --agents-md) seen from inside the repo.
 
 Each client is asked what it discovered through its own model-free listing:
@@ -48,12 +50,20 @@ def check(client, scenario, what, ok, detail=""):
     results.append((client, scenario, what, bool(ok), detail))
 
 
-def run(cmd, home, cwd, timeout=180, env=None):
+def client_env(home, extra=None):
+    """A clean environment for a client: only PATH, HOME and network settings come from outside.
+    Anything else leaks the runner's own setup in (CI runners set XDG_CONFIG_HOME, which moves
+    OpenCode's config dir away from the scratch home)."""
     e = {"PATH": os.environ["PATH"], "HOME": str(home), "TERM": "dumb", "LANG": "C.UTF-8"}
     for k in ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"):
         if k in os.environ:
             e[k] = os.environ[k]
-    e.update(env or {})
+    e.update(extra or {})
+    return e
+
+
+def run(cmd, home, cwd, timeout=180, env=None):
+    e = client_env(home, env)
     # stdout through a file: OpenCode 1.x exits before a pipe drains and cuts its output at 64 KiB
     with tempfile.TemporaryFile("w+") as out:
         r = subprocess.run(cmd, cwd=cwd, env=e, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.PIPE, text=True, timeout=timeout)
@@ -64,8 +74,7 @@ def run(cmd, home, cwd, timeout=180, env=None):
 
 def stream_until(cmd, home, cwd, env, done, timeout=90):
     """Run cmd, feed each output line to done(line) until it returns True or time runs out, then stop it."""
-    e = {"PATH": os.environ["PATH"], "HOME": str(home), "TERM": "dumb", "LANG": "C.UTF-8", **env}
-    p = subprocess.Popen(cmd, cwd=cwd, env=e, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    p = subprocess.Popen(cmd, cwd=cwd, env=client_env(home, env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, start_new_session=True)
     # a timer, not a check per line: a client that hangs silently must not outlive the deadline
     timer = threading.Timer(timeout, lambda: os.killpg(p.pid, signal.SIGTERM))
@@ -96,8 +105,8 @@ def install_clients(work, latest=False):
     return bins
 
 
-def boot(home, archive, *args, cwd=None):
-    env = {"AI_SKILLS_ARCHIVE": str(archive)} if archive else {}
+def boot(home, archive, *args, cwd=None, env=None):
+    env = {**({"AI_SKILLS_ARCHIVE": str(archive)} if archive else {}), **(env or {})}
     r = run(["bash", str(ROOT / "boot.sh"), *args], home, cwd or home, env=env, timeout=300)
     if r.returncode:
         sys.exit(f"boot.sh {' '.join(args)} failed:\n{r.stdout}{r.stderr}")
@@ -153,17 +162,17 @@ def json_after(text, opener):
     return json.loads(text[text.index(opener):])
 
 
-def opencode1(bins, home, cwd):
-    skills = {s["name"] for s in json_after(run([bins["opencode1"], "debug", "skill"], home, cwd).stdout, "[")}
-    config = json_after(run([bins["opencode1"], "debug", "config"], home, cwd).stdout, "{")
+def opencode1(bins, home, cwd, env=None):
+    skills = {s["name"] for s in json_after(run([bins["opencode1"], "debug", "skill"], home, cwd, env=env).stdout, "[")}
+    config = json_after(run([bins["opencode1"], "debug", "config"], home, cwd, env=env).stdout, "{")
     return skills, set((config.get("command") or {}).keys())
 
 
-def opencode2(bins, home, cwd, port, skills, commands=()):
+def opencode2(bins, home, cwd, port, skills, commands=(), env=None):
     log = home / f"opencode-serve-{port}.log"
     with open(log, "w") as out:
         p = subprocess.Popen([bins["opencode2"], "serve", "--port", str(port)], cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, "HOME": str(home)})
+                             stdin=subprocess.DEVNULL, start_new_session=True, env=client_env(home, env))
     try:
         password = None
         for _ in range(60):
@@ -274,6 +283,17 @@ def main():
         check("installer", "claude", "no ~/.agents for a Claude-only install", not (home / ".agents").exists())
         skills = opencode1(bins, home, empty)[0] if port is None else opencode2(bins, home, empty, port, CORE)[0]
         expect("opencode 1.x" if port is None else "opencode v2", "claude", "skills from ~/.claude/skills", skills, CORE)
+
+    # xdg: OpenCode reads $XDG_CONFIG_HOME/opencode when it is set, and so must the installer
+    for key, port in (("opencode1", None), ("opencode2", 47404)):
+        home = fresh_home(work, f"home-xdg-{key}")
+        xdg = {"XDG_CONFIG_HOME": str(home / "xdg")}
+        (home / "xdg/opencode").mkdir(parents=True)
+        boot(home, archive, env=xdg)
+        name = "opencode 1.x" if port is None else "opencode v2"
+        commands = opencode1(bins, home, empty, xdg)[1] if port is None else opencode2(bins, home, empty, port, CORE, prompts, xdg)[1]
+        expect(name, "xdg", "prompts as commands from $XDG_CONFIG_HOME/opencode", commands, prompts)
+        check(name, "xdg", "gates block in $XDG_CONFIG_HOME/opencode/AGENTS.md", MARKER in text(home / "xdg/opencode/AGENTS.md"))
 
     # project: seen from inside the repository
     repo = git_repo(work / "repo")

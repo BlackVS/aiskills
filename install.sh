@@ -36,6 +36,7 @@
 #   -u, --user            Install user-level instead of into a repo:
 #                           claude -> ~/.claude/skills, codex -> ~/.agents/skills,
 #                           opencode -> ~/.config/opencode/skills, openhands -> ~/.openhands/skills
+#                           (OpenCode's ~/.config/opencode is $XDG_CONFIG_HOME/opencode when that is set)
 #                           (~ is $HOME; on Windows, run install.ps1, which uses the user profile)
 #   -n, --dry-run         Show what would be done.
 #   -h, --help
@@ -52,6 +53,8 @@ CORE="architecture-review,oh-code-review,oh-technical-writing"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 die() { echo "install.sh: $*" >&2; exit 1; }
 
+# OpenCode reads its config from $XDG_CONFIG_HOME/opencode, ~/.config/opencode when unset
+OC_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 repo=""; tools=(); skills="core"; prompts=0; user=0; dry=0; agentsmd=0; pdests=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -109,7 +112,7 @@ dest_for() {  # tool -> destination skills dir
   case "$1" in
     claude)    [ $user -eq 1 ] && echo "$HOME/.claude/skills"          || echo "$repo/.claude/skills";;
     codex)     [ $user -eq 1 ] && echo "$HOME/.agents/skills"          || echo "$repo/.agents/skills";;
-    opencode)  [ $user -eq 1 ] && echo "$HOME/.config/opencode/skills" || echo "$repo/.opencode/skills";;
+    opencode)  [ $user -eq 1 ] && echo "$OC_DIR/skills" || echo "$repo/.opencode/skills";;
     openhands) [ $user -eq 1 ] && echo "$HOME/.openhands/skills"       || echo "$repo/.openhands/skills";;
     *) die "unknown tool: $1";;
   esac
@@ -144,11 +147,11 @@ fi
 
 # ---- OpenCode extras (skills reach OpenCode through .claude/skills and .agents/skills;
 # ---- its commands and global AGENTS.md live in ~/.config/opencode, touched only when it exists) ----
-if [ $user -eq 1 ] && [ $prompts -eq 1 ] && [ -d "$HOME/.config/opencode" ] && ! printf '%s\n' "${tools[@]}" | grep -qx opencode; then
-  echo "==> opencode: $HOME/.config/opencode/commands"
-  run mkdir -p "$HOME/.config/opencode/commands"
-  run cp "$HERE"/prompts/*.md "$HOME/.config/opencode/commands"/
-  echo "    prompts -> $HOME/.config/opencode/commands (OpenCode: /<name>)"; pdests="$pdests $HOME/.config/opencode/commands"
+if [ $user -eq 1 ] && [ $prompts -eq 1 ] && [ -d "$OC_DIR" ] && ! printf '%s\n' "${tools[@]}" | grep -qx opencode; then
+  echo "==> opencode: $OC_DIR/commands"
+  run mkdir -p "$OC_DIR/commands"
+  run cp "$HERE"/prompts/*.md "$OC_DIR/commands"/
+  echo "    prompts -> $OC_DIR/commands (OpenCode: /<name>)"; pdests="$pdests $OC_DIR/commands"
 fi
 
 # ---- managed "Code review gates" block in agent instruction files ----
@@ -179,7 +182,7 @@ if [ $agentsmd -eq 1 ]; then
   echo "==> agent instructions: review-gates block"
   if [ $user -eq 1 ]; then
     write_block "$HOME/.claude/CLAUDE.md"; echo "    block -> $HOME/.claude/CLAUDE.md"
-    if [ -d "$HOME/.config/opencode" ]; then write_block "$HOME/.config/opencode/AGENTS.md"; echo "    block -> $HOME/.config/opencode/AGENTS.md"; fi
+    if [ -d "$OC_DIR" ]; then write_block "$OC_DIR/AGENTS.md"; echo "    block -> $OC_DIR/AGENTS.md"; fi
     if [ -d "$HOME/.codex" ]; then write_block "$HOME/.codex/AGENTS.md"; echo "    block -> $HOME/.codex/AGENTS.md"; fi
     if [ -d "$HOME/.gemini" ]; then write_block "$HOME/.gemini/GEMINI.md"; echo "    block -> $HOME/.gemini/GEMINI.md"; fi
   else

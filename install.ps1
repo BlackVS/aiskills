@@ -52,6 +52,7 @@ instructions, between markers, replacing any previous copy:
 Install user-level instead of into a repo (~ is the user profile, $HOME):
   claude -> ~\.claude\skills, codex -> ~\.agents\skills,
   opencode -> ~\.config\opencode\skills, openhands -> ~\.openhands\skills
+  (OpenCode's ~\.config\opencode is $env:XDG_CONFIG_HOME\opencode when that is set)
 
 .PARAMETER DryRun
 Show what would be done.
@@ -146,12 +147,14 @@ if ($Want -contains 'architecture-review') {
     }
 }
 
+# OpenCode reads its config from $XDG_CONFIG_HOME\opencode, ~\.config\opencode when unset
+$OpenCodeDir = Join-Path $(if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }) 'opencode'
 function Get-DestDir([string]$ToolName) {
     if ($User) {
         switch ($ToolName) {
             'claude'    { Join-Path $HOME '.claude\skills' }
             'codex'     { Join-Path $HOME '.agents\skills' }
-            'opencode'  { Join-Path $HOME '.config\opencode\skills' }
+            'opencode'  { Join-Path $OpenCodeDir 'skills' }
             'openhands' { Join-Path $HOME '.openhands\skills' }
         }
     } else {
@@ -206,7 +209,6 @@ if ($User -and $Prompts -and (Test-Path (Join-Path $HOME '.codex') -PathType Con
 
 # --- OpenCode extras (skills reach OpenCode through .claude\skills and .agents\skills;
 # --- its commands and global AGENTS.md live in ~\.config\opencode, touched only when it exists) ---
-$OpenCodeDir = Join-Path $HOME '.config\opencode'
 if ($User -and $Prompts -and (Test-Path $OpenCodeDir -PathType Container) -and ($ToolList -notcontains 'opencode')) {
     $ODest = Join-Path $OpenCodeDir 'commands'
     Write-Host "==> opencode: $ODest"
@@ -263,8 +265,8 @@ if ($AgentsMd) {
     Write-Host '==> agent instructions: review-gates block'
     if ($User) {
         $g = Join-Path $HOME '.claude\CLAUDE.md'; Write-Block $g; Write-Host "    block -> $g"
-        $o = Join-Path $HOME '.config\opencode\AGENTS.md'
-        if (Test-Path (Join-Path $HOME '.config\opencode') -PathType Container) { Write-Block $o; Write-Host "    block -> $o" }
+        $o = Join-Path $OpenCodeDir 'AGENTS.md'
+        if (Test-Path $OpenCodeDir -PathType Container) { Write-Block $o; Write-Host "    block -> $o" }
         $c = Join-Path $HOME '.codex\AGENTS.md'
         if (Test-Path (Join-Path $HOME '.codex') -PathType Container) { Write-Block $c; Write-Host "    block -> $c" }
         $m = Join-Path $HOME '.gemini\GEMINI.md'

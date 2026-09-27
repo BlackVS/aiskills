@@ -17,19 +17,27 @@ def posix(p):
     return str(p).replace("\\", "/")
 
 
-def bash_install(*args, home=None):
-    env = dict(os.environ)
+def clean_env(xdg_config=None):
+    # XDG_CONFIG_HOME moves OpenCode's config dir; CI runners set it, so a test sets it only on purpose
+    env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+    if xdg_config is not None:
+        env["XDG_CONFIG_HOME"] = str(xdg_config)
+    return env
+
+
+def bash_install(*args, home=None, xdg_config=None):
+    env = clean_env(xdg_config)
     if home is not None:
         env["HOME"] = posix(home)
     return subprocess.run([BASH, posix(ROOT / "install.sh"), *args], capture_output=True, text=True, env=env)
 
 
-def ps_install(*args, home=None):
+def ps_install(*args, home=None, xdg_config=None):
     script = ""
     if home is not None:
         script += f"Set-Variable -Name HOME -Value '{home}' -Force; "
     script += "& '" + str(ROOT / "install.ps1") + "' " + " ".join(a if re.fullmatch(r"-[A-Za-z]+", a) else "'" + a.replace("'", "''") + "'" for a in args)  # values quoted (empty, comma, space); parameter names bare
-    return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True)
+    return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True, env=clean_env(xdg_config))
 
 
 def complete(skill_dir):
@@ -136,6 +144,19 @@ class InstallerContract:
         self.assertEqual((self.repo / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\n", "created with just the import")
         self.assertEqual((self.repo / "GEMINI.md").read_text(encoding="utf-8"), "# project notes\n\n@AGENTS.md\n", "import added once, notes kept")
 
+    def test_user_level_opencode_follows_xdg_config_home(self):
+        # OpenCode reads $XDG_CONFIG_HOME/opencode when it is set (observed with 1.18.32 and v2.0.18)
+        xdg = self.tmp / "xdg"; (xdg / "opencode").mkdir(parents=True)
+        tool = ("-t", "opencode") if self.flavor == "bash" else ("-Tool", "opencode")
+        r = self.install(*self.flags("user", "prompts", "agents"), home=self.home, xdg_config=xdg)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.install(*self.flags("user"), *tool, home=self.home, xdg_config=xdg)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((xdg / "opencode/commands/code-review.md").is_file(), "prompts as commands")
+        self.assertIn("ai-skills:review-gates start", (xdg / "opencode/AGENTS.md").read_text(encoding="utf-8"))
+        self.assertTrue((xdg / "opencode/skills/oh-code-review/SKILL.md").is_file(), "-t opencode user skills")
+        self.assertFalse((self.home / ".config").exists(), "nothing written to ~/.config")
+
     def test_opencode_tool_installs_commands_not_prompts(self):
         tool = ("-t", "opencode") if self.flavor == "bash" else ("-Tool", "opencode")
         r = self.install(*tool, *self.flags("prompts"), str(self.repo))
@@ -163,16 +184,16 @@ class InstallerContract:
 class BashInstaller(InstallerContract, unittest.TestCase):
     flavor = "bash"
 
-    def install(self, *args, home=None):
-        return bash_install(*args, home=home)
+    def install(self, *args, home=None, xdg_config=None):
+        return bash_install(*args, home=home, xdg_config=xdg_config)
 
 
 @unittest.skipUnless(PWSH, "no PowerShell found")
 class PowerShellInstaller(InstallerContract, unittest.TestCase):
     flavor = "powershell"
 
-    def install(self, *args, home=None):
-        return ps_install(*args, home=home)
+    def install(self, *args, home=None, xdg_config=None):
+        return ps_install(*args, home=home, xdg_config=xdg_config)
 
     def test_empty_array_tool_selection_is_refused(self):
         # native PowerShell form: an explicit empty array binds as zero items, unlike an omitted parameter
