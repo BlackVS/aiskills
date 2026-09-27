@@ -46,7 +46,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
   (`.github/workflows/release.yml`): a `v*` tag on a commit of `main` whose
   `VERSION` and `CHANGELOG.md` section match publishes a GitHub release with
   the changelog section as its body and `.tar.gz`/`.zip` archives with
-  `SHA256SUMS`. Importable rulesets in `.github/rulesets/` (main PR-only with
+  `SHA256SUMS`; only the highest version is marked latest, so a patch for an
+  older line never becomes what the one-liners install. Importable rulesets in `.github/rulesets/` (main PR-only with
   required checks; release tags immutable), a PR template, Dependabot for the
   pinned actions, and `SECURITY.md`.
 - `AGENTS.md` (repository conventions for coding agents), `NOTICE.md`,

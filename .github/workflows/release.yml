@@ -43,7 +43,7 @@ jobs:
 
       - name: Verify VERSION and CHANGELOG match the tag
         run: |
-          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::tag $TAG is not vMAJOR.MINOR.PATCH"; exit 1 ;; esac
+          printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::tag $TAG is not vMAJOR.MINOR.PATCH"; exit 1; }
           ver=$(tr -d '[:space:]' < VERSION)
           if [ "v$ver" != "$TAG" ]; then
             echo "::error::VERSION says $ver, the tag is $TAG"; exit 1
@@ -85,5 +85,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+          # "Latest" is what the one-liners install, so only the highest version
+          # gets it: a patch release for an older line must not downgrade users.
+          newest=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          latest=false; [ "$newest" = "$TAG" ] && latest=true
+          echo "newest tag: $newest; marking $TAG as latest: $latest"
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --latest="$latest" \
             --title "ai-skills ${TAG#v}" --notes-file release_notes.md
