@@ -16,7 +16,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
   of the tip of `main`, and fall back to `main` while the repository has no
   release. `AI_SKILLS_REF=<branch|tag|commit>` still picks any ref
   (`AI_SKILLS_REF=main` for unreleased work); with `AI_SKILLS_BASE` the default
-  stays `main`.
+  stays `main`. Only a clear "no release" answer (the redirect to `/releases`,
+  or 404 from the API with `AI_SKILLS_TOKEN`) falls back to `main`; a failed or
+  unexpected lookup stops the install, so a lookup error never installs
+  unreleased work.
 - `install.sh` trims trailing blank lines of the agent-instructions file with
   awk instead of GNU `sed -i`, which BSD sed on macOS reads differently.
 - `install.sh` runs under macOS's bash 3.2: an empty tool or skill list no

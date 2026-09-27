@@ -34,15 +34,34 @@ if [ -z "$REF" ] && [ -z "${AI_SKILLS_ARCHIVE:-}" ]; then
     REF=main
   else
     # The latest release, not the tip of main: main can carry unreleased work.
-    # A public repository answers /releases/latest with a redirect to the tag
-    # (no API rate limit); a private fork needs the API and the token.
+    # Only a clear "no release" answer falls back to main; any other failure
+    # stops here, so a lookup error never installs unreleased work.
+    lookup_failed() {
+      echo "ERROR: could not look up the latest release of $REPO ($1); set AI_SKILLS_REF to skip the lookup" >&2
+      exit 1
+    }
     if [ -n "$TOKEN" ]; then
-      JSON=$(curl -fsSL -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null) || JSON=
-      REF=$(printf '%s\n' "$JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+      # a private fork: the API with the token; 404 means no release
+      BODY=$(mktemp)
+      CODE=$(curl -sSL -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+        -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest") || CODE=000
+      REF=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$BODY" | head -n 1)
+      rm -f "$BODY"
+      case "$CODE" in
+        200) [ -n "$REF" ] || lookup_failed "no tag_name in the API answer" ;;
+        404) REF= ;;
+        *) lookup_failed "HTTP $CODE" ;;
+      esac
     else
-      HEAD=$(curl -fsSI "https://github.com/$REPO/releases/latest") ||
-        { echo "ERROR: could not reach github.com/$REPO (set AI_SKILLS_REF to skip the release lookup)" >&2; exit 1; }
-      REF=$(printf '%s\n' "$HEAD" | tr -d '\r' | sed -n 's|^[Ll]ocation: .*/releases/tag/\([^/?#]*\).*|\1|p' | head -n 1)
+      # A public repository answers /releases/latest with a redirect (no API
+      # rate limit): to /releases/tag/<tag>, or to /releases while it has none.
+      HEAD=$(curl -fsSI "https://github.com/$REPO/releases/latest") || lookup_failed "request failed"
+      LOC=$(printf '%s\n' "$HEAD" | tr -d '\r' | sed -n 's/^[Ll]ocation: *//p' | head -n 1)
+      case "$LOC" in
+        */releases/tag/*) REF=$(printf '%s\n' "$LOC" | sed 's|.*/releases/tag/\([^/?#]*\).*|\1|') ;;
+        */releases) REF= ;;
+        *) lookup_failed "unexpected answer: ${LOC:-no redirect}" ;;
+      esac
     fi
     if [ -z "$REF" ]; then
       echo "No release of $REPO found: installing main."
