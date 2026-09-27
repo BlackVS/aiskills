@@ -139,6 +139,47 @@ class ReleaseScript(unittest.TestCase):
         self.assertFalse(self.gh_log.exists() and self.created(), "nothing was published")
         self.assertEqual(self.git(self.origin, "tag", "-l"), "", "no tag was pushed")
 
+    def resolve(self, ok=True, **event):
+        env_file = self.tmp / "github_env"; env_file.write_text("")
+        env = {k: v for k, v in self.env.items() if not k.startswith(("GITHUB_", "INPUT_"))}
+        env.update(event, GITHUB_ENV=str(env_file))
+        r = subprocess.run([BASH, str(SCRIPT), "resolve"], cwd=self.tmp, env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
+        return r, env_file.read_text()
+
+    def test_resolve_manual_run(self):
+        for version in ("1.22.1", "v1.22.1"):
+            with self.subTest(version=version):
+                r, written = self.resolve(GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_REF="refs/heads/main", INPUT_VERSION=version)
+                self.assertEqual(written, "TAG=v1.22.1\nCREATE=--create\n")
+
+    def test_resolve_tag_push(self):
+        r, written = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF="refs/tags/v1.22.1", GITHUB_REF_NAME="v1.22.1")
+        self.assertEqual(written, "TAG=v1.22.1\nCREATE=\n")
+
+    def test_resolve_refuses_bad_input_and_writes_nothing(self):
+        bad = {
+            "a second line": "1.22.1\nTAG=v1.22.0",   # one valid line must not carry another into $GITHUB_ENV
+            "a trailing newline": "1.22.1\n",
+            "a partial version": "1.22",
+            "a suffix": "1.22.1-rc1",
+            "empty": "",
+        }
+        for name, version in bad.items():
+            with self.subTest(name):
+                r, written = self.resolve(ok=False, GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_REF="refs/heads/main", INPUT_VERSION=version)
+                self.assertIn("is not MAJOR.MINOR.PATCH", r.stderr)
+                self.assertEqual(written, "")
+        r, written = self.resolve(ok=False, GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_REF="refs/heads/side", INPUT_VERSION="1.22.1")
+        self.assertIn("run the release from main", r.stderr); self.assertEqual(written, "")
+        r, written = self.resolve(ok=False, GITHUB_EVENT_NAME="push", GITHUB_REF_NAME="v1.22")
+        self.assertEqual(written, "")
+
+    def test_multiline_tag_argument_is_refused(self):
+        self.commit_version("1.2.0")
+        r = self.release(self.runner(), "prepare", "v1.2.0\nv9.9.9", "--create", ok=False)
+        self.assertIn("is not vMAJOR.MINOR.PATCH", r.stderr)
+
     def test_missing_changelog_section_is_refused(self):
         self.commit_version("1.2.0", section=False)
         r = self.release(self.runner(), "prepare", "v1.2.0", "--create", ok=False)

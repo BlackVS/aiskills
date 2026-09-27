@@ -15,7 +15,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
 - The Release workflow runs from the Actions tab (or through the API) with a
   version: it checks `VERSION` and the `CHANGELOG.md` section on `main`, tags
   the tip of `main` and publishes, so a release needs no tag push from a
-  workstation. Given an existing tag it publishes that tag, for a run that
+  workstation. The version must be a single `MAJOR.MINOR.PATCH` value (a
+  multi-line input is refused before anything is written to the job's
+  environment). Given an existing tag it publishes that tag, for a run that
   failed or was cancelled. The steps live in `.github/release.sh`, tested
   against scratch repositories by `tests/test_release.py`.
 

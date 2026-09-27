@@ -2,6 +2,11 @@
 # The steps of .github/workflows/release.yml, in a script so that
 # tests/test_release.py can run them against scratch repositories.
 #
+#   release.sh resolve
+#       From the workflow's event (GITHUB_EVENT_NAME, GITHUB_REF,
+#       GITHUB_REF_NAME, INPUT_VERSION), append TAG and CREATE to $GITHUB_ENV.
+#       A manual run must come from main, and its version input must be one
+#       MAJOR.MINOR.PATCH value and nothing else.
 #   release.sh prepare vX.Y.Z [--create]
 #       Check out the commit to release and write release_notes.md. The commit
 #       is the existing tag, or with --create the tip of origin/main (the tag
@@ -19,7 +24,26 @@
 set -euo pipefail
 cmd=${1:-}; TAG=${2:-}; create=${3:-}
 fail() { echo "::error::$*" >&2; exit 1; }
-printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || fail "tag '$TAG' is not vMAJOR.MINOR.PATCH"
+# [[ =~ ]] matches the whole string; grep -x would accept any one line of a
+# multi-line value, and a newline reaching $GITHUB_ENV sets further variables.
+semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+
+if [ "$cmd" = resolve ]; then
+  if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
+    # a manual release runs main's own workflow and script, never a branch's
+    [ "${GITHUB_REF:-}" = refs/heads/main ] || fail "run the release from main, not ${GITHUB_REF:-}"
+    v=${INPUT_VERSION:-}; v=${v#v}
+    [[ $v =~ $semver ]] || fail "version '${INPUT_VERSION:-}' is not MAJOR.MINOR.PATCH"
+    printf 'TAG=v%s\nCREATE=--create\n' "$v" >> "$GITHUB_ENV"
+  else
+    t=${GITHUB_REF_NAME:-}
+    [[ ${t#v} =~ $semver && $t = v* ]] || fail "tag '$t' is not vMAJOR.MINOR.PATCH"
+    printf 'TAG=%s\nCREATE=\n' "$t" >> "$GITHUB_ENV"
+  fi
+  exit 0
+fi
+
+[[ ${TAG#v} =~ $semver && $TAG = v* ]] || fail "tag '$TAG' is not vMAJOR.MINOR.PATCH"
 ver=${TAG#v}
 has_tag() { git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum -- "$@"; else shasum -a 256 -- "$@"; fi; }
@@ -73,6 +97,6 @@ publish)
     --title "ai-skills $ver" --notes-file release_notes.md
   ;;
 *)
-  fail "usage: release.sh prepare|publish vX.Y.Z [--create]"
+  fail "usage: release.sh resolve | prepare|publish vX.Y.Z [--create]"
   ;;
 esac

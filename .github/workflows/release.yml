@@ -41,16 +41,7 @@ jobs:
           persist-credentials: false   # only the steps below that write get the token
 
       - name: Resolve the release
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            # a manual release runs main's own workflow and script, never a branch's
-            [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::run the release from main, not $GITHUB_REF"; exit 1; }
-            printf '%s\n' "$INPUT_VERSION" | grep -Eqx 'v?[0-9]+\.[0-9]+\.[0-9]+' ||
-              { echo "::error::version '$INPUT_VERSION' is not MAJOR.MINOR.PATCH"; exit 1; }
-            echo "TAG=v${INPUT_VERSION#v}" >> "$GITHUB_ENV"; echo "CREATE=--create" >> "$GITHUB_ENV"
-          else
-            echo "TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"; echo "CREATE=" >> "$GITHUB_ENV"
-          fi
+        run: bash .github/release.sh resolve
 
       # The script checks out the commit to release (the tag, or main's tip),
       # which may predate the script: run the copy from the workflow's commit.
