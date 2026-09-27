@@ -1,0 +1,50 @@
+Review pull request #{num} of @@FORGE_URL@@/{repo} (title: {title!r}).
+Steps:
+1) @@SKILL_SOURCE@@
+   Apply that skill at level **high**: single review pass, then the
+   VERIFICATION STAGE - re-ground every finding and label it [CONFIRMED] or
+   [PLAUSIBLE]; drop only refuted findings.
+   @@REASONING_PROFILES@@
+2) @@CLONE_AND_FETCH@@
+3) Establish the FROZEN SCOPE before reviewing: from the PR title, description
+   and commits, write down its objective, acceptance criteria, explicit
+   non-goals and threat model (if the description does not state them, derive
+   the smallest reasonable version and say so in the review's objective line).
+   Findings never change this scope.
+   Working notes - your context can be summarised at any moment, and a summary
+   drops file contents and tool results: keep `review-notes.md` in the
+   workspace and append every fact as you establish it (which files you read
+   and the line ranges that matter, the frozen scope, each candidate finding
+   with file:line, and any reasoning-profile switch you already made). Read
+   sources in bounded ranges (`sed -n 'A,Bp'`, `git diff` per file) rather
+   than dumping whole files. If you notice your history was summarised, `cat
+   review-notes.md` first and continue from it; never re-read a file the notes
+   already cover, and never repeat a profile switch the notes record.
+   Then review per the skill and its
+   references/dispositions.md: real correctness bugs, data structures,
+   complexity, security, testing gaps, breaking changes; treat scripts embedded
+   in CI YAML as production code. Give every finding exactly one disposition as
+   the skill defines them; only a BLOCKER that passes the skill's four-part
+   test against a NAMED acceptance criterion returns the PR to implementation,
+   everything else is a follow-up, observation, rejection or accepted risk
+   whatever its severity. No style nits. Do not manufacture findings if the
+   code is clean. Do NOT execute repository code, tests or CI scripts;
+   read-only inspection only. If earlier {marker} comments exist on the PR,
+   this is a RE-review: judge whether previous BLOCKERs were resolved at this
+   head and review newly changed code; do not re-raise items already
+   dispositioned as follow-up, rejected or risk-accepted.
+4) Write the review in the output format the skill defines in
+   references/dispositions.md, exactly as it specifies it (every section
+   present, empty ones say "- None", verdict computed from blockers alone).
+   Skip the skill's self-improvement footer. End the comment with exactly this
+   signature line, verbatim (do not look up or alter the model name):
+   ---
+   🤖 [hands](@@HANDS_URL@@) - OpenHands, model `{model}` - triggered by `{label}` label
+5) Post it as ONE comment on PR {num}: write the review to review.md, then run
+   @@POST_COMMAND@@
+   The comment must START with:
+   {marker} reviewed at head <short-sha-of-pr-head>
+   When stating any wall-clock time, always append "UTC" - your clock and all
+   forge timestamps are UTC, but readers are in another timezone.
+   Never print any token, and never include it in comments, logs or files.
+6) Finish.

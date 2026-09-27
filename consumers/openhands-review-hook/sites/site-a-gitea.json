@@ -1,0 +1,8 @@
+{
+  "FORGE_URL": "https://gitea.example.com",
+  "HANDS_URL": "https://hands.example.com",
+  "SKILL_SOURCE": "git clone https://github.com/BlackVS/aiskills.git and read\naiskills/skills/oh-code-review/SKILL.md.",
+  "CLONE_AND_FETCH": "git clone https://gitea.example.com/{repo}.git (credentials are\npreconfigured), git fetch origin refs/pull/{num}/head and diff it against\nthe PR base branch.",
+  "POST_COMMAND": "tea comment --repo {repo} {num} \"$(cat review.md)\" (tea is installed and\nlogged in).",
+  "REASONING_PROFILES": ""
+}

@@ -1,0 +1,602 @@
+import json
+import os
+import tempfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from http.server import HTTPServer
+from pathlib import Path
+from unittest.mock import patch
+
+import review_policy
+from review_control import Handler
+from review_runner import Runner, RunStore, limit_error, valid_review, config_error, recovered_head, switched, next_page
+
+HEAD = 'a' * 40
+QUOTA = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'ACPPromptError',
+                    'detail': 'limit: {"errorKind": "rate_limit"}'}]}
+
+
+class PolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        for name in ['codex-astra', 'claude-opus', 'claude-fable']:
+            (self.root / (name + '.json')).write_text(json.dumps({'acp_model': name}))
+        for name, ref, switch in [('api-deep', 'auto-review-deep', False), ('api-fast', 'auto-review-fast', True), ('api-alt', 'auto-review-alt', False), ('api-noswitch', 'auto-review-noswitch', False)]:
+            (self.root / (name + '.json')).write_text(json.dumps({'agent_kind': 'openhands', 'llm_profile_ref': ref, 'enable_switch_llm_tool': switch}))
+        self.env = patch.dict(os.environ, {'PROFILES_DIR': str(self.root),
+            'REVIEW_SETTINGS_FILE': str(self.root / 'settings'),
+            'LOCAL_BACKEND_API_KEY': 'test-key', 'REVIEW_PROFILE': 'codex-astra'})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.temp.cleanup()
+
+    def test_persist_and_revision(self):
+        settings = review_policy.read_settings()
+        settings['fallback'] = 'claude-opus'
+        saved = review_policy.save_settings(settings)
+        self.assertEqual(saved, review_policy.read_settings())
+        self.assertIsNone(saved['secondary'])
+        with self.assertRaises(FileExistsError): review_policy.save_settings(settings)
+
+    def test_invalid_profiles_and_same_model(self):
+        for primary, fallback in [('../secret', None), ('codex-astra', 'unknown'), ('codex-astra', 'codex-astra')]:
+            with self.assertRaises(ValueError):
+                review_policy.save_settings({'revision': 0, 'primary': primary, 'fallback': fallback})
+
+    def test_legacy_file_without_secondary_loads_as_none(self):
+        review_policy.settings_path().write_text(json.dumps({'revision': 3, 'primary': 'codex-astra', 'fallback': None}))
+        loaded = review_policy.read_settings()
+        self.assertEqual((loaded['revision'], loaded['secondary']), (3, None))
+        self.assertIsNone(review_policy.read_settings()['secondary'])
+        review_policy.save_settings(loaded)
+        self.assertNotIn('secondary', review_policy.settings_path().read_text())  # rollback-safe while unset
+        review_policy.save_settings({'revision': 4, 'primary': 'api-deep', 'secondary': 'api-fast', 'fallback': None})
+        self.assertIn('"secondary": "api-fast"', review_policy.settings_path().read_text())
+
+    def test_secondary_needs_two_llm_profile_agents(self):
+        ok = review_policy.save_settings({'revision': 0, 'primary': 'api-deep', 'secondary': 'api-fast', 'fallback': 'claude-opus'})
+        self.assertEqual(ok['secondary'], 'api-fast')
+        self.assertEqual(review_policy.profile_llm_ref('api-fast'), 'auto-review-fast')
+        self.assertIsNone(review_policy.profile_llm_ref('codex-astra')); self.assertIsNone(review_policy.profile_llm_ref('../x'))
+        for primary, secondary, fallback in [('api-deep', 'api-deep', None), ('codex-astra', 'api-fast', None),
+                                             ('api-deep', 'codex-astra', None), ('api-deep', 'api-fast', 'api-fast'), ('api-deep', 'missing', None),
+                                             ('api-deep', 'api-noswitch', None)]:  # OpenHands-kind but without the switch tool
+            with self.subTest(primary=primary, secondary=secondary, fallback=fallback), self.assertRaises(ValueError):
+                review_policy.validate({'revision': 1, 'primary': primary, 'secondary': secondary, 'fallback': fallback})
+
+    def test_secondary_must_match_the_primary_beyond_the_generated_fields(self):
+        # the conversation runs on the secondary's agent: a primary with its own tools or condenser would be silently ignored
+        self.assertEqual(review_policy.agent_settings_diff('api-deep', 'api-fast'), [])
+        fast = json.loads((self.root / 'api-fast.json').read_text())
+        (self.root / 'api-fast.json').write_text(json.dumps(dict(fast, tools=['bash'], condenser={'max_size': 100})))
+        self.assertEqual(review_policy.agent_settings_diff('api-deep', 'api-fast'), ['condenser', 'tools'])
+        with self.assertRaises(ValueError) as caught:
+            review_policy.validate({'revision': 1, 'primary': 'api-deep', 'secondary': 'api-fast', 'fallback': None})
+        self.assertIn('differs in: condenser, tools', str(caught.exception))
+        problems = review_policy.settings_problems({'primary': 'api-deep', 'secondary': 'api-fast', 'fallback': None})
+        self.assertIn('condenser, tools', problems['secondary']); self.assertIn("not the primary's", problems['secondary'])
+        (self.root / 'api-fast.json').write_text(json.dumps(dict(fast, name='api-fast', revision=3)))  # generated fields never count
+        self.assertEqual(review_policy.agent_settings_diff('api-deep', 'api-fast'), [])
+        self.assertEqual(review_policy.agent_settings_diff('api-deep', 'missing'), ['(unreadable profile)'])
+
+    def test_hot_reload_and_explicit_override(self):
+        review_policy.save_settings({'revision': 0, 'primary': 'claude-opus', 'fallback': None})
+        self.assertEqual(review_policy.requested_profiles(['review-this'], 'review-this'), [('review-this', None)])  # resolved by the runner
+        self.assertEqual(review_policy.requested_profiles(['review-this', 'review-this:claude-fable'], 'review-this')[0][1], 'claude-fable')
+
+    def test_ambiguous_override_rejected(self):
+        with self.assertRaises(ValueError):
+            review_policy.requested_profiles(['review-this:claude-fable', 'review-this:codex-astra'], 'review-this')
+
+    def test_deleted_profile_is_reported_never_rewritten(self):
+        review_policy.settings_path().write_text(json.dumps({'revision': 4, 'primary': 'ghost', 'fallback': 'claude-opus'}))
+        loaded = review_policy.read_settings()
+        self.assertEqual((loaded['primary'], loaded['revision']), ('ghost', 4))
+        self.assertEqual(review_policy.settings_problems(loaded), {'primary': "agent profile 'ghost' no longer exists"})
+        with self.assertRaises(ValueError): review_policy.save_settings(dict(loaded))  # writing stays strict
+        self.assertIn('"ghost"', review_policy.settings_path().read_text())
+        degraded = {'revision': 4, 'primary': 'api-deep', 'secondary': 'api-alt', 'fallback': None}  # secondary lost its switch tool
+        self.assertEqual(list(review_policy.settings_problems(degraded)), ['secondary'])
+        self.assertEqual(review_policy.settings_problems({'revision': 4, 'primary': 'api-deep', 'secondary': 'api-fast', 'fallback': 'claude-opus'}), {})
+        self.assertEqual(set(review_policy.settings_problems({'revision': 4, 'primary': 'api-deep', 'secondary': 'ghost2', 'fallback': 'ghost3'})), {'secondary', 'fallback'})
+        (self.root / 'half.json').write_text('{'); self.assertNotIn('half', [p['name'] for p in review_policy.profiles()])
+
+    def test_control_reports_problems_with_settings(self):
+        review_policy.settings_path().write_text(json.dumps({'revision': 2, 'primary': 'ghost', 'fallback': None}))
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
+            with urllib.request.urlopen(urllib.request.Request(url, headers={'X-Session-API-Key': 'test-key'})) as response:
+                body = json.load(response)
+            self.assertEqual((body['settings']['primary'], body['problems']), ('ghost', {'primary': "agent profile 'ghost' no longer exists"}))
+            review_policy.settings_path().write_text('broken')
+            with urllib.request.urlopen(urllib.request.Request(url, headers={'X-Session-API-Key': 'test-key'})) as response:
+                body = json.load(response)
+            self.assertEqual((body['settings']['revision'], body['settings']['primary']), (0, None)); self.assertIn('settings', body['problems'])
+            headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
+            with patch('review_control.discovery', return_value={'profile': 'claude-opus'}):
+                stale = json.dumps({'revision': 3, 'primary': {'provider': 'acp:claude-code', 'model': 'opus[1m]'}, 'fallback': None}).encode()
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=stale, headers=headers))
+                self.assertEqual(caught.exception.code, 409)
+                fresh = json.dumps({'revision': 0, 'primary': {'provider': 'acp:claude-code', 'model': 'opus[1m]'}, 'fallback': None}).encode()
+                with urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=fresh, headers=headers)) as response:
+                    saved = json.load(response)
+            self.assertEqual((saved['settings']['revision'], saved['settings']['primary'], saved['problems']), (1, 'claude-opus', {}))
+        finally: server.shutdown(); server.server_close(); thread.join()
+
+    def test_corrupt_configuration_does_not_reset(self):
+        review_policy.settings_path().write_text('broken')
+        with self.assertRaises(ValueError): review_policy.read_settings()
+        data, problems = review_policy.load_settings()  # the app still loads, nothing selected, and says why
+        self.assertEqual(data, {'revision': 0, 'primary': None, 'secondary': None, 'fallback': None})
+        self.assertIn('cannot be read', problems['settings']); self.assertEqual(review_policy.settings_path().read_text(), 'broken')
+        with self.assertRaises(FileExistsError): review_policy.save_settings({'revision': 3, 'primary': 'claude-opus', 'fallback': None})
+        saved = review_policy.save_settings({'revision': 0, 'primary': 'claude-opus', 'fallback': None})  # only an explicit save at revision 0 replaces it
+        self.assertEqual((saved['revision'], review_policy.read_settings()['primary']), (1, 'claude-opus'))
+
+    def test_connection_probe_authenticated_and_does_not_save(self):
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}/api/review-control/test-provider'
+        body = json.dumps({'base_url': 'https://example.com', 'api_key': 'test-only'}).encode()
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'}))
+            self.assertEqual(caught.exception.code, 401)
+            with patch('review_control.discovery', return_value={'ok': False, 'message': 'Authentication rejected.'}) as discovery:
+                request = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json', 'X-Session-API-Key': 'test-key'})
+                with urllib.request.urlopen(request) as response:
+                    self.assertFalse(json.load(response)['ok'])
+                discovery.assert_called_once_with('probe', request={'base_url': 'https://example.com', 'api_key': 'test-only'})
+            self.assertFalse(review_policy.settings_path().exists())
+        finally: server.shutdown(); server.server_close(); thread.join()
+
+    def test_settings_with_secondary_prepare_a_switch_profile(self):
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
+        headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
+        deep = {'provider': 'connection:x', 'model': 'm', 'effort': 'high'}
+        fast = {'provider': 'connection:x', 'model': 'm', 'effort': 'low'}
+        prepared = lambda action, **kw: {'profile': 'api-fast' if kw.get('switch') else 'api-deep'}
+        try:
+            with patch('review_control.discovery', side_effect=prepared) as discovery:
+                body = json.dumps({'revision': 0, 'primary': deep, 'secondary': fast, 'fallback': None}).encode()
+                with urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=body, headers=headers)) as response:
+                    saved = json.load(response)['settings']
+                self.assertEqual((saved['primary'], saved['secondary'], saved['fallback']), ('api-deep', 'api-fast', None))
+                discovery.assert_any_call('prepare', selection=deep, switch=False)
+                discovery.assert_any_call('prepare', selection=fast, switch=True)
+            for primary, secondary in [(dict(deep, provider='acp:codex'), fast), (deep, dict(fast, provider='acp:codex')), (deep, deep),
+                                       (dict(deep, effort=None), dict(fast, effort='high'))]:  # null effort is the API default
+                with self.subTest(primary=primary), patch('review_control.discovery', side_effect=prepared) as discovery:
+                    body = json.dumps({'revision': 1, 'primary': primary, 'secondary': secondary, 'fallback': None}).encode()
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=body, headers=headers))
+                    self.assertEqual(caught.exception.code, 400); discovery.assert_not_called()
+            # a prepared pair whose agent settings differ: refused, and the answer names the fields so the pair can be repaired
+            fast_doc = json.loads((self.root / 'api-fast.json').read_text())
+            (self.root / 'api-fast.json').write_text(json.dumps(dict(fast_doc, tools=['bash'])))
+            with patch('review_control.discovery', side_effect=prepared):
+                body = json.dumps({'revision': 1, 'primary': deep, 'secondary': fast, 'fallback': None}).encode()
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=body, headers=headers))
+                self.assertEqual(caught.exception.code, 400)
+                self.assertIn('differs in: tools', json.load(caught.exception)['error'])
+            self.assertEqual(review_policy.read_settings()['revision'], 1)  # nothing saved
+        finally: server.shutdown(); server.server_close(); thread.join()
+
+    def test_authenticated_http(self):
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as caught: urllib.request.urlopen(url)
+            self.assertEqual(caught.exception.code, 401)
+            request = urllib.request.Request(url, headers={'X-Session-API-Key': 'test-key'})
+            with urllib.request.urlopen(request) as response: data = json.load(response)
+            data['settings']['fallback'] = 'claude-opus'
+            request = urllib.request.Request(url, method='PUT', data=json.dumps(data['settings']).encode(),
+                headers={'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'})
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(json.load(response)['settings']['fallback'], 'claude-opus')
+            with self.assertRaises(urllib.error.HTTPError) as caught: urllib.request.urlopen(request)
+            self.assertEqual(caught.exception.code, 409)
+        finally: server.shutdown(); server.server_close(); thread.join()
+
+
+class RunnerTests(unittest.TestCase):
+    def execute(self, quota=True, selected='codex-astra', both_fail=False, changed=False, timeout=False, completed_first=False, error_events=None, settings_error=None, problems=None,
+                finished=False, comment_after_calls=None, clock=None,
+                primary='codex-astra', fallback='claude-opus', secondary=None, llm_refs=None, explicit=False,
+                profile_info=None, prompt_text='model={model} label={label}', runs=None, resume=None, on_comments=None, usage_id=None,
+                break_after_completion=None):
+        starts, labels, failures, calls = [], [], [], {'comments': 0}
+        self.notes = notes = []
+        def note(*args):
+            if break_after_completion == 'note':
+                raise OSError('forge down')
+            notes.append(args)
+        def api(path):
+            if '/pulls/' in path:
+                return {'state': 'open', 'head': {'sha': 'b'*40 if changed and starts else HEAD}}
+            calls['comments'] += 1
+            if on_comments:
+                on_comments()
+            if comment_after_calls is not None and calls['comments'] >= comment_after_calls:
+                return [{'body': f'[hands-bot review] reviewed at head {HEAD}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
+            if len(starts) == 2 and not both_fail or completed_first:
+                return [{'body': f'[hands-bot review] reviewed at head {HEAD}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
+            return []
+        def app(path, data=None):
+            if data:
+                starts.append(data); return {'id': str(len(starts))}
+            if 'events/search' in path:
+                return error_events if error_events is not None else QUOTA if quota else {'items': []}
+            if break_after_completion == 'read' and labels:  # the labels are swapped before the check reads the conversation
+                raise OSError('canvas down')
+            info = {'execution_status': 'finished' if finished else 'error'}
+            if usage_id:
+                info['agent'] = {'llm': {'usage_id': usage_id}}
+            return info  # usage_id None: a server without the field
+        with tempfile.TemporaryDirectory() as temp:
+            prompt = Path(temp)/'prompt'; prompt.write_text(prompt_text)
+            self.logs = logs = []
+            runner = Runner(api, app, lambda *args: labels.append(args), profile_info or (lambda p: (p,p)),
+                            lambda *args: failures.append(args), log=logs.append,
+                            timeout=0 if timeout else 10, sleep=lambda _: None,
+                            llm_ref=lambda name: (llm_refs or {}).get(name), problems=lambda s: dict(problems or {}), runs=runs,
+                            note=note)
+            with patch('review_runner.read_settings', **({'side_effect': settings_error} if settings_error else {'return_value': {'primary': primary, 'secondary': secondary, 'fallback': fallback}})), \
+                 patch('review_runner.time.monotonic', side_effect=clock) if clock else patch('review_runner.time.monotonic', wraps=time.monotonic):
+                label = 'review-this' if selected == primary and not explicit else 'review-this:' + selected
+                if resume:
+                    runner.resume(resume, str(prompt), '/tmp/reviews')
+                else:
+                    runner.run('owner/repo', 1, 'title', label, selected, str(prompt), '/tmp/reviews')
+        return starts, labels, failures
+
+    @staticmethod
+    def record(**overrides):
+        """What a receiver finds on disk after a restart: a run whose conversation exists."""
+        base = {'repo': 'owner/repo', 'num': 1, 'title': 'title', 'label': 'review-this', 'profile': 'codex-astra',
+                'choices': ['codex-astra', 'claude-opus'], 'reading': None, 'head': HEAD, 'since': '2026-09-24T00:00:00Z',
+                'attempt': 0, 'conversation': 'kept', 'started': time.time(), 'deadline': time.time() + 60}
+        return dict(base, **overrides)
+
+    def test_run_store_round_trip_and_never_raises(self):
+        logs = []
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp) / 'runs.json', log=logs.append)
+            self.assertEqual(store.load(), [])
+            store.save(self.record(started=2)); store.save(self.record(num=2, started=1))
+            self.assertEqual([r['num'] for r in store.load()], [2, 1])  # oldest first
+            store.clear('owner/repo', 1); store.clear('owner/repo', 1)  # a second clear is a no-op
+            self.assertEqual([r['num'] for r in store.load()], [2])
+            self.assertFalse(list(Path(temp).glob('*.tmp')))  # written through a temp file, replaced atomically
+            (Path(temp) / 'runs.json').write_text('{not json')
+            self.assertEqual(store.load(), []); self.assertIn('run state unreadable', logs[-1])
+            missing = RunStore(Path(temp) / 'no-such-dir' / 'runs.json', log=logs.append)
+            missing.save(self.record())  # the review goes on unrecorded
+            self.assertIn('run state not saved', logs[-1]); self.assertEqual(missing.load(), [])
+            (Path(temp) / 'runs.json').write_text(json.dumps({'a#1': {'repo': 'a', 'num': 1}, 'owner/repo#2': self.record(num=2)}))
+            self.assertEqual([r['num'] for r in store.load()], [2])  # a record a receiver cannot act on is dropped, not fatal
+            self.assertIn('1 unusable record', logs[-1]); self.assertNotIn('a#1', (Path(temp) / 'runs.json').read_text())
+        self.assertFalse(logs[:-3])
+
+    def test_run_is_recorded_once_the_conversation_exists_and_cleared_at_the_end(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp) / 'runs.json'); seen = []
+            starts, labels, failures = self.execute(quota=False, completed_first=True, runs=store,
+                                                    on_comments=lambda: seen.append(store.load()))
+            self.assertEqual(len(starts), 1); self.assertTrue(labels); self.assertFalse(failures)
+            record = seen[0][0]  # present while the conversation was being watched
+            self.assertEqual((record['repo'], record['num'], record['conversation'], record['attempt'], record['head']),
+                             ('owner/repo', 1, '1', 0, HEAD))
+            self.assertEqual((record['choices'], record['label'], record['profile']), (['codex-astra', 'claude-opus'], 'review-this', 'codex-astra'))
+            self.assertIn('since', record); self.assertLessEqual(record['started'], time.time())
+            self.assertAlmostEqual(record['deadline'], record['started'] + 10, places=3)  # the fixture's timeout
+            self.assertEqual(store.load(), [])  # gone once the run ended
+            starts, labels, failures = self.execute(quota=False, runs=store)  # a failed run is cleared as well
+            self.assertTrue(failures); self.assertEqual(store.load(), [])
+
+    def test_previous_attempt_record_is_gone_before_the_fallback_exists(self):
+        # a failed save of the fallback's record must leave nothing to resume: the primary's
+        # record would replay its quota error after a restart and start a second fallback
+        class Faulty(RunStore):
+            writes = 0
+            def _write(self, runs):
+                self.writes += 1
+                if self.writes == 3:  # 1 save primary, 2 clear it, 3 save fallback
+                    self.log('run state not saved: injected'); return
+                super()._write(runs)
+        logs = []
+        with tempfile.TemporaryDirectory() as temp:
+            store = Faulty(Path(temp) / 'runs.json', log=logs.append); seen = []
+            starts, labels, failures = self.execute(runs=store, on_comments=lambda: seen.append([r['conversation'] for r in store.load()]))
+            self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra', 'claude-opus'])
+            self.assertTrue(labels); self.assertFalse(failures)
+            self.assertEqual(seen, [['1'], []])  # watched with the primary's record, then with none at all
+            self.assertEqual(store.writes, 3); self.assertIn('injected', logs[-1])
+            starts, labels, failures = self.execute(resume=self.record(attempt=1, profile='claude-opus', conversation='2'), completed_first=True, quota=False)
+            self.assertEqual(starts, []); self.assertTrue(labels)  # and a recorded fallback resumes as itself
+
+    def test_resumed_run_watches_the_recorded_conversation(self):
+        starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record())
+        self.assertEqual(starts, [])  # no new conversation
+        self.assertEqual(labels[-1][-2:], ('hands-reviewed', True)); self.assertFalse(failures)
+
+    def test_resumed_run_falls_back_once_after_a_quota_error(self):
+        # the recorded conversation ends in a quota error after the restart: the single fallback still applies
+        starts, labels, failures = self.execute(resume=self.record(), comment_after_calls=2)
+        self.assertEqual([s['agent_profile_id'] for s in starts], ['claude-opus'])
+        self.assertIn('single configured quota/rate-limit fallback: `codex-astra`', starts[0]['initial_message']['content'][0]['text'])
+        self.assertTrue(labels); self.assertFalse(failures)
+
+    def test_resumed_fallback_attempt_does_not_fall_back_again(self):
+        starts, labels, failures = self.execute(resume=self.record(attempt=1, profile='claude-opus', conversation='second'))
+        self.assertEqual(starts, []); self.assertFalse(labels)
+        self.assertIn('the single fallback also failed', failures[-1][2])
+
+    def test_resumed_run_keeps_its_head_and_deadline(self):
+        starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record(head='c' * 40))
+        self.assertEqual(starts, []); self.assertFalse(labels)  # the PR moved during the restart
+        self.assertIn('changed or closed', failures[-1][2])
+        starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record(deadline=time.time() - 1))
+        self.assertEqual(starts, []); self.assertFalse(labels)  # the recorded deadline had passed
+        self.assertIn('no review posted within', failures[-1][2])
+        # the recorded deadline rules, not the restarted service's WATCH_MINUTES: a timeout of 0 here still watches
+        starts, labels, failures = self.execute(quota=False, completed_first=True, timeout=True, resume=self.record(deadline=time.time() + 100))
+        self.assertEqual(starts, []); self.assertTrue(labels); self.assertFalse(failures)
+
+    def test_quota_fallback_completes_once(self):
+        starts, labels, failures = self.execute()
+        self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra', 'claude-opus'])
+        self.assertNotEqual(starts[0]['workspace'], starts[1]['workspace'])
+        message = starts[1]['initial_message']['content'][0]['text']
+        self.assertIn(HEAD, message); self.assertIn('single configured quota/rate-limit fallback', message)
+        self.assertNotIn('Reasoning profiles', starts[0]['initial_message']['content'][0]['text'])  # no secondary: the old prompt
+        self.assertNotIn('exhausted its usage allowance', message)
+        self.assertEqual(labels[-1][-2:], ('hands-reviewed', True)); self.assertFalse(failures)
+
+    REFS = {'api-deep': 'auto-review-deep', 'api-fast': 'auto-review-fast', 'api-alt': 'auto-review-alt'}
+
+    def test_combined_mode_starts_on_reading_profile_and_switches_to_primary(self):
+        starts, labels, failures = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs=self.REFS)
+        self.assertEqual([s['agent_profile_id'] for s in starts], ['api-fast', 'claude-opus'])
+        first = starts[0]['initial_message']['content'][0]['text']
+        self.assertIn('model=api-deep', first)  # the deep profile signs the review
+        self.assertIn('starts on LLM profile `auto-review-fast`', first)
+        self.assertIn('`switch_llm` tool with profile_name\n`auto-review-deep`', first)
+        second = starts[1]['initial_message']['content'][0]['text']
+        self.assertNotIn('switch_llm', second)  # an account-agent fallback cannot switch
+        self.assertIn('you are `claude-opus`', second); self.assertFalse(failures)
+
+    def test_combined_mode_completion_verifies_the_switch(self):
+        # the conversation ended on the deep profile: nothing to say
+        starts, labels, failures = self.execute(quota=False, completed_first=True, selected='api-deep', primary='api-deep', secondary='api-fast',
+                                                fallback=None, llm_refs=self.REFS, usage_id='profile:auto-review-deep')
+        self.assertTrue(labels); self.assertFalse(failures); self.assertEqual(self.notes, [])
+        self.assertTrue(any('switch verified' in l and '`auto-review-deep`' in l for l in self.logs))
+        self.assertTrue(any('start=api-fast agent-settings=api-fast' in l for l in self.logs))  # item 3: the ignored primary settings are visible
+        # it never left the reading profile (usage_id `default`, as observed): the review is labelled done,
+        # and the PR gets a note saying what wrote it
+        starts, labels, failures = self.execute(quota=False, completed_first=True, selected='api-deep', primary='api-deep', secondary='api-fast',
+                                                fallback=None, llm_refs=self.REFS, usage_id='default')
+        self.assertEqual(labels[-1][-2:], ('hands-reviewed', True)); self.assertFalse(failures)
+        self.assertEqual(len(self.notes), 1); note = self.notes[0][2]
+        self.assertIn('written on the reading LLM profile `auto-review-fast`, not on `auto-review-deep`', note)
+        self.assertTrue(any('review written off the primary' in l and 'reading LLM profile' in l for l in self.logs))
+        # a third profile is named as itself
+        self.execute(quota=False, completed_first=True, selected='api-deep', primary='api-deep', secondary='api-fast',
+                     fallback=None, llm_refs=self.REFS, usage_id='profile:elsewhere')
+        self.assertIn('written on LLM profile `profile:elsewhere`, not on `auto-review-deep`', self.notes[0][2])
+        # a note that cannot be posted, or a Canvas read that fails, never changes the outcome
+        for broken in ('note', 'read'):
+            starts, labels, failures = self.execute(quota=False, completed_first=True, selected='api-deep', primary='api-deep', secondary='api-fast',
+                                                    fallback=None, llm_refs=self.REFS, usage_id='default', break_after_completion=broken)
+            self.assertEqual(labels[-1][-2:], ('hands-reviewed', True)); self.assertFalse(failures)
+            self.assertTrue(any(l.startswith('switch check incomplete') for l in self.logs), self.logs)
+        # single-profile reviews are never checked
+        starts, labels, failures = self.execute(quota=False, completed_first=True, usage_id='profile:auto-review-fast')
+        self.assertTrue(labels); self.assertEqual(self.notes, []); self.assertFalse(any('switch' in l for l in self.logs))
+
+    def test_combined_mode_fallback_keeps_reading_profile_for_an_api_fallback(self):
+        # the conversation had switched to the deep profile when the limit hit: the deep model failed
+        for usage in ('profile:auto-review-deep', None):  # None: a server without the field keeps this behaviour
+            starts, _, failures = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='api-alt', llm_refs=self.REFS, usage_id=usage)
+            self.assertEqual([s['agent_profile_id'] for s in starts], ['api-fast', 'api-fast'])
+            second = starts[1]['initial_message']['content'][0]['text']
+            self.assertIn('`auto-review-alt`', second); self.assertIn('model=api-alt', second); self.assertFalse(failures)
+            self.assertIn('fallback: `api-deep` ended with a confirmed quota', second)
+
+    def test_combined_mode_limit_before_the_switch_falls_back_single_profile(self):
+        # the limit hit the reading profile itself (usage_id still `default`, as observed before any switch):
+        # the fallback must not start on it again, and the note names it
+        for usage in ('default', 'profile:auto-review-fast'):
+            starts, labels, failures = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='api-alt', llm_refs=self.REFS, usage_id=usage)
+            self.assertEqual([s['agent_profile_id'] for s in starts], ['api-fast', 'api-alt'])
+            second = starts[1]['initial_message']['content'][0]['text']
+            self.assertNotIn('Reasoning profiles', second); self.assertIn('model=api-alt', second)
+            self.assertIn('fallback: `api-fast` ended with a confirmed quota', second); self.assertTrue(labels); self.assertFalse(failures)
+        self.assertTrue(switched({'agent': {'llm': {'usage_id': 'profile:x'}}}, 'x'))
+        self.assertFalse(switched({'agent': {'llm': {'usage_id': 'default'}}}, 'x'))  # observed: no switch yet
+        self.assertFalse(switched({'agent': {'llm': {'usage_id': 'profile:y'}}}, 'x'))
+        self.assertTrue(switched({}, 'x'))  # a server without the field: the older assumption
+
+    def test_explicit_label_naming_the_primary_stays_single_profile(self):
+        starts, _, failures = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs=self.REFS, explicit=True)
+        self.assertEqual([s['agent_profile_id'] for s in starts], ['api-deep', 'claude-opus'])  # fallback still applies to the primary
+        self.assertNotIn('switch_llm', starts[0]['initial_message']['content'][0]['text']); self.assertFalse(failures)
+
+    def test_shared_llm_profile_stays_single_profile(self):
+        refs = dict(self.REFS, **{'api-fast': 'auto-review-deep'})  # two agent profiles, one LLM profile
+        starts, _, failures = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs=refs)
+        self.assertEqual(starts[0]['agent_profile_id'], 'api-deep'); self.assertNotIn('switch_llm', starts[0]['initial_message']['content'][0]['text']); self.assertFalse(failures)
+
+    def test_unreadable_settings_fail_the_default_request_with_the_reason(self):
+        starts, labels, failures = self.execute(settings_error=ValueError('Expecting value'))
+        self.assertFalse(starts); self.assertIn('settings file cannot be read', failures[-1][2]); self.assertIn('Auto Reviews', failures[-1][2])
+
+    def test_settings_problems_fail_or_degrade_the_default_request(self):
+        starts, _, failures = self.execute(problems={'primary': "agent profile 'codex-astra' no longer exists"})
+        self.assertFalse(starts); self.assertIn("agent profile 'codex-astra' no longer exists; select or clear the primary", failures[-1][2])
+        starts, _, failures = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs=self.REFS,
+                                           problems={'secondary': "agent profile 'api-fast' no longer exists"})
+        self.assertFalse(starts); self.assertIn('select or clear the secondary', failures[-1][2])
+        starts, _, failures = self.execute(problems={'fallback': "agent profile 'claude-opus' no longer exists"})
+        self.assertEqual(len(starts), 1); self.assertIn('quota', failures[-1][2]); self.assertNotIn('claude-opus', failures[-1][2])  # no fallback attempt on a missing fallback
+        starts, _, _ = self.execute(selected='claude-fable', problems={'primary': 'ignored for explicit labels'})
+        self.assertEqual(starts[0]['agent_profile_id'], 'claude-fable')
+
+    def test_unavailable_selected_profile_fails_with_the_reason(self):
+        starts, _, failures = self.execute(profile_info=lambda p: (_ for _ in ()).throw(KeyError('id')))
+        self.assertFalse(starts); self.assertIn('reviewer profile `codex-astra` is not available', failures[-1][2])
+        self.assertIn('Auto Reviews', failures[-1][2])
+
+    def test_unavailable_fallback_profile_fails_after_quota_with_the_reason(self):
+        starts, _, failures = self.execute(profile_info=lambda p: (_ for _ in ()).throw(KeyError('id')) if p == 'claude-opus' else (p, p))
+        self.assertEqual(len(starts), 1); self.assertIn('quota or rate limit reached; the fallback profile `claude-opus` is not available', failures[-1][2])
+
+    def test_unstartable_reading_profile_degrades_to_single_profile(self):
+        starts, _, failures = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs=self.REFS,
+                                           profile_info=lambda p: (_ for _ in ()).throw(KeyError('id')) if p == 'api-fast' else (p, p))
+        self.assertEqual(starts[0]['agent_profile_id'], 'api-deep'); self.assertNotIn('switch_llm', starts[0]['initial_message']['content'][0]['text']); self.assertFalse(failures)
+
+    def test_static_site_block_is_not_doubled(self):
+        starts, _, _ = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs=self.REFS,
+                                    prompt_text='Reasoning profiles: this conversation starts on LLM profile `x`\nmodel={model}')
+        text = starts[0]['initial_message']['content'][0]['text']
+        self.assertEqual(text.count('Reasoning profiles:'), 1); self.assertEqual(starts[0]['agent_profile_id'], 'api-deep')
+
+    def test_explicit_label_and_missing_refs_skip_combined_mode(self):
+        starts, _, _ = self.execute(selected='claude-fable', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs=self.REFS)
+        self.assertEqual(starts[0]['agent_profile_id'], 'claude-fable'); self.assertNotIn('switch_llm', starts[0]['initial_message']['content'][0]['text'])
+        starts, _, _ = self.execute(selected='api-deep', primary='api-deep', secondary='api-fast', fallback='claude-opus', llm_refs={})
+        self.assertEqual(starts[0]['agent_profile_id'], 'api-deep'); self.assertNotIn('switch_llm', starts[0]['initial_message']['content'][0]['text'])
+
+    def test_second_quota_stops(self):
+        starts, labels, failures = self.execute(both_fail=True)
+        self.assertEqual(len(starts), 2); self.assertFalse(labels); self.assertIn('fallback also failed', failures[0][-1])
+
+    def test_generic_error_does_not_fallback(self):
+        starts, labels, failures = self.execute(quota=False)
+        self.assertEqual(len(starts), 1); self.assertTrue(failures); self.assertFalse(labels)
+
+    def test_explicit_other_model_does_not_fallback(self):
+        starts, _, failures = self.execute(selected='claude-fable')
+        self.assertEqual(len(starts), 1); self.assertTrue(failures)
+
+    def test_changed_head_prevents_fallback(self):
+        starts, labels, failures = self.execute(changed=True)
+        self.assertEqual(len(starts), 1); self.assertFalse(labels); self.assertTrue(failures)
+
+    def test_finished_without_review_fails_at_once(self):
+        starts, labels, failures = self.execute(finished=True)
+        self.assertEqual(len(starts), 1); self.assertFalse(labels)
+        self.assertIn('finished without posting a review (conversation 1)', failures[-1][2]); self.assertIn('re-add the label', failures[-1][2])
+
+    def test_finished_with_the_comment_landing_late_completes(self):
+        # the agent posts, then finishes: the comment shows up on the re-check after 'finished', never a false failure
+        starts, labels, failures = self.execute(finished=True, comment_after_calls=2)
+        self.assertEqual(len(starts), 1); self.assertTrue(labels); self.assertFalse(failures)
+
+    def test_finished_with_the_comment_found_at_the_deadline_completes(self):
+        # deadline = 0 + 10; the loop was entered at t=0, the poll crossed the deadline, the fresh check finds the comment:
+        # completion must not depend on another loop iteration
+        starts, labels, failures = self.execute(finished=True, comment_after_calls=2, clock=iter([0, 0, 100, 100, 100, 100, 100]).__next__)
+        self.assertEqual(len(starts), 1); self.assertTrue(labels); self.assertFalse(failures)
+
+    def test_completed_review_wins_over_error(self):
+        starts, labels, failures = self.execute(completed_first=True)
+        self.assertEqual(len(starts), 1); self.assertTrue(labels); self.assertFalse(failures)
+
+    def test_timeout_does_not_retry(self):
+        starts, labels, failures = self.execute(timeout=True)
+        self.assertEqual(len(starts), 1); self.assertFalse(labels); self.assertTrue(failures)
+
+    def test_rejected_request_configuration_names_the_cause(self):
+        bad = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'LLMBadRequestError', 'detail': 'Upstream API error: 400',
+                          'classification': {'kind': 'config', 'retryable': False, 'user_action': 'settings'}}]}
+        self.assertEqual(config_error(bad), 'LLMBadRequestError'); self.assertIsNone(config_error(QUOTA))
+        self.assertEqual(config_error({'items': [{'kind': 'ConversationErrorEvent', 'code': 'Other', 'classification': {'kind': 'config'}}]}), 'Other')
+        starts, labels, failures = self.execute(quota=False, error_events=bad)
+        self.assertEqual(len(starts), 1); self.assertFalse(labels)  # no quota fallback for a rejected configuration
+        self.assertIn('rejected the request as configured (code LLMBadRequestError)', failures[-1][2]); self.assertIn('Auto Reviews', failures[-1][2])
+        self.assertNotIn('Upstream', failures[-1][2])  # the endpoint's own text never reaches the PR
+        stale = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'OtherError'}] + bad['items']}  # newest first: an older config error does not count
+        self.assertIsNone(config_error(stale))
+        # timestamps rule over position: the server's newest-first order is not strict
+        by_time = {'items': [dict(bad['items'][0], timestamp='2026-09-24T10:00:01'), {'kind': 'ConversationErrorEvent', 'code': 'OtherError', 'timestamp': '2026-09-24T10:00:02'},
+                             {'kind': 'MessageEvent', 'timestamp': '2026-09-24T10:00:03'}]}
+        self.assertIsNone(config_error(by_time)); self.assertFalse(limit_error(by_time))
+        by_time['items'][0]['timestamp'] = '2026-09-24T10:00:09'
+        self.assertEqual(config_error(by_time), 'LLMBadRequestError')
+        starts, labels, failures = self.execute(quota=False, error_events=stale)
+        self.assertEqual(len(starts), 1); self.assertIn('entered error state', failures[-1][2]); self.assertNotIn('rejected', failures[-1][2])
+
+    def test_next_page_reads_the_link_header(self):
+        github = ('<https://api.github.com/repositories/1/issues/2/comments?since=2015-01-01T00%3A00%3A00Z&page=2>; rel="next", '
+                  '<https://api.github.com/repositories/1/issues/2/comments?since=2015-01-01T00%3A00%3A00Z&page=6>; rel="last"')
+        self.assertEqual(next_page(github), 'https://api.github.com/repositories/1/issues/2/comments?since=2015-01-01T00%3A00%3A00Z&page=2')
+        self.assertIsNone(next_page('<https://example.test/x?page=1>; rel="prev", <https://example.test/x?page=6>; rel="last"'))
+        self.assertIsNone(next_page(None)); self.assertIsNone(next_page(''))
+        self.assertEqual(next_page('<https://g.test/a?page=2>;rel="next"'), 'https://g.test/a?page=2')  # no space after the semicolon
+        self.assertEqual(next_page(github, 'https://api.github.com'), 'https://api.github.com/repositories/1/issues/2/comments?since=2015-01-01T00%3A00%3A00Z&page=2')
+        self.assertIsNone(next_page(github, 'https://forge.example/api/v1'))  # another host never receives the token
+
+    def test_recovered_head_after_restart(self):
+        review = {'user': {'login': 'hands-bot'}, 'body': f'[hands-bot review] reviewed at head {HEAD}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}
+        seen = []
+        def api_for(state='open', comments=(review,), head=HEAD):
+            def api(path):
+                seen.append(path)
+                if '/pulls/' in path: return {'state': state, 'head': {'sha': head}}
+                return list(comments)
+            return api
+        self.assertEqual(recovered_head(api_for(), 'o/r', 1, '[hands-bot review]', 'hands-bot'), HEAD)
+        self.assertIn('since=', seen[-1])  # only the watch window is read
+        self.assertIsNone(recovered_head(api_for(comments=()), 'o/r', 1, '[hands-bot review]', 'hands-bot'))  # nothing posted: the run is lost
+        self.assertIsNone(recovered_head(api_for(head='c' * 40), 'o/r', 1, '[hands-bot review]', 'hands-bot'))  # a review for an older head does not count
+        self.assertIsNone(recovered_head(api_for(state='closed'), 'o/r', 1, '[hands-bot review]', 'hands-bot'))
+        self.assertIsNone(recovered_head(api_for(), 'o/r', 1, '[hands-bot review]', 'someone-else'))  # a comment by another user does not count
+        self.assertEqual(recovered_head(api_for(), 'o/r', 1, '[hands-bot review]', None), HEAD)  # forges where the poster is the PAT owner
+
+    def test_only_structured_server_error_triggers_fallback(self):
+        self.assertTrue(limit_error(QUOTA))
+        for kind in ['MessageEvent', 'ACPToolCallEvent']:
+            self.assertFalse(limit_error({'items': [dict(QUOTA['items'][0], kind=kind)]}))
+        self.assertFalse(limit_error({'items': [{'kind': 'ConversationErrorEvent', 'code': 'OtherError'}] + QUOTA['items']}))
+
+    def test_api_rate_limit_and_quota_each_trigger_one_fallback(self):
+        for code in ['RateLimitError', 'LLMRateLimitError', 'QuotaExceededError']:
+            with self.subTest(code=code):
+                starts, labels, failures = self.execute(error_events={'items': [
+                    {'kind': 'ConversationErrorEvent', 'code': code, 'detail': 'provider rejected request'}]})
+                self.assertEqual(len(starts), 2)
+                self.assertTrue(labels)
+                self.assertFalse(failures)
+                self.assertNotIn('exhausted its usage allowance', starts[1]['initial_message']['content'][0]['text'])
+
+    def test_generic_error_prose_does_not_confirm_a_limit(self):
+        starts, labels, failures = self.execute(error_events={'items': [
+            {'kind': 'ConversationErrorEvent', 'code': 'LLMError', 'detail': 'rate limit or quota may be exhausted'}]})
+        self.assertEqual(len(starts), 1)
+        self.assertFalse(labels)
+        self.assertTrue(failures)
+
+    def test_completion_requires_head_and_verdict(self):
+        self.assertFalse(valid_review({'body': '[hands-bot review] failed'}, '[hands-bot review]', HEAD))
+        self.assertFalse(valid_review({'body': '[hands-bot review] reviewed at head bbbbbbb\nVERDICT\nREADY_FOR_HUMAN_MERGE'}, '[hands-bot review]', HEAD))
+        self.assertFalse(valid_review({'body': f'[hands-bot review] reviewed at head {HEAD}\nVERDICT\nREVIEW_COULD_NOT_RUN'}, '[hands-bot review]', HEAD))
+
+
+if __name__ == '__main__': unittest.main()

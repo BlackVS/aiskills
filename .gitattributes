@@ -1,0 +1,8 @@
+# Keep the set usable from both Linux and Windows checkouts.
+# Bash refuses CRLF scripts, and mixed endings make every diff noisy, so force
+# LF for scripts and markdown regardless of the committer's core.autocrlf.
+*               text=auto
+*.sh            text eol=lf
+*.md            text eol=lf
+*.ps1           text
+# No binary files are expected in this repo.

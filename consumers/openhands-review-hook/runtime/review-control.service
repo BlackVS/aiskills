@@ -1,0 +1,14 @@
+[Unit]
+Description=Auto Reviews configuration API
+After=network-online.target
+[Service]
+EnvironmentFile=/opt/openhands/canvas.env
+EnvironmentFile=-/opt/openhands/hooks/review.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/openhands/hooks/review_control.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target

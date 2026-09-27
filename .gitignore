@@ -1,0 +1,29 @@
+# Local secrets: never commit these
+.creds/
+
+# Local temporary scripts and private working artifacts
+/.work/
+
+# The operator's own aimem binding (hub and project) for this checkout.
+# It is meaningless on anyone else's machine.
+.aimem.json
+
+# aimem's session handoff. It carries in-flight operational state, and this
+# repository is public, so it stays local.
+docs/SESSION-STATE.md
+
+# Python and test artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node artifacts
+node_modules/
+
+# Per-user Claude Code settings
+.claude/settings.local.json
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp

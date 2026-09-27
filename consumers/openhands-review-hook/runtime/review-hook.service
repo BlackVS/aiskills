@@ -1,0 +1,12 @@
+[Unit]
+Description=Gitea review-this label webhook for OpenHands
+After=network-online.target docker.service
+[Service]
+EnvironmentFile=/opt/openhands/hooks/hooks.env
+EnvironmentFile=/opt/openhands/canvas.env
+EnvironmentFile=-/opt/openhands/hooks/review.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/openhands/hooks/review_hook.py
+Restart=always
+[Install]
+WantedBy=multi-user.target

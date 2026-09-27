@@ -1,0 +1,3 @@
+https://github.com/OpenHands/extensions @ 8d3919b (2026-09-04), copied 2026-09-05.
+oh-improve-agent-readiness added and the readiness skills' references/criteria.md restored (upstream stores it as a symlink to plugins/onboarding/references/criteria.md) from the same commit, 2026-09-05.
+oh-qa-changes and oh-learn-from-code-review copied from upstream @ 56671df (2026-09-10), adapted (host-agnostic posting; Gitea-first + custom-codereview-guide integration for learn-from-code-review); upstream .claude-plugin/.codex-plugin symlinks and commands/ stubs not carried, as before.

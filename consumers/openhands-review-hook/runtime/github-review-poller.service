@@ -1,0 +1,13 @@
+[Unit]
+Description=GitHub review-this label poller for OpenHands
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+EnvironmentFile=/opt/openhands/canvas.env
+EnvironmentFile=-/opt/openhands/hooks/review.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/openhands/hooks/github_review_poller.py
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

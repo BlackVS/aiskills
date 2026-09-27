@@ -1,0 +1,153 @@
+import json
+import os
+import tempfile
+from pathlib import Path
+import threading
+import unittest
+import urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
+
+from canvas_discovery import api_models, session_models, probe, server_environment, split_codex_model, effort_options, normalize_effort, profile_name, _stem, bare_model, model_string, effort_body
+from reasoning_profiles import block
+
+
+class DiscoveryTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'posix', 'server_environment resolves container (POSIX) paths')
+    def test_server_environment_uses_running_cipher_and_rejects_ambiguity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = root / '11'; process.mkdir(); (process / 'cwd').mkdir()
+            (process / 'cmdline').write_bytes(b'openhands-agent-server\0--port\018000')
+            (process / 'environ').write_bytes(b'OH_SECRET_KEY=test-only-secret\0OH_PERSISTENCE_DIR=/tmp/test-store\0UNRELATED_SECRET=do-not-copy')
+            config = server_environment(root)
+            self.assertEqual(config['OH_SECRET_KEY'], 'test-only-secret')
+            self.assertEqual(config['OH_PERSISTENCE_DIR'], '/tmp/test-store')
+            self.assertNotIn('UNRELATED_SECRET', config)
+            (process / 'environ').write_bytes(b'OH_PERSISTENCE_DIR=/tmp/test-store')
+            with self.assertRaises(ValueError): server_environment(root)
+            (process / 'environ').write_bytes(b'OH_SECRET_KEY=one')
+            second = root / '23'; second.mkdir(); (second / 'cwd').mkdir()
+            (second / 'cmdline').write_bytes(b'openhands-agent-server\0')
+            (second / 'environ').write_bytes(b'OH_SECRET_KEY=two')
+            with self.assertRaises(ValueError): server_environment(root)
+
+    def test_acp_config_and_legacy_model_lists(self):
+        self.assertEqual(session_models({'configOptions': [{'id': 'model', 'options': [
+            {'value': 'one', 'name': 'One'}, {'name': 'Group', 'options': [{'value': 'two', 'name': 'Two'}]}]}]}),
+            [{'id': 'one', 'label': 'One'}, {'id': 'two', 'label': 'Two'}])
+        self.assertEqual(session_models({'models': {'availableModels': [{'modelId': 'three', 'name': 'Three'}]}}),
+            [{'id': 'three', 'label': 'Three'}])
+        with self.assertRaises(ValueError): session_models({})
+
+    def test_provider_discovery_and_redirect_does_not_forward_key(self):
+        received = []
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                received.append((self.path, self.headers.get('Authorization')))
+                if self.path == '/redirect/models':
+                    self.send_response(302)
+                    self.send_header('Location', '/stolen')
+                    self.end_headers()
+                else:
+                    self.send_response(200); self.end_headers()
+                    self.wfile.write(json.dumps({'data': [{'id': 'b'}, {'id': 'a'}, {'id': 'b'}]}).encode())
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}'
+        try:
+            self.assertEqual([m['id'] for m in api_models(url, 'test-secret')], ['a', 'b'])
+            with self.assertRaises(urllib.error.HTTPError): api_models(url + '/redirect', 'test-secret')
+            self.assertEqual(received, [('/models', 'Bearer test-secret'), ('/redirect/models', 'Bearer test-secret')])
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def test_probe_reports_safe_errors_without_provider_body(self):
+        import io
+        for code, text in [(401, 'Authentication rejected'), (403, 'Authentication rejected'), (429, 'rate-limiting'), (302, 'redirects'), (404, 'not found')]:
+            error = urllib.error.HTTPError('https://example.com', code, 'secret body', {}, io.BytesIO(b'private-token'))
+            with patch('canvas_discovery.api_models', side_effect=error):
+                result = probe({'base_url': 'https://example.com', 'api_key': 'private-token'})
+            self.assertFalse(result['ok'])
+            self.assertIn(text, result['message'])
+            self.assertNotIn('private-token', json.dumps(result))
+            self.assertNotIn('secret body', json.dumps(result))
+        with patch('canvas_discovery.api_models', return_value=[]):
+            self.assertFalse(probe({'base_url': 'https://example.com', 'api_key': 'key'})['ok'])
+
+    def test_probe_existing_and_unsaved_connections_are_read_only(self):
+        from types import SimpleNamespace
+        models = [{'id': 'one', 'label': 'One'}]
+        with patch('canvas_discovery.discover', return_value={'models': models}):
+            self.assertEqual(probe({'provider': 'connection:one'}), {'ok': True, 'models': models})
+        with patch('canvas_discovery.api_models', return_value=models) as query:
+            self.assertTrue(probe({'base_url': 'https://example.com', 'api_key': 'new-key'})['ok'])
+            query.assert_called_with('https://example.com', 'new-key')
+            connection = SimpleNamespace(api_key_value=lambda: 'saved-key')
+            with patch('canvas_discovery.stores') as stores:
+                stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
+                self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://other.example'})['ok'])
+                query.assert_called_with('https://other.example', 'saved-key')
+                self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://other.example', 'api_key': 'replacement'})['ok'])
+                query.assert_called_with('https://other.example', 'replacement')
+
+    def test_effort_helpers(self):
+        self.assertEqual(split_codex_model('gpt-6-astra/xhigh'), ('gpt-6-astra', 'xhigh'))
+        self.assertEqual(split_codex_model('gpt-6-astra'), ('gpt-6-astra', None))
+        self.assertEqual(split_codex_model('vendor/model'), ('vendor/model', None))  # unknown suffix is part of the id
+        self.assertEqual(effort_options('acp:codex'), ['low', 'medium', 'high', 'xhigh'])
+        self.assertEqual(effort_options('acp:claude-code'), [])
+        self.assertIn('max', effort_options('connection:x'))
+        self.assertEqual(normalize_effort('connection:x', None), 'high')
+        self.assertEqual(normalize_effort('acp:codex', None), None)
+        self.assertEqual(normalize_effort('acp:codex', 'xhigh'), 'xhigh')
+        for provider, effort in [('acp:codex', 'ultra'), ('acp:claude-code', 'high'), ('connection:x', 'turbo'), ('connection:x', 5)]:
+            with self.subTest(provider=provider, effort=effort), self.assertRaises(ValueError): normalize_effort(provider, effort)
+        text = block('fast', 'deep')
+        self.assertIn('starts on LLM profile `fast`', text); self.assertIn('profile_name\n`deep`', text)
+        for reading, deep in [('same', 'same'), ('', 'deep'), ('fast', None)]:
+            with self.assertRaises(ValueError): block(reading, deep)
+        # Drift guard: the site that renders this contract statically must carry the same prose.
+        site = json.loads((Path(__file__).resolve().parent.parent / 'sites' / 'site-b-gitea.json').read_text(encoding='utf-8'))
+        self.assertEqual(block('astra-high', 'astra').strip(), site['REASONING_PROFILES'].strip())
+
+    def test_model_strings_use_the_proxy_prefix_for_custom_endpoints(self):
+        self.assertEqual(model_string('gpt-6-astra', proxied=True), 'litellm_proxy/gpt-6-astra')
+        self.assertEqual(model_string('gpt-6-astra', proxied=False), 'openai/gpt-6-astra')
+        for saved in ('litellm_proxy/gpt-6-astra', 'openai/gpt-6-astra', 'gpt-6-astra'):
+            self.assertEqual(bare_model(saved), 'gpt-6-astra')
+        self.assertEqual(bare_model('vendor/model'), 'vendor/model')  # unknown prefixes are part of the id
+        self.assertEqual(effort_body('high', proxied=True), {'reasoning_effort': 'high'})
+        self.assertEqual((effort_body('high', proxied=False), effort_body(None, proxied=True)), ({}, {}))
+
+    def test_profile_names_are_readable_unique_and_legal(self):
+        self.assertEqual(profile_name('gpt-5-6-sol', 'max', False, set()), 'review-gpt-5-6-sol-max')
+        self.assertEqual(profile_name('gpt-5-6-sol', 'low', True, set()), 'review-gpt-5-6-sol-low-reading')
+        self.assertEqual(profile_name('opus[1m]', None, False, set()), 'review-opus-1m')
+        self.assertEqual([_stem(e) for e in ('CC-gpt-5.6-sol', 'CC-gpt-5.6-sol.json', 'a.json.json')], ['CC-gpt-5.6-sol', 'CC-gpt-5.6-sol', 'a.json'])
+        self.assertEqual(profile_name('gpt-6-astra', 'xhigh', False, {'review-gpt-6-astra-xhigh', 'review-gpt-6-astra-xhigh-2'}), 'review-gpt-6-astra-xhigh-3')
+        legal = __import__('re').compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
+        for model in ('a' * 80, '../../etc', '[[]]', 'GPT-4.1 mini', 'x/y'):
+            with self.subTest(model=model):
+                name = profile_name(model, 'xhigh', True, {f'review-{model}-xhigh-reading'})
+                self.assertTrue(legal.fullmatch(name), name); self.assertLessEqual(len(name), 64)
+
+    def test_invalid_provider_urls(self):
+        for url in ['file:///etc/passwd', 'https://user:pass@example.com', 'https://example.com?key=x']:
+            with self.assertRaises(ValueError): api_models(url, 'test-secret')
+
+    def test_control_passes_only_metadata_and_suppresses_subprocess_errors(self):
+        import review_control
+        with patch('review_control.subprocess.run') as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = '{"models": []}'
+            self.assertEqual(review_control.discovery('models', provider='acp:codex'), {'models': []})
+            self.assertEqual(json.loads(run.call_args.kwargs['input']), {'action': 'models', 'provider': 'acp:codex'})
+            run.return_value.returncode = 1
+            run.return_value.stdout = 'secret data'
+            with self.assertRaisesRegex(OSError, '^Canvas discovery failed$'):
+                review_control.discovery('inventory')
+
+
+if __name__ == '__main__': unittest.main()

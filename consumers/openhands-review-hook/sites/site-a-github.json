@@ -1,0 +1,8 @@
+{
+  "FORGE_URL": "https://github.com",
+  "HANDS_URL": "https://hands.example.com",
+  "SKILL_SOURCE": "git clone https://github.com/BlackVS/aiskills.git and read\naiskills/skills/oh-code-review/SKILL.md.",
+  "CLONE_AND_FETCH": "git clone https://github.com/{repo}.git (credentials are preconfigured),\ngit fetch origin refs/pull/{num}/head and diff it against the PR base\nbranch (gh pr view {num} --repo {repo} --json baseRefName shows it). Earlier\ncomments: gh pr view {num} --repo {repo} --comments.",
+  "POST_COMMAND": "gh pr comment {num} --repo {repo} --body-file review.md (gh is installed\nand logged in).",
+  "REASONING_PROFILES": ""
+}
