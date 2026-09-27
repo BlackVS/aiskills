@@ -159,7 +159,7 @@ def opencode1(bins, home, cwd):
     return skills, set((config.get("command") or {}).keys())
 
 
-def opencode2(bins, home, cwd, port):
+def opencode2(bins, home, cwd, port, skills, commands=()):
     log = home / f"opencode-serve-{port}.log"
     with open(log, "w") as out:
         p = subprocess.Popen([bins["opencode2"], "serve", "--port", str(port)], cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
@@ -177,15 +177,17 @@ def opencode2(bins, home, cwd, port):
         def get(path):
             req = urllib.request.Request(f"http://127.0.0.1:{port}{path}?location%5Bdirectory%5D={cwd}", headers={"Authorization": auth})
             return json.load(opener.open(req, timeout=30))["data"]
-        # the catalog loads in the background: poll until the count stops changing
-        prev, skills = -1, []
-        for _ in range(30):
-            skills = get("/api/skill")
-            if skills and len(skills) == prev:
-                break
-            prev = len(skills)
-            time.sleep(2)
-        return {s["id"] for s in skills}, {c["name"] for c in get("/api/command")}
+        def catalog(path, key, wanted):
+            # each catalog loads in the background, built-ins first: poll until what we
+            # expect is there or a minute has passed (then the check reports what is missing)
+            found = set()
+            for _ in range(30):
+                found = {item[key] for item in get(path)}
+                if set(wanted) <= found:
+                    break
+                time.sleep(2)
+            return found
+        return catalog("/api/skill", "id", skills), catalog("/api/command", "name", commands)
     finally:
         os.killpg(p.pid, signal.SIGTERM)
         p.wait(timeout=30)
@@ -255,7 +257,7 @@ def main():
     skills, commands = opencode1(bins, oc1_home, empty)
     expect("opencode 1.x", "user", "skills", skills, every)
     expect("opencode 1.x", "user", "prompts as commands", commands, prompts)
-    skills, commands = opencode2(bins, oc2_home, empty, 47401)
+    skills, commands = opencode2(bins, oc2_home, empty, 47401, every, prompts)
     expect("opencode v2", "user", "skills", skills, every)
     expect("opencode v2", "user", "prompts as commands", commands, prompts)
     check("opencode", "user", "gates block in ~/.config/opencode/AGENTS.md", MARKER in text(home / ".config/opencode/AGENTS.md"))
@@ -270,7 +272,7 @@ def main():
         home = fresh_home(work, f"home-claude-{key}")
         boot(home, archive, "--user", "-t", "claude", "-s", "core")
         check("installer", "claude", "no ~/.agents for a Claude-only install", not (home / ".agents").exists())
-        skills = opencode1(bins, home, empty)[0] if port is None else opencode2(bins, home, empty, port)[0]
+        skills = opencode1(bins, home, empty)[0] if port is None else opencode2(bins, home, empty, port, CORE)[0]
         expect("opencode 1.x" if port is None else "opencode v2", "claude", "skills from ~/.claude/skills", skills, CORE)
 
     # project: seen from inside the repository
@@ -287,7 +289,7 @@ def main():
     for h in (oc1_home, oc2_home):
         shutil.rmtree(h, ignore_errors=True); shutil.copytree(home, h, symlinks=True)
     expect("opencode 1.x", "project", "skills", opencode1(bins, oc1_home, repo)[0], CORE)
-    expect("opencode v2", "project", "skills", opencode2(bins, oc2_home, repo, 47403)[0], CORE)
+    expect("opencode v2", "project", "skills", opencode2(bins, oc2_home, repo, 47403, CORE)[0], CORE)
     expect("gemini", "project", "skills", gemini_skills(bins, home, repo), CORE)
     memory = gemini_memory(bins, home, repo, repo / "GEMINI.md")
     size = len(text(repo / "GEMINI.md"))
