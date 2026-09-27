@@ -24,7 +24,7 @@ unreachable address with a dummy key), `codex debug prompt-input`, OpenCode
 `/api/command`), `gemini skills list` and Gemini CLI's memory discovery log.
 It exits non-zero when any check fails.
 """
-import argparse, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, threading, time, urllib.request
+import argparse, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CLIENTS = {  # key: (npm package, executable inside the prefix)
@@ -168,6 +168,11 @@ def opencode1(bins, home, cwd, env=None):
     return skills, set((config.get("command") or {}).keys())
 
 
+def catalog_url(port, path, directory):
+    """An OpenCode v2 API URL scoped to a directory; the path may hold spaces, & or #."""
+    return f"http://127.0.0.1:{port}{path}?" + urllib.parse.urlencode({"location[directory]": str(directory)})
+
+
 def opencode2(bins, home, cwd, port, skills, commands=(), env=None):
     log = home / f"opencode-serve-{port}.log"
     with open(log, "w") as out:
@@ -184,7 +189,7 @@ def opencode2(bins, home, cwd, port, skills, commands=(), env=None):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         auth = "Basic " + __import__("base64").b64encode(f"opencode:{password}".encode()).decode()
         def get(path):
-            req = urllib.request.Request(f"http://127.0.0.1:{port}{path}?location%5Bdirectory%5D={cwd}", headers={"Authorization": auth})
+            req = urllib.request.Request(catalog_url(port, path, cwd), headers={"Authorization": auth})
             return json.load(opener.open(req, timeout=30))["data"]
         def catalog(path, key, wanted):
             # each catalog loads in the background, built-ins first: poll until what we

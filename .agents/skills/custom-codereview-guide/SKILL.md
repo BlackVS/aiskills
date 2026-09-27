@@ -21,6 +21,14 @@ repository conventions that decide dispositions here.
   the host, with the session key from the service environment, never printed.
 - Nothing internal (private hostnames, hub or backend names, credential paths)
   goes into a review comment.
+- The 7-day rule for new dependency versions (`oh-code-review`, supply-chain
+  check) applies to what ships to users: code the installers copy and the
+  Python the review-hook consumer runs. It does not apply to the agent clients
+  that `.github/check-clients.py` pins or that its weekly run takes at
+  `@latest`: they are the subjects of that check, installed only on a
+  disposable CI runner with read-only permissions and no model credentials,
+  and checking current releases is the job's purpose. A fresh client pin is
+  not a finding. (Owner decision, 2026-09-27, on the 1.23.0 pull request.)
 
 ## Observed runtime contracts (reference site)
 
