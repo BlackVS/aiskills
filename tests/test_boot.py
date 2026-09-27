@@ -77,6 +77,152 @@ class BashBoot(BootContract, unittest.TestCase):
         self.assertFalse((self.home / ".claude").exists())
 
 
+FAKE_CURL = r"""#!/bin/sh
+# Records each call. A HEAD request (-fsSI) answers with FAKE_LOCATION (none when
+# empty); an API request (-w) writes FAKE_API_BODY to its -o file and prints
+# FAKE_API_STATUS (000: a transport failure); anything else streams FAKE_ARCHIVE.
+echo "$*" >> "$FAKE_LOG"
+out=; head=0; api=0
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out=$2; shift ;; -fsSI) head=1 ;; -w) api=1; shift ;; esac
+  shift
+done
+if [ $head = 1 ]; then
+  printf 'HTTP/2 302\r\n'; [ -z "$FAKE_LOCATION" ] || printf 'location: %s\r\n' "$FAKE_LOCATION"; printf '\r\n'
+elif [ $api = 1 ]; then
+  printf '%s' "$FAKE_API_BODY" > "$out"; printf '%s' "$FAKE_API_STATUS"
+  [ "$FAKE_API_STATUS" != 000 ] || exit 7
+else
+  cat "$FAKE_ARCHIVE"
+fi
+"""
+
+
+@unittest.skipUnless(BASH and os.name != "nt", "needs a POSIX bash to put a fake curl on PATH")
+class BashBootRelease(unittest.TestCase):
+    """Without AI_SKILLS_REF the one-liner installs the latest release, main only when
+    there is none, and stops when the lookup fails."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-boot-rel-"))
+        self.home = self.tmp / "home"; self.home.mkdir()
+        self.bin = self.tmp / "bin"; self.bin.mkdir()
+        (self.bin / "curl").write_text(FAKE_CURL); (self.bin / "curl").chmod(0o755)
+        self.archive = build_archive(self.tmp); self.log = self.tmp / "curl.log"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_boot(self, location="", ok=True, **extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("AI_SKILLS_")}
+        env.update(HOME=str(self.home), PATH=f"{self.bin}:{env['PATH']}", FAKE_LOG=str(self.log),
+                   FAKE_ARCHIVE=str(self.archive), FAKE_LOCATION=location, **extra)
+        r = subprocess.run([BASH, str(ROOT / "boot.sh"), "--user", "-s", "core"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
+        return r, self.log.read_text().splitlines()
+
+    def assert_stopped(self, r, calls):
+        self.assertIn("could not look up the latest release", r.stderr)
+        self.assertEqual(len(calls), 1, "no archive is downloaded after a failed lookup")
+        self.assertFalse((self.home / ".claude").exists())
+
+    def test_latest_release_is_installed(self):
+        r, calls = self.run_boot("https://github.com/BlackVS/aiskills/releases/tag/v9.9.9")
+        self.assertIn("https://github.com/BlackVS/aiskills/releases/latest", calls[0])
+        self.assertIn("https://github.com/BlackVS/aiskills/archive/v9.9.9.tar.gz", calls[1])
+        self.assertTrue((self.home / ".claude/skills/oh-code-review/SKILL.md").is_file())
+
+    def test_no_release_falls_back_to_main(self):
+        r, calls = self.run_boot("https://github.com/BlackVS/aiskills/releases")
+        self.assertIn("No release of BlackVS/aiskills found: installing main.", r.stdout)
+        self.assertIn("/archive/main.tar.gz", calls[1])
+
+    def test_unexpected_redirect_stops(self):
+        for location in ("", "https://github.com/login"):
+            with self.subTest(location=location):
+                self.log.unlink(missing_ok=True)
+                self.assert_stopped(*self.run_boot(location, ok=False))
+
+    def test_explicit_ref_skips_the_lookup(self):
+        r, calls = self.run_boot("unused", AI_SKILLS_REF="v1.0.0")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("/archive/v1.0.0.tar.gz", calls[0])
+
+    def test_token_latest_release(self):
+        r, calls = self.run_boot(AI_SKILLS_TOKEN="t", FAKE_API_STATUS="200", FAKE_API_BODY='{"tag_name":"v9.9.9"}')
+        self.assertIn("https://api.github.com/repos/BlackVS/aiskills/releases/latest", calls[0])
+        self.assertIn("https://api.github.com/repos/BlackVS/aiskills/tarball/v9.9.9", calls[1])
+
+    def test_token_no_release_falls_back_to_main(self):
+        r, calls = self.run_boot(AI_SKILLS_TOKEN="t", FAKE_API_STATUS="404", FAKE_API_BODY='{"message":"Not Found"}')
+        self.assertIn("No release of BlackVS/aiskills found: installing main.", r.stdout)
+        self.assertIn("/tarball/main", calls[1])
+
+    def test_token_lookup_error_stops(self):
+        for status in ("000", "401", "403", "500"):
+            with self.subTest(status=status):
+                self.log.unlink(missing_ok=True)
+                self.assert_stopped(*self.run_boot(ok=False, AI_SKILLS_TOKEN="t", FAKE_API_STATUS=status, FAKE_API_BODY="{}"))
+        self.log.unlink(missing_ok=True)
+        self.assert_stopped(*self.run_boot(ok=False, AI_SKILLS_TOKEN="t", FAKE_API_STATUS="200", FAKE_API_BODY="{}"))
+
+
+# PowerShell 7 (pwsh) builds the HTTP error the way Invoke-RestMethod raises it there.
+PWSH7 = shutil.which("pwsh")
+FAKE_PS = r"""
+function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $Headers)
+    Add-Content -LiteralPath $env:FAKE_LOG "download $Uri"; Copy-Item -LiteralPath $env:FAKE_ARCHIVE $OutFile }
+function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing, $Headers)
+    Add-Content -LiteralPath $env:FAKE_LOG "api $Uri"
+    $status = [int]$env:FAKE_API_STATUS
+    if ($status -eq 0) { throw [System.Net.Http.HttpRequestException]::new('connection refused') }
+    if ($status -ne 200) { throw [Microsoft.PowerShell.Commands.HttpResponseException]::new("HTTP $status", [System.Net.Http.HttpResponseMessage]::new($status)) }
+    $env:FAKE_API_BODY | ConvertFrom-Json }
+"""
+
+
+@unittest.skipUnless(PWSH7, "no pwsh found")
+class PowerShellBootRelease(unittest.TestCase):
+    """The authenticated lookup of boot.ps1: 404 means no release, any other failure stops."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-boot-rel-"))
+        self.home = self.tmp / "home"; self.home.mkdir()
+        self.archive = build_archive(self.tmp); self.log = self.tmp / "calls.log"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_boot(self, status, body="{}", ok=True):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("AI_SKILLS_")}
+        env.update(AI_SKILLS_TOKEN="t", AI_SKILLS_ARGS="-User -Skills core", FAKE_LOG=str(self.log),
+                   FAKE_ARCHIVE=str(self.archive), FAKE_API_STATUS=status, FAKE_API_BODY=body)
+        script = f"Set-Variable -Name HOME -Value '{self.home}' -Force; " + FAKE_PS + "; & '" + str(ROOT / "boot.ps1") + "'"
+        r = subprocess.run([PWSH7, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
+        return r, self.log.read_text().splitlines()
+
+    def test_latest_release(self):
+        r, calls = self.run_boot("200", '{"tag_name":"v9.9.9"}')
+        self.assertEqual(calls, ["api https://api.github.com/repos/BlackVS/aiskills/releases/latest",
+                                 "download https://api.github.com/repos/BlackVS/aiskills/tarball/v9.9.9"])
+
+    def test_no_release_falls_back_to_main(self):
+        r, calls = self.run_boot("404")
+        self.assertIn("No release of BlackVS/aiskills found: installing main.", r.stdout)
+        self.assertEqual(calls[1], "download https://api.github.com/repos/BlackVS/aiskills/tarball/main")
+
+    def test_lookup_error_stops(self):
+        for status, body in (("0", "{}"), ("401", "{}"), ("500", "{}"), ("200", "{}")):
+            with self.subTest(status=status):
+                self.log.unlink(missing_ok=True)
+                r, calls = self.run_boot(status, body, ok=False)
+                self.assertIn("could not look up the latest release", r.stdout + r.stderr)
+                self.assertEqual(len(calls), 1, "no archive is downloaded after a failed lookup")
+                self.assertFalse((self.home / ".claude").exists())
+
+
 @unittest.skipUnless(PWSH, "no PowerShell found")
 class PowerShellBoot(BootContract, unittest.TestCase):
     def run_boot(self, args=None, archive=None):

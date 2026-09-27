@@ -50,9 +50,10 @@ Windows (PowerShell):
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex"
 ```
 
-Either line fetches the `main` archive into a temporary directory, runs the
-real installer from it, prints the installed version and cleans up. Run it
-again to upgrade. With no flags it installs user-wide with `--user -s all -p
+Either line fetches the archive of the latest
+[release](https://github.com/BlackVS/aiskills/releases) (`main` while there is
+none) into a temporary directory, runs the real installer from it, prints the
+installed version and cleans up. Run it again to upgrade to a newer release. With no flags it installs user-wide with `--user -s all -p
 -a`: every skill and the prompts for Claude Code (`~/.claude`) and Codex
 (`~/.agents`), plus the review-gates block in the agent instructions. Any
 other combination is the installer's own flags, passed with `bash -s --` on
@@ -80,7 +81,8 @@ $env:AI_SKILLS_ARGS = 'C:\path\to\project -Tool codex -Skills all'; irm $B | iex
 that contains spaces inside `AI_SKILLS_ARGS`.) Project-level installs are
 committed with the project, so every clone and every client on it sees the
 same skills; user-level installs follow the person across projects.
-`AI_SKILLS_REF=<tag or commit>` pins a version; `AI_SKILLS_REPO=<owner/name>`
+`AI_SKILLS_REF=<tag or commit>` pins a version, and `AI_SKILLS_REF=main`
+installs unreleased work; `AI_SKILLS_REPO=<owner/name>`
 installs from a fork, with `AI_SKILLS_TOKEN` for a private one;
 `AI_SKILLS_BASE=<url>` downloads from a Gitea mirror instead of GitHub. If the
 Windows form fails with an empty-string error for `Command`, the download
@@ -122,9 +124,40 @@ links to.
 
 | Platform | Installer | User-level destinations | Status |
 | --- | --- | --- | --- |
-| Linux | `install.sh` | `~/.claude/skills`, `~/.agents/skills` | exercised (tests in `tests/test_install.py`) |
-| Windows | `install.ps1` (PowerShell 5.1+) or `install.sh` under Git Bash | `%USERPROFILE%\.claude\skills`, `%USERPROFILE%\.agents\skills` | exercised; Codex 0.156 lists the installed skills |
-| macOS | `install.sh` | same as Linux | expected to work, not yet exercised |
+| Linux | `install.sh` | `~/.claude/skills`, `~/.agents/skills` | exercised (tests in `tests/test_install.py`, CI on `ubuntu-latest`) |
+| Windows | `install.ps1` (PowerShell 5.1+) or `install.sh` under Git Bash | `%USERPROFILE%\.claude\skills`, `%USERPROFILE%\.agents\skills` | exercised (CI on `windows-latest`, one-liner under Windows PowerShell 5.1); Codex 0.156 lists the installed skills |
+| macOS | `install.sh` | same as Linux | exercised in CI (tests and the one-liner on `macos-latest`) |
+
+### Cloud agents (Claude Code on the web, other hosted sessions)
+
+A cloud session starts from a fresh container, so a user-level install from
+an earlier session is gone. Put the one-liner in the environment's setup
+script (for Claude Code on the web: the environment's settings, *Setup
+script*), which runs before the session starts, so the skills are in
+`~/.claude/skills` and `~/.agents/skills` when the agent loads them:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.sh | bash
+```
+
+Every session in that environment then has the skills, whichever repository it
+works on. The alternative is a project-level install committed to the
+repository (`curl -fsSL $B | bash -s -- . --agents-md` from its root), which also serves
+everyone who clones it.
+
+### Releases
+
+`main` only changes through reviewed pull requests, and a release is a `v*`
+tag on a commit of `main`. The release workflow checks that the tag matches
+`VERSION` and has a `CHANGELOG.md` section, runs the checks, and publishes the
+GitHub release with that section as its notes and the tree as `.tar.gz` and
+`.zip` with `SHA256SUMS`. To release: roll `## [Unreleased]` into the new
+version and bump `VERSION` in a PR; after it merges,
+
+```bash
+git fetch origin && git tag v1.22.0 origin/main && git push origin v1.22.0
+```
+
 The sections below explain what each tool does with the files.
 
 ## Review gates
@@ -343,7 +376,7 @@ system prompt or `AGENTS.md`.
 
 ## Compatibility rules
 
-The set is used from Linux and Windows (macOS expected, not yet exercised), in
+The set is used from Linux, Windows and macOS (all three in CI), in
 Claude Code, OpenCode and Codex. Every change must keep working in all
 combinations (`python3 -m unittest discover tests` runs the checks):
 

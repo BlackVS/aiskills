@@ -70,7 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
-| Unreleased | Receivers no longer default the forge and credentials: set `GITEA_API`, `GITEA_TOKEN_FILE` and `REVIEW_ORG` (Gitea receiver) and `GITHUB_TOKEN_FILE` (GitHub poller) in `review.env` before deploying `review_hook.py` / `github_review_poller.py`; a missing one stops the service at start. Render from the site's own site file (the files in `sites/` are examples), and point the skill source at `https://github.com/BlackVS/aiskills`. |
+| 1.22.0 | Receivers no longer default the forge and credentials: set `GITEA_API`, `GITEA_TOKEN_FILE` and `REVIEW_ORG` (Gitea receiver) and `GITHUB_TOKEN_FILE` (GitHub poller) in `review.env` before deploying `review_hook.py` / `github_review_poller.py`; a missing one stops the service at start. Render from the site's own site file (the files in `sites/` are examples), and point the skill source at `https://github.com/BlackVS/aiskills`. |
 | 1.7.0 | Review model changed to dispositions; the old per-site prompts named the removed output format. Re-render (1.9.0 template) — a 1.6-era prompt contradicts the skill. |
 | 1.9.0 | Prompts moved into the skill set as one template + site files. From here on: re-render per release, as above. The site B receiver passes `{label}`; site A already did. |
 | 1.12.0 | Template gains the optional `REASONING_PROFILES` block (see README): every site file must define it (`""` to omit). Sites that use it also set `enable_switch_llm_tool: true` on the reviewer agent profile and keep both named LLM profiles saved. Re-render and restart the receiver (it reads the prompt at start). |

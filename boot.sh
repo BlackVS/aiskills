@@ -11,7 +11,9 @@
 # Re-running upgrades in place: install.sh replaces the selected skills.
 #
 # Optional environment:
-#   AI_SKILLS_REF=<branch|tag|commit>   what to install (default: main)
+#   AI_SKILLS_REF=<branch|tag|commit>   what to install (default: the latest GitHub release,
+#                                       or main while the repository has none; main with
+#                                       AI_SKILLS_BASE)
 #   AI_SKILLS_REPO=<owner/name>         the repository (default: BlackVS/aiskills)
 #   AI_SKILLS_BASE=<url>                download from this Gitea server (for example a
 #                                       mirror) instead of GitHub
@@ -23,10 +25,50 @@ for t in curl tar; do
   command -v "$t" >/dev/null 2>&1 ||
     { echo "ERROR: '$t' is required but not found - install it and re-run." >&2; exit 1; }
 done
-REF=${AI_SKILLS_REF:-main}
+REF=${AI_SKILLS_REF:-}
 BASE=${AI_SKILLS_BASE:-}
 REPO=${AI_SKILLS_REPO:-BlackVS/aiskills}
 TOKEN=${AI_SKILLS_TOKEN:-}
+if [ -z "$REF" ] && [ -z "${AI_SKILLS_ARCHIVE:-}" ]; then
+  if [ -n "$BASE" ]; then
+    REF=main
+  else
+    # The latest release, not the tip of main: main can carry unreleased work.
+    # Only a clear "no release" answer falls back to main; any other failure
+    # stops here, so a lookup error never installs unreleased work.
+    lookup_failed() {
+      echo "ERROR: could not look up the latest release of $REPO ($1); set AI_SKILLS_REF to skip the lookup" >&2
+      exit 1
+    }
+    if [ -n "$TOKEN" ]; then
+      # a private fork: the API with the token; 404 means no release
+      BODY=$(mktemp)
+      CODE=$(curl -sSL -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+        -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest") || CODE=000
+      REF=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$BODY" | head -n 1)
+      rm -f "$BODY"
+      case "$CODE" in
+        200) [ -n "$REF" ] || lookup_failed "no tag_name in the API answer" ;;
+        404) REF= ;;
+        *) lookup_failed "HTTP $CODE" ;;
+      esac
+    else
+      # A public repository answers /releases/latest with a redirect (no API
+      # rate limit): to /releases/tag/<tag>, or to /releases while it has none.
+      HEAD=$(curl -fsSI "https://github.com/$REPO/releases/latest") || lookup_failed "request failed"
+      LOC=$(printf '%s\n' "$HEAD" | tr -d '\r' | sed -n 's/^[Ll]ocation: *//p' | head -n 1)
+      case "$LOC" in
+        */releases/tag/*) REF=$(printf '%s\n' "$LOC" | sed 's|.*/releases/tag/\([^/?#]*\).*|\1|') ;;
+        */releases) REF= ;;
+        *) lookup_failed "unexpected answer: ${LOC:-no redirect}" ;;
+      esac
+    fi
+    if [ -z "$REF" ]; then
+      echo "No release of $REPO found: installing main."
+      REF=main
+    fi
+  fi
+fi
 if [ -n "$BASE" ]; then
   URL="$BASE/api/v1/repos/$REPO/archive/$REF.tar.gz"; AUTH="token $TOKEN"
 elif [ -n "$TOKEN" ]; then

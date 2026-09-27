@@ -1,0 +1,8 @@
+# Weekly update PRs for the pinned workflow actions. Each goes through the
+# normal PR gate (CI must pass), so a bad upgrade cannot reach main unreviewed.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# One run per branch: fixups pushed in quick succession do not queue stale
+# 3-OS matrices. Runs on main are never cancelled, so every merged commit
+# keeps its full CI record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # The checks AGENTS.md asks for before every commit, on every platform the
+  # installers support. The installer and boot tests run the bash installer
+  # everywhere (Git Bash on Windows) and the PowerShell one wherever
+  # PowerShell is found (Windows PowerShell on Windows, pwsh on the others).
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Installers, boot, changelog, skills
+        run: python -m unittest discover -s . -p "test_*.py" -t . -v
+      - name: Review-hook runtime
+        run: python -m unittest discover -s consumers/openhands-review-hook/runtime -p "test_*.py"
+      - name: Example sites render
+        run: python consumers/openhands-review-hook/render.py --check
+
+  # The one-liners as a user runs them, against GitHub itself: the release
+  # lookup of the default install, then this commit's archive.
+  oneliner:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PR_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+      PR_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Default install (latest release)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bash boot.sh --user -s core
+          test -f "$HOME/.claude/skills/oh-code-review/SKILL.md"
+      - name: Install this commit
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          AI_SKILLS_REPO="$PR_REPO" AI_SKILLS_REF="$PR_REF" bash boot.sh
+          for d in .claude/skills .agents/skills; do
+            for s in architecture-review oh-code-review oh-technical-writing oh-qa-changes; do
+              test -f "$HOME/$d/$s/SKILL.md" || { echo "missing ~/$d/$s"; exit 1; }
+            done
+          done
+          grep -q 'ai-skills:review-gates start' "$HOME/.claude/CLAUDE.md"
+      # Windows PowerShell 5.1: the shell the Windows one-liner is written for.
+      - name: Default install (latest release)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:AI_SKILLS_ARGS = '-User -Skills core'
+          & .\boot.ps1
+          if (-not (Test-Path "$HOME\.claude\skills\oh-code-review\SKILL.md")) { throw 'oh-code-review missing' }
+      - name: Install this commit
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:AI_SKILLS_REPO = $env:PR_REPO; $env:AI_SKILLS_REF = $env:PR_REF
+          & .\boot.ps1
+          foreach ($d in '.claude\skills', '.agents\skills') {
+            foreach ($s in 'architecture-review', 'oh-code-review', 'oh-technical-writing', 'oh-qa-changes') {
+              if (-not (Test-Path "$HOME\$d\$s\SKILL.md")) { throw "missing ~\$d\$s" }
+            }
+          }
+          if (-not (Select-String -Quiet -SimpleMatch 'ai-skills:review-gates start' "$HOME\.claude\CLAUDE.md")) { throw 'review-gates block missing' }

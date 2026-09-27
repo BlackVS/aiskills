@@ -39,6 +39,13 @@ feature; patch: a content fix). Unreleased work goes under `## [Unreleased]`.
 A change a hands site must act on also gets a row in
 `consumers/openhands-review-hook/UPDATING.md`.
 
+Releases: a release is a `vX.Y.Z` tag on a commit of `main`, pushed after the
+PR that rolls `## [Unreleased]` into `## [X.Y.Z]` and sets `VERSION` has
+merged. `.github/workflows/release.yml` refuses a tag that is not on `main`,
+does not match `VERSION` or has no changelog section, and publishes the
+section as the release notes. The one-liners install the latest release by
+default, so an unreleased change reaches users only through a release.
+
 ## Checks before every commit
 
 ```sh
@@ -62,7 +69,9 @@ in the `NOTICE.md` table.
 
 ## Review and merge
 
-Changes go through pull requests on GitHub. The review gates are the ones the
+Changes go through pull requests on GitHub. `main` is PR-only (a ruleset
+rejects direct pushes and requires the CI checks; `.github/rulesets/` holds
+the rulesets as importable JSON), and release tags cannot be moved. The review gates are the ones the
 set itself defines in `agents/review-gates.md`, with the `oh-code-review`
 skill:
 

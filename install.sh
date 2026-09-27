@@ -71,7 +71,7 @@ done
 resolved=()
 for t in "${tools[@]}"; do
   IFS=, read -r -a parts <<<"$t"
-  for part in "${parts[@]}"; do
+  for part in ${parts[@]+"${parts[@]}"}; do
     case "$part" in
       all) resolved+=(claude codex opencode openhands);;
       agents) resolved+=(codex);;
@@ -82,7 +82,7 @@ for t in "${tools[@]}"; do
   done
 done
 tools=()
-for t in "${resolved[@]}"; do printf '%s\n' "${tools[@]:-}" | grep -qx "$t" || tools+=("$t"); done
+for t in ${resolved[@]+"${resolved[@]}"}; do printf '%s\n' "${tools[@]:-}" | grep -qx "$t" || tools+=("$t"); done
 [ ${#tools[@]} -gt 0 ] || die "no tool selected (see --help)"
 if [ $user -eq 0 ]; then
   [ -n "$repo" ] || usage 1
@@ -97,11 +97,11 @@ case "$skills" in
   all)  skills="$(ls "$SRC" | paste -sd, -)";;
 esac
 IFS=, read -r -a want <<<"$skills"
-for s in "${want[@]}"; do [ -f "$SRC/$s/SKILL.md" ] || die "unknown skill '$s' (available: $(ls "$SRC" | paste -sd' ' -))"; done
+for s in ${want[@]+"${want[@]}"}; do [ -f "$SRC/$s/SKILL.md" ] || die "unknown skill '$s' (available: $(ls "$SRC" | paste -sd' ' -))"; done
 # architecture-review references its two siblings by relative path
-if printf '%s\n' "${want[@]}" | grep -qx architecture-review; then
+if printf '%s\n' ${want[@]+"${want[@]}"} | grep -qx architecture-review; then
   for dep in oh-code-review oh-technical-writing; do
-    printf '%s\n' "${want[@]}" | grep -qx "$dep" || { echo "note: architecture-review needs $dep; adding it"; want+=("$dep"); }
+    printf '%s\n' ${want[@]+"${want[@]}"} | grep -qx "$dep" || { echo "note: architecture-review needs $dep; adding it"; want+=("$dep"); }
   done
 fi
 
@@ -120,7 +120,7 @@ for tool in "${tools[@]}"; do
   dest="$(dest_for "$tool")"
   echo "==> $tool: $dest"
   run mkdir -p "$dest"
-  for s in "${want[@]}"; do
+  for s in ${want[@]+"${want[@]}"}; do
     verb=installed; [ -d "$dest/$s" ] && verb=replaced
     run rm -rf "$dest/$s"
     run cp -R "$SRC/$s" "$dest/$s"
@@ -161,8 +161,8 @@ write_block() {  # file
   if grep -qF "$BLOCK_START" "$f"; then
     awk -v s="$BLOCK_START" -v e="$BLOCK_END" '$0==s{skip=1} !skip{print} $0==e{skip=0}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi
-  # trim trailing blank lines so re-runs do not grow the file
-  sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$f" 2>/dev/null || true
+  # trim trailing blank lines so re-runs do not grow the file (awk, not sed -i: BSD sed on macOS differs)
+  awk '{l[NR]=$0} $0!=""{n=NR} END{for(i=1;i<=n;i++)print l[i]}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   [ -s "$f" ] && printf '\n' >> "$f"
   { printf '%s\n' "$BLOCK_START"; cat "$HERE/agents/review-gates.md"; printf '%s\n' "$BLOCK_END"; } >> "$f"
 }

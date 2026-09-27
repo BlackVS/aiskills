@@ -13,7 +13,9 @@
 # Re-running upgrades in place: install.ps1 replaces the selected skills.
 #
 # Optional environment:
-#   AI_SKILLS_REF=<branch|tag|commit>   what to install (default: main)
+#   AI_SKILLS_REF=<branch|tag|commit>   what to install (default: the latest GitHub release,
+#                                       or main while the repository has none; main with
+#                                       AI_SKILLS_BASE)
 #   AI_SKILLS_REPO=<owner/name>         the repository (default: BlackVS/aiskills)
 #   AI_SKILLS_BASE=<url>                download from this Gitea server (for example a
 #                                       mirror) instead of GitHub
@@ -23,9 +25,42 @@
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 if (-not (Get-Command tar -ErrorAction SilentlyContinue)) { throw "ERROR: 'tar' is required (Windows 10 1803+ ships it) but not found." }
-$ref = if ($env:AI_SKILLS_REF) { $env:AI_SKILLS_REF } else { 'main' }
+$ref = $env:AI_SKILLS_REF
 $base = $env:AI_SKILLS_BASE
 $repo = if ($env:AI_SKILLS_REPO) { $env:AI_SKILLS_REPO } else { 'BlackVS/aiskills' }
+if (-not $ref -and -not $env:AI_SKILLS_ARCHIVE) {
+    if ($base) {
+        $ref = 'main'
+    } elseif ($env:AI_SKILLS_TOKEN) {
+        # A private fork: the API with the token; 404 means no release. Only a
+        # clear "no release" answer falls back to main; any other failure stops,
+        # so a lookup error never installs unreleased work.
+        try {
+            $ref = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -UseBasicParsing -Headers @{ Authorization = "Bearer $env:AI_SKILLS_TOKEN"; Accept = 'application/vnd.github+json' }).tag_name
+            if (-not $ref) { throw 'no tag_name in the API answer' }
+        } catch {
+            $status = 0
+            if ($_.Exception.Response) { try { $status = [int]$_.Exception.Response.StatusCode } catch { } }
+            if ($status -ne 404) { throw "ERROR: could not look up the latest release of $repo ($($_.Exception.Message)); set AI_SKILLS_REF to skip the lookup" }
+            $ref = $null
+        }
+    } else {
+        # The latest release, not the tip of main: main can carry unreleased work.
+        # /releases/latest redirects to /releases/tag/<tag> (no API rate limit),
+        # or to /releases while the repository has none; anything else stops.
+        $req = [Net.HttpWebRequest]::Create("https://github.com/$repo/releases/latest")
+        $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.UserAgent = 'ai-skills-boot'
+        try { $resp = $req.GetResponse() }
+        catch { throw "ERROR: could not look up the latest release of $repo ($($_.Exception.Message)); set AI_SKILLS_REF to skip the lookup" }
+        try { $location = $resp.Headers['Location'] } finally { $resp.Close() }
+        if ($location -match '/releases/tag/([^/?#]+)') { $ref = [Uri]::UnescapeDataString($Matches[1]) }
+        elseif ($location -notmatch '/releases$') { throw "ERROR: could not look up the latest release of $repo (unexpected answer: $(if ($location) { $location } else { 'no redirect' })); set AI_SKILLS_REF to skip the lookup" }
+    }
+    if (-not $ref) {
+        Write-Host "No release of $repo found: installing main."
+        $ref = 'main'
+    }
+}
 $headers = @{}
 if ($base) {
     $url = "$base/api/v1/repos/$repo/archive/$ref.tar.gz"
