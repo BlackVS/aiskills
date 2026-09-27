@@ -128,6 +128,18 @@ links to.
 | Windows | `install.ps1` (PowerShell 5.1+) or `install.sh` under Git Bash | `%USERPROFILE%\.claude\skills`, `%USERPROFILE%\.agents\skills` | exercised (CI on `windows-latest`, one-liner under Windows PowerShell 5.1); Codex 0.156 lists the installed skills |
 | macOS | `install.sh` | same as Linux | exercised in CI (tests and the one-liner on `macos-latest`) |
 
+Clients, checked by `.github/check-clients.py` (the Clients workflow): each
+client lists what it discovered, without a model call, after a user-level
+install, a Claude Code only install and a project install.
+
+| Client | Version checked | Skills | Review-gates block |
+| --- | --- | --- | --- |
+| Claude Code | 2.1.283 | `~/.claude/skills`, `<repo>/.claude/skills` | `~/.claude/CLAUDE.md`; `CLAUDE.md` → `@AGENTS.md` |
+| Codex | 0.157.1 | `~/.agents/skills`, `<repo>/.agents/skills` | `~/.codex/AGENTS.md`; `AGENTS.md` |
+| OpenCode 1.x | 1.18.32 | all of the above; prompts as `/` commands | `~/.config/opencode/AGENTS.md`; `AGENTS.md` |
+| OpenCode v2 | 2.0.18 | all of the above; prompts as `/` commands | `~/.config/opencode/AGENTS.md`; `AGENTS.md` |
+| Gemini CLI | 0.61.0 | `~/.agents/skills`, `<repo>/.agents/skills` (project skills in trusted folders only) | `~/.gemini/GEMINI.md`; `GEMINI.md` → `@AGENTS.md` |
+
 ### Cloud agents (Claude Code on the web, other hosted sessions)
 
 A cloud session starts from a fresh container, so a user-level install from
@@ -178,19 +190,22 @@ markers; re-running replaces the block and leaves the rest of the file alone.
 Where it goes, and why:
 
 - **Project**: `<repo>/AGENTS.md`. OpenCode and Codex read `AGENTS.md`
-  (OpenCode v2 reads nothing else; v1 fell back to `CLAUDE.md`); Claude Code
-  reads `CLAUDE.md`, so the installer also makes sure `<repo>/CLAUDE.md`
-  contains an `@AGENTS.md` import (Claude Code's file-import syntax), creating
-  a one-line `CLAUDE.md` if there is none.
-- **User (`--user`)**: `~/.claude/CLAUDE.md` for Claude Code, always. For
-  OpenCode, `~/.config/opencode/AGENTS.md` whenever `~/.config/opencode`
-  exists (that is, OpenCode has run on this machine), created if absent:
-  OpenCode v2 reads only `AGENTS.md`, the global one first and then every
-  `AGENTS.md` from the working directory up to home, and no longer falls back
-  to `~/.claude/CLAUDE.md` as v1 did. `~/.codex/AGENTS.md` gets the block when
-  the file exists (Codex reads it as its global instructions, with no fallback
-  to the Claude/OpenCode files), never created — `touch ~/.codex/AGENTS.md`
-  first if you use Codex.
+  (OpenCode v2 reads nothing else; v1 fell back to `CLAUDE.md`). Claude Code
+  reads `CLAUDE.md` and Gemini CLI `GEMINI.md`, and both resolve `@file`
+  imports, so the installer also makes sure `<repo>/CLAUDE.md` and
+  `<repo>/GEMINI.md` each contain an `@AGENTS.md` import, creating a one-line
+  file where there is none.
+- **User (`--user`)**: `~/.claude/CLAUDE.md` for Claude Code, always. Each
+  other client gets its own global file when its directory exists (that is,
+  the client has run on this machine), created if absent, and nothing is
+  created for a client that is not there:
+  - OpenCode: `~/.config/opencode/AGENTS.md`. OpenCode v2 reads only
+    `AGENTS.md`, the global one first and then every `AGENTS.md` from the
+    working directory up to home, and no longer falls back to
+    `~/.claude/CLAUDE.md` as v1 did.
+  - Codex: `~/.codex/AGENTS.md`, its global instructions, with no fallback to
+    the Claude or OpenCode files.
+  - Gemini CLI: `~/.gemini/GEMINI.md`, its global context file.
 
 Edit the text in `agents/review-gates.md` and re-run the installer; never edit
 inside the markers.
@@ -333,10 +348,19 @@ Rules that matter here:
 Docs: https://opencode.ai/v2/docs/skills/, https://opencode.ai/v2/docs/instructions/,
 https://opencode.ai/v2/docs/commands/ and https://opencode.ai/v2/docs/migrate-v1/
 (checked 2026-09-24); v1: https://opencode.ai/docs/skills/ (checked 2026-09-05).
-Exercised with OpenCode 1.18.3 on Windows: `opencode debug skill` lists the
-skills from all three project directories and from the user-level ones. The
-commands directory and v2 itself were not run here; those rules are taken from
-the documentation above.
+Exercised with OpenCode 1.18.3 on Windows (`opencode debug skill` lists the
+skills from all three project directories and from the user-level ones), and
+on Linux by the Clients workflow with 1.18.32 and v2.0.18: both list the
+skills from `.agents/skills` and, when that is the only copy, from
+`~/.claude/skills`, and both register the prompts in
+`~/.config/opencode/commands` as `/` commands. v2 installs separately from
+1.x (`npm install -g @opencode/cli`, or `curl -fsSL https://opencode.ai/v2/install | bash`;
+see https://opencode.ai/download). Its server API lists skills (`/api/skill`)
+and commands (`/api/command`) as separate catalogs, so whether skills also
+appear among the `/` commands is taken from the v2 documentation, not
+observed. 1.x and v2 keep their data in the same place, and 1.x refuses to
+start on data v2 has written ("Database is not empty and has no session
+table"): use one version per home directory.
 
 ## Enabling in Codex CLI
 
@@ -366,8 +390,8 @@ How the pieces land in Codex:
   ignored. Skills load at session start, so restart Codex after installing.
 - **Review gates block**: project-level, Codex natively reads `<repo>/AGENTS.md`,
   which `--agents-md` writes — nothing extra needed. User-level it reads only
-  `~/.codex/AGENTS.md`; `--user --agents-md` writes the block there when the
-  file exists (see "Review gates" above).
+  `~/.codex/AGENTS.md`; `--user --agents-md` writes the block there, creating
+  the file, whenever `~/.codex` exists (see "Review gates" above).
 - **Prompts**: `--user --prompts` also copies `prompts/` to `~/.codex/prompts/`
   when `~/.codex` exists; each file becomes a `/prompts:<name>` command in the
   CLI. Codex has deprecated custom prompts in favor of skills, but they still
@@ -377,9 +401,14 @@ Docs: https://developers.openai.com/codex/skills (checked 2026-09-11).
 
 ## Other agents
 
-Gemini CLI reads the same `SKILL.md` layout from `.agents/skills/` in the
-repository; use `-t agents`. Anything else: paste the `SKILL.md` body into the
-system prompt or `AGENTS.md`.
+Gemini CLI reads the same `SKILL.md` layout from `.agents/skills/` (repository)
+and `~/.agents/skills/` (user), which the default tool set already fills; list
+them with `gemini skills list`. It loads project skills and project context
+only in a folder you have trusted. Its instructions file is `GEMINI.md`, not
+`AGENTS.md`: `--agents-md` gives `<repo>/GEMINI.md` an `@AGENTS.md` import,
+and with `--user` writes the block into `~/.gemini/GEMINI.md` when `~/.gemini`
+exists. Anything else: paste the `SKILL.md` body into the system prompt or
+`AGENTS.md`.
 
 ## Compatibility rules
 

@@ -109,6 +109,33 @@ class InstallerContract:
         r = self.install(*self.flags("user", "prompts", "agents"), home=self.home)  # a re-run replaces, never duplicates
         self.assertEqual(agents.read_text(encoding="utf-8").count("ai-skills:review-gates start"), 1)
 
+    def test_user_level_reaches_codex_and_gemini_only_when_they_are_installed(self):
+        # Codex reads ~/.codex/AGENTS.md and Gemini CLI ~/.gemini/GEMINI.md: each is written (created if
+        # absent) when the client's directory exists, and nothing is created for a client that is not there
+        r = self.install(*self.flags("user", "agents"), home=self.home)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.home / ".codex").exists()); self.assertFalse((self.home / ".gemini").exists())
+        (self.home / ".codex").mkdir(); (self.home / ".gemini").mkdir()
+        (self.home / ".gemini/GEMINI.md").write_text("# my gemini notes\n", encoding="utf-8")
+        for _ in range(2):  # a re-run replaces the block, never duplicates it
+            r = self.install(*self.flags("user", "agents"), home=self.home)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        codex = (self.home / ".codex/AGENTS.md").read_text(encoding="utf-8")
+        gemini = (self.home / ".gemini/GEMINI.md").read_text(encoding="utf-8")
+        self.assertEqual(codex.count("ai-skills:review-gates start"), 1, "created for Codex")
+        self.assertEqual(gemini.count("ai-skills:review-gates start"), 1)
+        self.assertTrue(gemini.startswith("# my gemini notes\n"), "the user's own notes are kept")
+
+    def test_project_level_imports_agents_md_for_claude_and_gemini(self):
+        # Claude Code reads CLAUDE.md and Gemini CLI GEMINI.md; both resolve "@AGENTS.md" imports
+        (self.repo / "GEMINI.md").write_text("# project notes\n", encoding="utf-8")
+        for _ in range(2):
+            r = self.install(str(self.repo), *self.flags("agents"))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.repo / "AGENTS.md").read_text(encoding="utf-8").count("ai-skills:review-gates start"), 1)
+        self.assertEqual((self.repo / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\n", "created with just the import")
+        self.assertEqual((self.repo / "GEMINI.md").read_text(encoding="utf-8"), "# project notes\n\n@AGENTS.md\n", "import added once, notes kept")
+
     def test_opencode_tool_installs_commands_not_prompts(self):
         tool = ("-t", "opencode") if self.flavor == "bash" else ("-Tool", "opencode")
         r = self.install(*tool, *self.flags("prompts"), str(self.repo))
