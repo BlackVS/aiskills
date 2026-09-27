@@ -9,6 +9,37 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-09-27
+
+### Added
+- `.github/check-clients.py` and the Clients workflow: Claude Code, Codex,
+  OpenCode 1.x and v2 and Gemini CLI are installed from npm and each lists
+  what it discovered without a model call (Claude Code's init event, `codex
+  debug prompt-input`, `opencode debug skill`/`debug config`, OpenCode v2's
+  `/api/skill` and `/api/command`, `gemini skills list` and Gemini's memory
+  discovery), after a user-level install, a Claude Code only install, a
+  user-level install with `XDG_CONFIG_HOME` set, and a project install. Pull requests that change what gets installed run it with
+  pinned client versions; a weekly run checks the latest release against each
+  client's latest version.
+- `--agents-md` reaches Gemini CLI: a project install gives `<repo>/GEMINI.md`
+  an `@AGENTS.md` import (created with just the import if absent, as for
+  `CLAUDE.md`), and a user install writes the block into `~/.gemini/GEMINI.md`
+  when `~/.gemini` exists.
+
+### Changed
+- `--user --agents-md` writes the block into `~/.codex/AGENTS.md` whenever
+  `~/.codex` exists, creating the file; it used to require the file to exist
+  already, which a fresh Codex setup does not have, so Codex never saw the
+  gates.
+- The installers put OpenCode's user-level files (skills with `-t opencode`,
+  prompts as commands, the gates block) in `$XDG_CONFIG_HOME/opencode` when
+  `XDG_CONFIG_HOME` is set, which is where OpenCode 1.x and v2 read them; they
+  always used `~/.config/opencode`, which OpenCode then ignored. Found by the
+  first CI run of the client checks (runners set `XDG_CONFIG_HOME`).
+- README: a per-client table with the versions checked; OpenCode v2's own
+  install (`@opencode/cli`), its separate skill and command catalogs, and the
+  note that 1.x and v2 cannot share a home directory.
+
 ## [1.22.1] - 2026-09-27
 
 ### Added

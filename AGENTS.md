@@ -58,7 +58,10 @@ python3 consumers/openhands-review-hook/render.py --check          # every examp
 ```
 
 The boot tests install from a local archive (`AI_SKILLS_ARCHIVE`) and run
-under both bash and PowerShell when both are present. `.gitattributes` forces
+under both bash and PowerShell when both are present. A change to what gets
+installed (installers, skills, prompts, the gates block) is also checked
+against the real clients by `python3 .github/check-clients.py` (needs npm and
+network; the Clients workflow runs it on such PRs). `.gitattributes` forces
 LF for shell scripts and Markdown, and PowerShell scripts are stored with LF
 too; keep them that way.
 

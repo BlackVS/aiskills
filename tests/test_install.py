@@ -17,19 +17,27 @@ def posix(p):
     return str(p).replace("\\", "/")
 
 
-def bash_install(*args, home=None):
-    env = dict(os.environ)
+def clean_env(xdg_config=None):
+    # XDG_CONFIG_HOME moves OpenCode's config dir; CI runners set it, so a test sets it only on purpose
+    env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+    if xdg_config is not None:
+        env["XDG_CONFIG_HOME"] = str(xdg_config)
+    return env
+
+
+def bash_install(*args, home=None, xdg_config=None):
+    env = clean_env(xdg_config)
     if home is not None:
         env["HOME"] = posix(home)
     return subprocess.run([BASH, posix(ROOT / "install.sh"), *args], capture_output=True, text=True, env=env)
 
 
-def ps_install(*args, home=None):
+def ps_install(*args, home=None, xdg_config=None):
     script = ""
     if home is not None:
         script += f"Set-Variable -Name HOME -Value '{home}' -Force; "
     script += "& '" + str(ROOT / "install.ps1") + "' " + " ".join(a if re.fullmatch(r"-[A-Za-z]+", a) else "'" + a.replace("'", "''") + "'" for a in args)  # values quoted (empty, comma, space); parameter names bare
-    return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True)
+    return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True, env=clean_env(xdg_config))
 
 
 def complete(skill_dir):
@@ -109,6 +117,46 @@ class InstallerContract:
         r = self.install(*self.flags("user", "prompts", "agents"), home=self.home)  # a re-run replaces, never duplicates
         self.assertEqual(agents.read_text(encoding="utf-8").count("ai-skills:review-gates start"), 1)
 
+    def test_user_level_reaches_codex_and_gemini_only_when_they_are_installed(self):
+        # Codex reads ~/.codex/AGENTS.md and Gemini CLI ~/.gemini/GEMINI.md: each is written (created if
+        # absent) when the client's directory exists, and nothing is created for a client that is not there
+        r = self.install(*self.flags("user", "agents"), home=self.home)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.home / ".codex").exists()); self.assertFalse((self.home / ".gemini").exists())
+        (self.home / ".codex").mkdir(); (self.home / ".gemini").mkdir()
+        (self.home / ".gemini/GEMINI.md").write_text("# my gemini notes\n", encoding="utf-8")
+        for _ in range(2):  # a re-run replaces the block, never duplicates it
+            r = self.install(*self.flags("user", "agents"), home=self.home)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        codex = (self.home / ".codex/AGENTS.md").read_text(encoding="utf-8")
+        gemini = (self.home / ".gemini/GEMINI.md").read_text(encoding="utf-8")
+        self.assertEqual(codex.count("ai-skills:review-gates start"), 1, "created for Codex")
+        self.assertEqual(gemini.count("ai-skills:review-gates start"), 1)
+        self.assertTrue(gemini.startswith("# my gemini notes\n"), "the user's own notes are kept")
+
+    def test_project_level_imports_agents_md_for_claude_and_gemini(self):
+        # Claude Code reads CLAUDE.md and Gemini CLI GEMINI.md; both resolve "@AGENTS.md" imports
+        (self.repo / "GEMINI.md").write_text("# project notes\n", encoding="utf-8")
+        for _ in range(2):
+            r = self.install(str(self.repo), *self.flags("agents"))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.repo / "AGENTS.md").read_text(encoding="utf-8").count("ai-skills:review-gates start"), 1)
+        self.assertEqual((self.repo / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\n", "created with just the import")
+        self.assertEqual((self.repo / "GEMINI.md").read_text(encoding="utf-8"), "# project notes\n\n@AGENTS.md\n", "import added once, notes kept")
+
+    def test_user_level_opencode_follows_xdg_config_home(self):
+        # OpenCode reads $XDG_CONFIG_HOME/opencode when it is set (observed with 1.18.32 and v2.0.18)
+        xdg = self.tmp / "xdg"; (xdg / "opencode").mkdir(parents=True)
+        tool = ("-t", "opencode") if self.flavor == "bash" else ("-Tool", "opencode")
+        r = self.install(*self.flags("user", "prompts", "agents"), home=self.home, xdg_config=xdg)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.install(*self.flags("user"), *tool, home=self.home, xdg_config=xdg)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((xdg / "opencode/commands/code-review.md").is_file(), "prompts as commands")
+        self.assertIn("ai-skills:review-gates start", (xdg / "opencode/AGENTS.md").read_text(encoding="utf-8"))
+        self.assertTrue((xdg / "opencode/skills/oh-code-review/SKILL.md").is_file(), "-t opencode user skills")
+        self.assertFalse((self.home / ".config").exists(), "nothing written to ~/.config")
+
     def test_opencode_tool_installs_commands_not_prompts(self):
         tool = ("-t", "opencode") if self.flavor == "bash" else ("-Tool", "opencode")
         r = self.install(*tool, *self.flags("prompts"), str(self.repo))
@@ -136,16 +184,16 @@ class InstallerContract:
 class BashInstaller(InstallerContract, unittest.TestCase):
     flavor = "bash"
 
-    def install(self, *args, home=None):
-        return bash_install(*args, home=home)
+    def install(self, *args, home=None, xdg_config=None):
+        return bash_install(*args, home=home, xdg_config=xdg_config)
 
 
 @unittest.skipUnless(PWSH, "no PowerShell found")
 class PowerShellInstaller(InstallerContract, unittest.TestCase):
     flavor = "powershell"
 
-    def install(self, *args, home=None):
-        return ps_install(*args, home=home)
+    def install(self, *args, home=None, xdg_config=None):
+        return ps_install(*args, home=home, xdg_config=xdg_config)
 
     def test_empty_array_tool_selection_is_refused(self):
         # native PowerShell form: an explicit empty array binds as zero items, unlike an omitted parameter

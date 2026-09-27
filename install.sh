@@ -24,18 +24,19 @@
 #   -a, --agents-md       Also write the "Code review gates" block (agents/review-gates.md)
 #                         into the agent instructions, between markers, replacing any
 #                         previous copy:
-#                           project: <repo>/AGENTS.md (created if absent); if <repo>/CLAUDE.md
-#                                    exists without an "@AGENTS.md" import, the import is added,
-#                                    and a minimal CLAUDE.md with that import is created if none
-#                                    exists, so Claude Code reads the block too.
-#                           --user:  ~/.claude/CLAUDE.md (Claude Code), plus
-#                                    ~/.config/opencode/AGENTS.md when ~/.config/opencode exists
-#                                    (created if absent: OpenCode v2 reads only AGENTS.md, with
-#                                    no CLAUDE.md fallback), plus ~/.codex/AGENTS.md when that
-#                                    file exists (Codex global instructions; never created here).
+#                           project: <repo>/AGENTS.md (created if absent); <repo>/CLAUDE.md
+#                                    and <repo>/GEMINI.md get an "@AGENTS.md" import (each created
+#                                    with just that import if absent), so Claude Code and Gemini
+#                                    CLI read the block too.
+#                           --user:  ~/.claude/CLAUDE.md (Claude Code), plus, each created if
+#                                    absent: ~/.config/opencode/AGENTS.md when ~/.config/opencode
+#                                    exists (OpenCode v2 reads only AGENTS.md), ~/.codex/AGENTS.md
+#                                    when ~/.codex exists (Codex global instructions) and
+#                                    ~/.gemini/GEMINI.md when ~/.gemini exists (Gemini CLI).
 #   -u, --user            Install user-level instead of into a repo:
 #                           claude -> ~/.claude/skills, codex -> ~/.agents/skills,
 #                           opencode -> ~/.config/opencode/skills, openhands -> ~/.openhands/skills
+#                           (OpenCode's ~/.config/opencode is $XDG_CONFIG_HOME/opencode when that is set)
 #                           (~ is $HOME; on Windows, run install.ps1, which uses the user profile)
 #   -n, --dry-run         Show what would be done.
 #   -h, --help
@@ -52,6 +53,8 @@ CORE="architecture-review,oh-code-review,oh-technical-writing"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 die() { echo "install.sh: $*" >&2; exit 1; }
 
+# OpenCode reads its config from $XDG_CONFIG_HOME/opencode, ~/.config/opencode when unset
+OC_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 repo=""; tools=(); skills="core"; prompts=0; user=0; dry=0; agentsmd=0; pdests=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -109,7 +112,7 @@ dest_for() {  # tool -> destination skills dir
   case "$1" in
     claude)    [ $user -eq 1 ] && echo "$HOME/.claude/skills"          || echo "$repo/.claude/skills";;
     codex)     [ $user -eq 1 ] && echo "$HOME/.agents/skills"          || echo "$repo/.agents/skills";;
-    opencode)  [ $user -eq 1 ] && echo "$HOME/.config/opencode/skills" || echo "$repo/.opencode/skills";;
+    opencode)  [ $user -eq 1 ] && echo "$OC_DIR/skills" || echo "$repo/.opencode/skills";;
     openhands) [ $user -eq 1 ] && echo "$HOME/.openhands/skills"       || echo "$repo/.openhands/skills";;
     *) die "unknown tool: $1";;
   esac
@@ -144,11 +147,11 @@ fi
 
 # ---- OpenCode extras (skills reach OpenCode through .claude/skills and .agents/skills;
 # ---- its commands and global AGENTS.md live in ~/.config/opencode, touched only when it exists) ----
-if [ $user -eq 1 ] && [ $prompts -eq 1 ] && [ -d "$HOME/.config/opencode" ] && ! printf '%s\n' "${tools[@]}" | grep -qx opencode; then
-  echo "==> opencode: $HOME/.config/opencode/commands"
-  run mkdir -p "$HOME/.config/opencode/commands"
-  run cp "$HERE"/prompts/*.md "$HOME/.config/opencode/commands"/
-  echo "    prompts -> $HOME/.config/opencode/commands (OpenCode: /<name>)"; pdests="$pdests $HOME/.config/opencode/commands"
+if [ $user -eq 1 ] && [ $prompts -eq 1 ] && [ -d "$OC_DIR" ] && ! printf '%s\n' "${tools[@]}" | grep -qx opencode; then
+  echo "==> opencode: $OC_DIR/commands"
+  run mkdir -p "$OC_DIR/commands"
+  run cp "$HERE"/prompts/*.md "$OC_DIR/commands"/
+  echo "    prompts -> $OC_DIR/commands (OpenCode: /<name>)"; pdests="$pdests $OC_DIR/commands"
 fi
 
 # ---- managed "Code review gates" block in agent instruction files ----
@@ -166,8 +169,8 @@ write_block() {  # file
   [ -s "$f" ] && printf '\n' >> "$f"
   { printf '%s\n' "$BLOCK_START"; cat "$HERE/agents/review-gates.md"; printf '%s\n' "$BLOCK_END"; } >> "$f"
 }
-ensure_claude_import() {  # <repo>/CLAUDE.md gets "@AGENTS.md" so Claude Code reads AGENTS.md
-  local f="$1/CLAUDE.md"
+ensure_import() {  # <repo>/<file> gets "@AGENTS.md" so Claude Code (CLAUDE.md) or Gemini CLI (GEMINI.md) reads AGENTS.md
+  local f="$1/$2"
   if [ $dry -eq 1 ]; then echo "  [dry-run] ensure @AGENTS.md import in $f"; return; fi
   if [ -f "$f" ]; then
     grep -qE '^@AGENTS\.md\s*$' "$f" || { [ -s "$f" ] && printf '\n' >> "$f"; printf '@AGENTS.md\n' >> "$f"; echo "    added @AGENTS.md import to $f"; }
@@ -179,11 +182,13 @@ if [ $agentsmd -eq 1 ]; then
   echo "==> agent instructions: review-gates block"
   if [ $user -eq 1 ]; then
     write_block "$HOME/.claude/CLAUDE.md"; echo "    block -> $HOME/.claude/CLAUDE.md"
-    if [ -d "$HOME/.config/opencode" ]; then write_block "$HOME/.config/opencode/AGENTS.md"; echo "    block -> $HOME/.config/opencode/AGENTS.md"; fi
-    if [ -f "$HOME/.codex/AGENTS.md" ]; then write_block "$HOME/.codex/AGENTS.md"; echo "    block -> $HOME/.codex/AGENTS.md"; fi
+    if [ -d "$OC_DIR" ]; then write_block "$OC_DIR/AGENTS.md"; echo "    block -> $OC_DIR/AGENTS.md"; fi
+    if [ -d "$HOME/.codex" ]; then write_block "$HOME/.codex/AGENTS.md"; echo "    block -> $HOME/.codex/AGENTS.md"; fi
+    if [ -d "$HOME/.gemini" ]; then write_block "$HOME/.gemini/GEMINI.md"; echo "    block -> $HOME/.gemini/GEMINI.md"; fi
   else
     write_block "$repo/AGENTS.md"; echo "    block -> $repo/AGENTS.md"
-    ensure_claude_import "$repo"
+    ensure_import "$repo" CLAUDE.md
+    ensure_import "$repo" GEMINI.md
   fi
 fi
 
@@ -195,7 +200,7 @@ Installed from: $HERE, version $(cat "$HERE/VERSION" 2>/dev/null || echo "unknow
 Upstream: $(cat "$HERE/UPSTREAM.txt" 2>/dev/null || echo "unknown")
 Next:
   - Claude Code: skills appear as /<name>; the oh- prefix keeps them clear of built-in skills such as /code-review.
-  - OpenCode: reads .claude/skills, .agents/skills and .opencode/skills; v2 lists them as /<name> too, or ask for one.
+  - OpenCode: reads .claude/skills, .agents/skills and .opencode/skills; ask for one by name (v2 also documents /<name>).
   - OpenHands: turn on load_project_skills (or load_user_skills for --user) in Settings -> Agent.
   - Codex: reads .agents/skills in the repo (and its parent folders) and ~/.agents/skills (--tool codex, in the default set);
     restart Codex, then /skills lists them and \$<name> mentions one. Gemini CLI reads the same directory.

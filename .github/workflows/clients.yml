@@ -1,0 +1,62 @@
+name: Clients
+
+# Checks that Claude Code, Codex, OpenCode 1.x and v2 and Gemini CLI discover
+# what the installers write, through each client's model-free listing
+# (.github/check-clients.py). Not a required check: it downloads five clients
+# from npm.
+#   - pull requests that change what gets installed: this commit, pinned client versions;
+#   - weekly: the latest release with each client's latest version, so a client
+#     that changes how it discovers skills shows up here first;
+#   - manually, with either choice.
+on:
+  pull_request:
+    paths:
+      - install.sh
+      - install.ps1
+      - boot.sh
+      - boot.ps1
+      - skills/**
+      - prompts/**
+      - agents/**
+      - .github/check-clients.py
+      - .github/workflows/clients.yml
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Install the latest release instead of this commit'
+        type: boolean
+        default: false
+      latest-clients:
+        description: "Use each client's latest version instead of the pinned ones"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clients:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Check the clients
+        env:
+          RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
+          LATEST: ${{ github.event_name == 'schedule' || inputs.latest-clients }}
+        run: |
+          args=()
+          [ "$RELEASE" = true ] && args+=(--release)
+          [ "$LATEST" = true ] && args+=(--latest-clients)
+          python3 .github/check-clients.py --workdir "$RUNNER_TEMP/clients" "${args[@]}"

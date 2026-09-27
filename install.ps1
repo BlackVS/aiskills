@@ -39,17 +39,20 @@ prompts: /prompts:<name> in the CLI) and to ~\.config\opencode\commands when
 .PARAMETER AgentsMd
 Also write the "Code review gates" block (agents\review-gates.md) into the agent
 instructions, between markers, replacing any previous copy:
-  project: <repo>\AGENTS.md (created if absent); <repo>\CLAUDE.md gets an
-           "@AGENTS.md" import (created minimal if absent) so Claude Code reads it.
-  -User:   ~\.claude\CLAUDE.md (Claude Code), plus ~\.config\opencode\AGENTS.md
-           when ~\.config\opencode exists (created if absent: OpenCode v2 reads
-           only AGENTS.md, with no CLAUDE.md fallback), plus ~\.codex\AGENTS.md
-           when that file exists (Codex global instructions; never created here).
+  project: <repo>\AGENTS.md (created if absent); <repo>\CLAUDE.md and
+           <repo>\GEMINI.md get an "@AGENTS.md" import (each created with just
+           that import if absent) so Claude Code and Gemini CLI read it.
+  -User:   ~\.claude\CLAUDE.md (Claude Code), plus, each created if absent:
+           ~\.config\opencode\AGENTS.md when ~\.config\opencode exists (OpenCode v2
+           reads only AGENTS.md), ~\.codex\AGENTS.md when ~\.codex exists (Codex
+           global instructions) and ~\.gemini\GEMINI.md when ~\.gemini exists
+           (Gemini CLI).
 
 .PARAMETER User
 Install user-level instead of into a repo (~ is the user profile, $HOME):
   claude -> ~\.claude\skills, codex -> ~\.agents\skills,
   opencode -> ~\.config\opencode\skills, openhands -> ~\.openhands\skills
+  (OpenCode's ~\.config\opencode is $env:XDG_CONFIG_HOME\opencode when that is set)
 
 .PARAMETER DryRun
 Show what would be done.
@@ -144,12 +147,14 @@ if ($Want -contains 'architecture-review') {
     }
 }
 
+# OpenCode reads its config from $XDG_CONFIG_HOME\opencode, ~\.config\opencode when unset
+$OpenCodeDir = Join-Path $(if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }) 'opencode'
 function Get-DestDir([string]$ToolName) {
     if ($User) {
         switch ($ToolName) {
             'claude'    { Join-Path $HOME '.claude\skills' }
             'codex'     { Join-Path $HOME '.agents\skills' }
-            'opencode'  { Join-Path $HOME '.config\opencode\skills' }
+            'opencode'  { Join-Path $OpenCodeDir 'skills' }
             'openhands' { Join-Path $HOME '.openhands\skills' }
         }
     } else {
@@ -204,7 +209,6 @@ if ($User -and $Prompts -and (Test-Path (Join-Path $HOME '.codex') -PathType Con
 
 # --- OpenCode extras (skills reach OpenCode through .claude\skills and .agents\skills;
 # --- its commands and global AGENTS.md live in ~\.config\opencode, touched only when it exists) ---
-$OpenCodeDir = Join-Path $HOME '.config\opencode'
 if ($User -and $Prompts -and (Test-Path $OpenCodeDir -PathType Container) -and ($ToolList -notcontains 'opencode')) {
     $ODest = Join-Path $OpenCodeDir 'commands'
     Write-Host "==> opencode: $ODest"
@@ -241,8 +245,9 @@ function Write-Block([string]$File) {
     # LF endings, no BOM: the same file is read on Linux
     [System.IO.File]::WriteAllText($File, (($kept -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 }
-function Ensure-ClaudeImport([string]$RepoDir) {
-    $f = Join-Path $RepoDir 'CLAUDE.md'
+function Ensure-Import([string]$RepoDir, [string]$Name) {
+    # <repo>\<Name> gets "@AGENTS.md" so Claude Code (CLAUDE.md) or Gemini CLI (GEMINI.md) reads AGENTS.md
+    $f = Join-Path $RepoDir $Name
     if ($DryRun) { Write-Host "  [dry-run] ensure @AGENTS.md import in $f"; return }
     if (Test-Path $f) {
         $content = Get-Content $f -Raw -Encoding UTF8
@@ -260,13 +265,16 @@ if ($AgentsMd) {
     Write-Host '==> agent instructions: review-gates block'
     if ($User) {
         $g = Join-Path $HOME '.claude\CLAUDE.md'; Write-Block $g; Write-Host "    block -> $g"
-        $o = Join-Path $HOME '.config\opencode\AGENTS.md'
-        if (Test-Path (Join-Path $HOME '.config\opencode') -PathType Container) { Write-Block $o; Write-Host "    block -> $o" }
+        $o = Join-Path $OpenCodeDir 'AGENTS.md'
+        if (Test-Path $OpenCodeDir -PathType Container) { Write-Block $o; Write-Host "    block -> $o" }
         $c = Join-Path $HOME '.codex\AGENTS.md'
-        if (Test-Path $c) { Write-Block $c; Write-Host "    block -> $c" }
+        if (Test-Path (Join-Path $HOME '.codex') -PathType Container) { Write-Block $c; Write-Host "    block -> $c" }
+        $m = Join-Path $HOME '.gemini\GEMINI.md'
+        if (Test-Path (Join-Path $HOME '.gemini') -PathType Container) { Write-Block $m; Write-Host "    block -> $m" }
     } else {
         $a = Join-Path $Repo 'AGENTS.md'; Write-Block $a; Write-Host "    block -> $a"
-        Ensure-ClaudeImport $Repo
+        Ensure-Import $Repo 'CLAUDE.md'
+        Ensure-Import $Repo 'GEMINI.md'
     }
 }
 
@@ -285,7 +293,7 @@ Installed from: $Here, version $Version (see CHANGELOG.md)
 Upstream: $Upstream
 Next:
   - Claude Code: skills appear as /<name>; the oh- prefix keeps them clear of built-in skills such as /code-review.
-  - OpenCode: reads .claude/skills, .agents/skills and .opencode/skills; v2 lists them as /<name> too, or ask for one.
+  - OpenCode: reads .claude/skills, .agents/skills and .opencode/skills; ask for one by name (v2 also documents /<name>).
   - OpenHands: turn on load_project_skills (or load_user_skills for -User) in Settings -> Agent.
   - Codex: reads .agents\skills in the repo (and its parent folders) and ~\.agents\skills (-Tool codex, in the default set);
     restart Codex, then /skills lists them and `$<name> mentions one. Gemini CLI reads the same directory.

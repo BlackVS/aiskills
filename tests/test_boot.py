@@ -5,7 +5,7 @@ Run: python3 -m unittest tests/test_boot.py
 """
 import os, pathlib, shutil, subprocess, sys, tempfile, unittest
 
-from tests.test_install import BASH, PWSH, ROOT, posix
+from tests.test_install import BASH, PWSH, ROOT, clean_env, posix
 
 CORE = ("architecture-review", "oh-code-review", "oh-technical-writing")
 
@@ -47,7 +47,7 @@ class BootContract:
 @unittest.skipUnless(BASH, "no bash found")
 class BashBoot(BootContract, unittest.TestCase):
     def run_boot(self, *args, archive=None):
-        env = dict(os.environ, HOME=posix(self.home), AI_SKILLS_ARCHIVE=posix(archive or self.archive))
+        env = dict(clean_env(), HOME=posix(self.home), AI_SKILLS_ARCHIVE=posix(archive or self.archive))
         return subprocess.run([BASH, posix(ROOT / "boot.sh"), *args], capture_output=True, text=True, env=env)
 
     def test_default_flags_install_user_wide(self):
@@ -114,7 +114,7 @@ class BashBootRelease(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def run_boot(self, location="", ok=True, **extra):
-        env = {k: v for k, v in os.environ.items() if not k.startswith("AI_SKILLS_")}
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
         env.update(HOME=str(self.home), PATH=f"{self.bin}:{env['PATH']}", FAKE_LOG=str(self.log),
                    FAKE_ARCHIVE=str(self.archive), FAKE_LOCATION=location, **extra)
         r = subprocess.run([BASH, str(ROOT / "boot.sh"), "--user", "-s", "core"], capture_output=True, text=True, env=env)
@@ -194,7 +194,7 @@ class PowerShellBootRelease(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def run_boot(self, status, body="{}", ok=True):
-        env = {k: v for k, v in os.environ.items() if not k.startswith("AI_SKILLS_")}
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
         env.update(AI_SKILLS_TOKEN="t", AI_SKILLS_ARGS="-User -Skills core", FAKE_LOG=str(self.log),
                    FAKE_ARCHIVE=str(self.archive), FAKE_API_STATUS=status, FAKE_API_BODY=body)
         script = f"Set-Variable -Name HOME -Value '{self.home}' -Force; " + FAKE_PS + "; & '" + str(ROOT / "boot.ps1") + "'"
@@ -230,7 +230,7 @@ class PowerShellBoot(BootContract, unittest.TestCase):
         if args is not None:
             script += "$env:AI_SKILLS_ARGS = '" + args.replace("'", "''") + "'; "  # the flags string may itself quote a path
         script += "& '" + str(ROOT / "boot.ps1") + "'"
-        return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True)
+        return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True, env=clean_env())
 
     def test_default_flags_install_user_wide(self):
         r = self.run_boot()
