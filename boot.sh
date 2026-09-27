@@ -11,7 +11,9 @@
 # Re-running upgrades in place: install.sh replaces the selected skills.
 #
 # Optional environment:
-#   AI_SKILLS_REF=<branch|tag|commit>   what to install (default: main)
+#   AI_SKILLS_REF=<branch|tag|commit>   what to install (default: the latest GitHub release,
+#                                       or main while the repository has none; main with
+#                                       AI_SKILLS_BASE)
 #   AI_SKILLS_REPO=<owner/name>         the repository (default: BlackVS/aiskills)
 #   AI_SKILLS_BASE=<url>                download from this Gitea server (for example a
 #                                       mirror) instead of GitHub
@@ -23,10 +25,31 @@ for t in curl tar; do
   command -v "$t" >/dev/null 2>&1 ||
     { echo "ERROR: '$t' is required but not found - install it and re-run." >&2; exit 1; }
 done
-REF=${AI_SKILLS_REF:-main}
+REF=${AI_SKILLS_REF:-}
 BASE=${AI_SKILLS_BASE:-}
 REPO=${AI_SKILLS_REPO:-BlackVS/aiskills}
 TOKEN=${AI_SKILLS_TOKEN:-}
+if [ -z "$REF" ] && [ -z "${AI_SKILLS_ARCHIVE:-}" ]; then
+  if [ -n "$BASE" ]; then
+    REF=main
+  else
+    # The latest release, not the tip of main: main can carry unreleased work.
+    # A public repository answers /releases/latest with a redirect to the tag
+    # (no API rate limit); a private fork needs the API and the token.
+    if [ -n "$TOKEN" ]; then
+      JSON=$(curl -fsSL -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null) || JSON=
+      REF=$(printf '%s\n' "$JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+    else
+      HEAD=$(curl -fsSI "https://github.com/$REPO/releases/latest") ||
+        { echo "ERROR: could not reach github.com/$REPO (set AI_SKILLS_REF to skip the release lookup)" >&2; exit 1; }
+      REF=$(printf '%s\n' "$HEAD" | tr -d '\r' | sed -n 's|^[Ll]ocation: .*/releases/tag/\([^/?#]*\).*|\1|p' | head -n 1)
+    fi
+    if [ -z "$REF" ]; then
+      echo "No release of $REPO found: installing main."
+      REF=main
+    fi
+  fi
+fi
 if [ -n "$BASE" ]; then
   URL="$BASE/api/v1/repos/$REPO/archive/$REF.tar.gz"; AUTH="token $TOKEN"
 elif [ -n "$TOKEN" ]; then

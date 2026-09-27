@@ -9,10 +9,19 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-09-27
+
 ### Changed
+- The one-line installers install the latest GitHub release by default instead
+  of the tip of `main`, and fall back to `main` while the repository has no
+  release. `AI_SKILLS_REF=<branch|tag|commit>` still picks any ref
+  (`AI_SKILLS_REF=main` for unreleased work); with `AI_SKILLS_BASE` the default
+  stays `main`.
+- `install.sh` trims trailing blank lines of the agent-instructions file with
+  awk instead of GNU `sed -i`, which BSD sed on macOS reads differently.
 - The canonical repository is now `github.com/BlackVS/aiskills`, published as
   a fresh snapshot of 1.21.0. `boot.sh` and `boot.ps1` download the GitHub
-  archive of `AI_SKILLS_REF` (default `main`) from `BlackVS/aiskills`; with
+  archive of `AI_SKILLS_REF` from `BlackVS/aiskills`; with
   `AI_SKILLS_TOKEN` they use the GitHub API tarball (a private fork), and
   `AI_SKILLS_BASE=<url>` keeps the Gitea archive download for a mirror.
 - `consumers/openhands-review-hook/sites/` holds neutral examples
@@ -25,6 +34,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
   missing one stops the service at start.
 
 ### Added
+- GitHub CI (`.github/workflows/ci.yml`): the repository checks on Linux,
+  Windows and macOS, plus the one-liners run against GitHub on all three (the
+  release lookup, then the commit under test). Release workflow
+  (`.github/workflows/release.yml`): a `v*` tag on a commit of `main` whose
+  `VERSION` and `CHANGELOG.md` section match publishes a GitHub release with
+  the changelog section as its body and `.tar.gz`/`.zip` archives with
+  `SHA256SUMS`. Importable rulesets in `.github/rulesets/` (main PR-only with
+  required checks; release tags immutable), a PR template, Dependabot for the
+  pinned actions, and `SECURITY.md`.
 - `AGENTS.md` (repository conventions for coding agents), `NOTICE.md`,
   `LICENSE` (PolyForm Noncommercial 1.0.0) and `LICENSES/MIT-OpenHands.txt`
   (the upstream notice for the `oh-*` skills).

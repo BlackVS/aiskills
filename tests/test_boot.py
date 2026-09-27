@@ -77,6 +77,55 @@ class BashBoot(BootContract, unittest.TestCase):
         self.assertFalse((self.home / ".claude").exists())
 
 
+FAKE_CURL = """#!/bin/sh
+# records each call; a HEAD request (-fsSI) answers with FAKE_LOCATION, anything else streams FAKE_ARCHIVE
+echo "$*" >> "$FAKE_LOG"
+case "$1" in
+  -fsSI) printf 'HTTP/2 302\\r\\nlocation: %s\\r\\n\\r\\n' "$FAKE_LOCATION" ;;
+  *) cat "$FAKE_ARCHIVE" ;;
+esac
+"""
+
+
+@unittest.skipUnless(BASH and os.name != "nt", "needs a POSIX bash to put a fake curl on PATH")
+class BashBootRelease(unittest.TestCase):
+    """Without AI_SKILLS_REF the one-liner installs the latest release, and main while there is none."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-boot-rel-"))
+        self.home = self.tmp / "home"; self.home.mkdir()
+        self.bin = self.tmp / "bin"; self.bin.mkdir()
+        (self.bin / "curl").write_text(FAKE_CURL); (self.bin / "curl").chmod(0o755)
+        self.archive = build_archive(self.tmp); self.log = self.tmp / "curl.log"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_boot(self, location, **extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("AI_SKILLS_")}
+        env.update(HOME=str(self.home), PATH=f"{self.bin}:{env['PATH']}", FAKE_LOG=str(self.log),
+                   FAKE_ARCHIVE=str(self.archive), FAKE_LOCATION=location, **extra)
+        r = subprocess.run([BASH, str(ROOT / "boot.sh"), "--user", "-s", "core"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r, self.log.read_text().splitlines()
+
+    def test_latest_release_is_installed(self):
+        r, calls = self.run_boot("https://github.com/BlackVS/aiskills/releases/tag/v9.9.9")
+        self.assertIn("https://github.com/BlackVS/aiskills/releases/latest", calls[0])
+        self.assertIn("https://github.com/BlackVS/aiskills/archive/v9.9.9.tar.gz", calls[1])
+        self.assertTrue((self.home / ".claude/skills/oh-code-review/SKILL.md").is_file())
+
+    def test_no_release_falls_back_to_main(self):
+        r, calls = self.run_boot("https://github.com/BlackVS/aiskills/releases")
+        self.assertIn("No release of BlackVS/aiskills found: installing main.", r.stdout)
+        self.assertIn("/archive/main.tar.gz", calls[1])
+
+    def test_explicit_ref_skips_the_lookup(self):
+        r, calls = self.run_boot("unused", AI_SKILLS_REF="v1.0.0")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("/archive/v1.0.0.tar.gz", calls[0])
+
+
 @unittest.skipUnless(PWSH, "no PowerShell found")
 class PowerShellBoot(BootContract, unittest.TestCase):
     def run_boot(self, args=None, archive=None):

@@ -161,8 +161,8 @@ write_block() {  # file
   if grep -qF "$BLOCK_START" "$f"; then
     awk -v s="$BLOCK_START" -v e="$BLOCK_END" '$0==s{skip=1} !skip{print} $0==e{skip=0}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi
-  # trim trailing blank lines so re-runs do not grow the file
-  sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$f" 2>/dev/null || true
+  # trim trailing blank lines so re-runs do not grow the file (awk, not sed -i: BSD sed on macOS differs)
+  awk '{l[NR]=$0} $0!=""{n=NR} END{for(i=1;i<=n;i++)print l[i]}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   [ -s "$f" ] && printf '\n' >> "$f"
   { printf '%s\n' "$BLOCK_START"; cat "$HERE/agents/review-gates.md"; printf '%s\n' "$BLOCK_END"; } >> "$f"
 }
