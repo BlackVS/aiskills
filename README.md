@@ -1,0 +1,2 @@
+# aiskills
+AIForger skills
