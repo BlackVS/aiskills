@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.23.1] - 2026-09-27
+
+### Fixed
+- `.github/check-clients.py` URL-encodes the directory it passes to OpenCode
+  v2's API; a `--workdir` whose path held a space or `&` stopped the run with
+  `InvalidURL` before its summary. Covered by `tests/test_check_clients.py`.
+
+### Changed
+- The repository's reviewer guide says the 7-day rule for new dependency
+  versions applies to what ships to users, not to the agent clients the client
+  checks pin or take at `@latest`.
+
 ## [1.23.0] - 2026-09-27
 
 ### Added
