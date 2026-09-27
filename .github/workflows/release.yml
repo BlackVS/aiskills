@@ -1,64 +1,56 @@
 name: Release
 
-# Cut a release by pushing a tag for the version on main:
-#   git tag v1.22.0 origin/main && git push origin v1.22.0
-# The one-line installers (boot.sh / boot.ps1) install the latest release, so
-# a release is what users get by default.
+# Two ways to cut a release; either way VERSION and a CHANGELOG section for
+# the version must already be on main (rolled in by the PR that bumps it):
+#   - Actions -> Release -> Run workflow on main with the version (1.22.1):
+#     tags the tip of main and publishes. Given an existing tag, it publishes
+#     that tag instead (for example after a run that failed or was cancelled).
+#   - Push a tag on main: git tag -a v1.22.1 origin/main -m "ai-skills 1.22.1" && git push origin v1.22.1
+# The one-line installers install the latest release, so a release is what
+# users get by default.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Existing tag to release (e.g. v1.22.0)'
+      version:
+        description: 'Version to release, e.g. 1.22.1 (tags main unless the tag exists)'
         required: true
 
 permissions:
-  contents: write   # create the release and upload its assets
+  contents: write   # push the tag, create the release, upload its assets
 
+# One release at a time across all tags, so each run decides "latest" after
+# every earlier run has published. GitHub keeps at most one run waiting per
+# group: a third run started meanwhile cancels the waiting one, which then
+# publishes nothing; run the workflow again with that version to publish it.
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      INPUT_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
-          fetch-depth: 0   # full history: the guard below needs merge-base
-          persist-credentials: false
+          fetch-depth: 0   # full history: the release script needs merge-base
+          persist-credentials: false   # only the steps below that write get the token
 
-      # Releases ship only what main has merged through a reviewed PR: a tag
-      # on a commit that is not on main is refused.
-      - name: Verify the tag is on main
-        run: |
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "::error::tagged commit $(git rev-parse --short HEAD) is not on main; merge first, then tag"
-            exit 1
-          fi
+      - name: Resolve the release
+        run: bash .github/release.sh resolve
 
-      - name: Verify VERSION and CHANGELOG match the tag
+      # The script checks out the commit to release (the tag, or main's tip),
+      # which may predate the script: run the copy from the workflow's commit.
+      - name: Check the commit, VERSION and CHANGELOG
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::tag $TAG is not vMAJOR.MINOR.PATCH"; exit 1; }
-          ver=$(tr -d '[:space:]' < VERSION)
-          if [ "v$ver" != "$TAG" ]; then
-            echo "::error::VERSION says $ver, the tag is $TAG"; exit 1
-          fi
-          # The release body is the version's CHANGELOG section, written by a
-          # person or an agent about what changed. Roll [Unreleased] into the
-          # version BEFORE tagging.
-          awk -v ver="$ver" '
-            index($0, "## [" ver "]") == 1 {on=1; next}
-            on && /^## \[/ {exit}
-            on {print}
-          ' CHANGELOG.md > release_notes.md
-          if ! grep -q '[^[:space:]]' release_notes.md; then
-            echo "::error::CHANGELOG.md has no section for $ver"; exit 1
-          fi
+          cp .github/release.sh "$RUNNER_TEMP/release.sh"
+          bash "$RUNNER_TEMP/release.sh" prepare "$TAG" $CREATE
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -70,25 +62,11 @@ jobs:
           python -m unittest discover -s consumers/openhands-review-hook/runtime -p "test_*.py"
           python consumers/openhands-review-hook/render.py --check
 
-      # The tag's archive is what the one-liners download; the assets are the
-      # same tree for offline installs (AI_SKILLS_ARCHIVE=<file> bash boot.sh),
-      # with checksums.
-      - name: Build release archives
-        run: |
-          ver=${TAG#v}
-          mkdir -p dist
-          git archive --format=tar.gz --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.tar.gz" HEAD
-          git archive --format=zip --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.zip" HEAD
-          (cd dist && sha256sum -- * > SHA256SUMS)
-
-      - name: Publish the release
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # "Latest" is what the one-liners install, so only the highest version
-          # gets it: a patch release for an older line must not downgrade users.
-          newest=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
-          latest=false; [ "$newest" = "$TAG" ] && latest=true
-          echo "newest tag: $newest; marking $TAG as latest: $latest"
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --latest="$latest" \
-            --title "ai-skills ${TAG#v}" --notes-file release_notes.md
+          # git's credential for this step only (checkout kept none): the tag push
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          bash "$RUNNER_TEMP/release.sh" publish "$TAG" $CREATE

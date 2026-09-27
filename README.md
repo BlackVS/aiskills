@@ -147,16 +147,23 @@ everyone who clones it.
 
 ### Releases
 
-`main` only changes through reviewed pull requests, and a release is a `v*`
-tag on a commit of `main`. The release workflow checks that the tag matches
-`VERSION` and has a `CHANGELOG.md` section, runs the checks, and publishes the
+`main` only changes through reviewed pull requests, and a release is a
+`vX.Y.Z` tag on a commit of `main`. A release starts as a PR that rolls
+`## [Unreleased]` into the new version and bumps `VERSION`. After it merges,
+run **Actions → Release → Run workflow** on `main` with the version (for
+example `1.22.1`). The workflow checks that `VERSION` and a `CHANGELOG.md`
+section match, runs the checks, tags the tip of `main`, and publishes the
 GitHub release with that section as its notes and the tree as `.tar.gz` and
-`.zip` with `SHA256SUMS`. To release: roll `## [Unreleased]` into the new
-version and bump `VERSION` in a PR; after it merges,
+`.zip` with `SHA256SUMS`. Pushing the tag yourself does the same:
 
 ```bash
-git fetch origin && git tag v1.22.0 origin/main && git push origin v1.22.0
+git fetch origin && git tag -a v1.22.1 origin/main -m "ai-skills 1.22.1" && git push origin v1.22.1
 ```
+
+Releases run one at a time, and only the highest version is marked latest,
+so a patch for an older line never becomes what the one-liners install. To
+publish an existing tag again after a failed or cancelled run, run the
+workflow with its version.
 
 The sections below explain what each tool does with the files.
 

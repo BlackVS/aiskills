@@ -39,12 +39,15 @@ feature; patch: a content fix). Unreleased work goes under `## [Unreleased]`.
 A change a hands site must act on also gets a row in
 `consumers/openhands-review-hook/UPDATING.md`.
 
-Releases: a release is a `vX.Y.Z` tag on a commit of `main`, pushed after the
+Releases: a release is a `vX.Y.Z` tag on a commit of `main`, made after the
 PR that rolls `## [Unreleased]` into `## [X.Y.Z]` and sets `VERSION` has
-merged. `.github/workflows/release.yml` refuses a tag that is not on `main`,
-does not match `VERSION` or has no changelog section, and publishes the
-section as the release notes. The one-liners install the latest release by
-default, so an unreleased change reaches users only through a release.
+merged: run the Release workflow on `main` with the version (it creates the
+tag; this is how an agent releases, since it cannot push tags) or push the
+tag. `.github/workflows/release.yml` (steps in `.github/release.sh`, tested by
+`tests/test_release.py`) refuses a commit that is not on `main`, a version
+that does not match `VERSION` and a missing changelog section, and publishes
+the section as the release notes. The one-liners install the latest release
+by default, so an unreleased change reaches users only through a release.
 
 ## Checks before every commit
 

@@ -9,6 +9,24 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.22.1] - 2026-09-27
+
+### Added
+- The Release workflow runs from the Actions tab (or through the API) with a
+  version: it checks `VERSION` and the `CHANGELOG.md` section on `main`, tags
+  the tip of `main` and publishes, so a release needs no tag push from a
+  workstation. The version must be a single `MAJOR.MINOR.PATCH` value (a
+  multi-line input is refused before anything is written to the job's
+  environment). Given an existing tag it publishes that tag, for a run that
+  failed or was cancelled. The steps live in `.github/release.sh`, tested
+  against scratch repositories by `tests/test_release.py`.
+
+### Fixed
+- Two overlapping release runs could mark the lower version latest: the run
+  for the lower tag decided from the tags it had fetched when it started.
+  Releases now run one at a time across all tags, and the latest decision
+  re-reads the tags from the repository just before publishing.
+
 ## [1.22.0] - 2026-09-27
 
 ### Changed
