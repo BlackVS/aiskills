@@ -48,13 +48,25 @@ class NotFound(Exception):
 
 # ---------------------------------------------------------------- HTTP
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib would resend the Authorization header to
+    wherever it points. The 3xx comes back as an HTTP error instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def default_opener(*handlers):
+    return urllib.request.build_opener(NoRedirect(), *handlers).open
+
+
 class Http:
     """GET-only JSON client. One retry, and only on a clear network error."""
 
     def __init__(self, token, kind, opener=None, sleep=time.sleep, timeout=TIMEOUT):
         self._token = token
         self._kind = kind
-        self._open = opener or urllib.request.urlopen
+        self._open = opener or default_opener()
         self._sleep = sleep
         self._timeout = timeout
 
@@ -104,6 +116,9 @@ class Forge:
             raise Unavailable(f"rate limited (HTTP {status})")
         if status == 403:
             raise UsageError("the token may not read this repository (HTTP 403)")
+        if 300 <= status < 400:
+            raise UsageError(f"the forge redirected the request (HTTP {status}); redirects are not followed, "
+                             "so give the API base and repository the forge uses now")
         if status >= 500:
             raise Unavailable(f"the forge answered HTTP {status}")
         raise Unavailable(f"unexpected HTTP {status}")
@@ -119,7 +134,8 @@ class Forge:
 
     def pages(self, path, key=None):
         """A listing across pages. Follows Link rel="next" only on the API's own host,
-        so the token is never sent anywhere else."""
+        so the token is never sent anywhere else. A next page that cannot be followed
+        is an error: a partial listing could hide a later review or a failed check."""
         sep = "&" if "?" in path else "?"
         url = self.api + self.repo_path + path + sep + ("per_page=100" if self.kind == "github" else "limit=50")
         items = []
@@ -127,8 +143,11 @@ class Forge:
             data, headers = self._fetch(url)
             items.extend(data.get(key, []) if key else data)
             nxt = next_link(headers.get("link", ""))
-            if not nxt or urllib.parse.urlsplit(nxt)[:2] != self.origin:
+            if not nxt:
                 return items
+            if urllib.parse.urlsplit(nxt)[:2] != self.origin:
+                raise UsageError("the forge's next-page link points to another host, so the listing "
+                                 "cannot be read in full; give the API base the forge itself uses")
             url = nxt
         raise Unavailable(f"more than {MAX_PAGES} pages of {path}")
 
@@ -234,8 +253,7 @@ def ci_results(kind, merge_sha, forge, flaky):
                          "state": r.get("status"), "conclusion": r.get("conclusion"),
                          "result": "passed" if ok else "pending" if not done else "failed"})
     else:
-        combined = forge.get(f"/commits/{merge_sha}/status")
-        for s in combined.get("statuses") or []:
+        for s in forge.pages(f"/commits/{merge_sha}/status", key="statuses"):
             state = s.get("status") or s.get("state")
             runs.append({"name": s.get("context"), "id": s.get("id"), "url": s.get("target_url") or "",
                          "state": state, "conclusion": state,
@@ -397,10 +415,10 @@ def resolve(args, env):
     for name, rx in specs:
         try:
             pat = re.compile(rx)
-        except re.error as e:
-            raise UsageError(f"--review {name}: {e}")
+        except re.error:
+            raise UsageError("a --review pattern is not a valid regular expression")
         if "sha" not in pat.groupindex:
-            raise UsageError(f"--review {name}: the pattern needs a (?P<sha>...) group")
+            raise UsageError("a --review pattern needs a (?P<sha>...) group")
         compiled.append((name, pat))
     args.reviews = compiled
     args.required_reviews = len(compiled) if args.required_reviews is None else args.required_reviews
@@ -408,8 +426,8 @@ def resolve(args, env):
         raise UsageError(f"--required-reviews must be between 1 and {len(compiled)}")
     try:
         args.verdict = re.compile(args.verdict_pattern)
-    except re.error as e:
-        raise UsageError(f"--verdict-pattern: {e}")
+    except re.error:
+        raise UsageError("--verdict-pattern is not a valid regular expression")
     args.bot_accounts = set(args.bot_account)
     args.mergers = set(args.merger)
     kind, api_base, owner, repo, number = parse_ref(args.pr, args.number, args.forge, args.api_base)
@@ -424,16 +442,18 @@ def resolve(args, env):
         var = args.token_env or ("GITHUB_TOKEN_FILE" if kind == "github" else "GITEA_TOKEN_FILE")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", var):
             raise UsageError("--token-env takes the NAME of an environment variable, not a token")
+        # A token can look like a variable name, so a --token-env value is never repeated.
+        shown = "the variable named by --token-env" if args.token_env else var
         path = env.get(var)
         if not path:
-            raise UsageError(f"set {var} to the path of a file holding a read-only token (or pass --anonymous)")
+            raise UsageError(f"set {shown} to the path of a file holding a read-only token (or pass --anonymous)")
         try:
             with open(path, encoding="utf-8") as f:
                 token = f.read().strip()
         except OSError:
-            raise UsageError(f"the token file named by {var} cannot be read")
+            raise UsageError(f"the token file named by {shown} cannot be read")
         if not token:
-            raise UsageError(f"the token file named by {var} is empty")
+            raise UsageError(f"the token file named by {shown} is empty")
     return kind, api_base, owner, repo, number, token
 
 

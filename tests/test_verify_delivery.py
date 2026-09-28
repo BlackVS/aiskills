@@ -5,7 +5,8 @@ retry sleep is replaced and every timestamp comes from the fixtures.
 
 Run: python3 -m unittest tests/test_verify_delivery.py
 """
-import copy, email.message, io, json, os, pathlib, subprocess, sys, tempfile, unittest, urllib.error, urllib.parse
+import copy, datetime, email.message, io, json, os, pathlib, subprocess, sys, tempfile, unittest, urllib.error, urllib.parse
+import urllib.request, urllib.response
 
 from tests.test_install import ROOT
 
@@ -312,25 +313,78 @@ class Verify:
         code, doc = self.run_vd()  # run_vd asserts the token is absent from stdout and stderr
         self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
 
-    def test_pagination_stays_on_the_api_host(self):
-        comments = self.comments()
-        first, rest = comments[:2], comments[2:]
+    def page(self, path, key, first, second, next_host=None):
+        """Serve a listing as two pages; the first page's next link points at
+        next_host (default: the API's own host)."""
         api = FORGES[self.forge]["api"]
+        base = next_host or api
         seen = []
 
         def paged(req):
-            q = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
             seen.append(req.full_url)
-            if "page" in q:
-                link = '<https://elsewhere.example.net/steal?page=3>; rel="next"'
-                return Response(200, json.dumps(rest).encode(), {"Link": link})
-            return Response(200, json.dumps(first).encode(),
-                            {"Link": f'<{api}/repos/acme/widgets/issues/42/comments?page=2>; rel="next"'})
-        self.fake.overrides["/repos/acme/widgets/issues/42/comments"] = paged
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
+            items = second if "page" in q else first
+            wrapped = {"status": "statuses", "check_runs": "check_runs"}.get(key)
+            body = {**self.fake.data[key], wrapped: items} if wrapped else items
+            link = {} if "page" in q else {"Link": f'<{base}/repos/acme/widgets{path}?page=2>; rel="next"'}
+            return Response(200, json.dumps(body).encode(), link)
+        self.fake.overrides["/repos/acme/widgets" + path] = paged
+        return seen
+
+    def newer_return_at_head(self):
+        """A copy of the external READY review at the head, a minute later and not READY."""
+        orig = next(c for c in self.comments() if c["body"].startswith("[example-bot") and HEAD in c["body"])
+        later = (vd.when(orig["created_at"]) + datetime.timedelta(minutes=1)).isoformat()
+        return {**orig, "id": 99, "created_at": later, "updated_at": later,
+                "body": orig["body"].replace("READY_FOR_HUMAN_MERGE", "RETURN_TO_IMPLEMENTATION")}
+
+    def test_pagination_reads_every_page(self):
+        seen = self.page("/issues/42/comments", "issue_comments", self.comments(), [self.newer_return_at_head()])
         code, doc = self.run_vd()
-        self.assertEqual(code, 0, "both pages were read")
-        self.assertEqual(len(seen), 2)
+        self.assertEqual(len(seen), 2, "both pages were read")
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"), "the newer review on page 2 counts")
+
+    def test_an_unfollowable_next_page_is_never_confirmed(self):
+        # Page 2 would hold a newer not-READY review; its link points off the API host.
+        seen = self.page("/issues/42/comments", "issue_comments", self.comments(), [self.newer_return_at_head()],
+                         next_host="https://elsewhere.example.net")
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"], doc["error"]["kind"]), (2, "not_confirmed", "usage"))
+        self.assertNotIn("evidence", doc)
+        self.assertEqual(len(seen), 1)
         self.assertFalse(any("elsewhere.example.net" in r["url"] for r in self.fake.requests), "never followed off-host")
+
+    def test_ci_on_an_unfollowable_next_page_is_never_confirmed(self):
+        github = self.forge == "github"
+        key, field = ("check_runs", "check_runs") if github else ("status", "statuses")
+        path = f"/commits/{MERGE}/" + ("check-runs" if github else "status")
+        runs = self.fake.data[key][field]
+        failed = {**runs[0], "id": 99, **({"conclusion": "failure"} if github else {"status": "failure"})}
+        self.page(path, key, runs, [failed])
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "post_merge_ci")["status"]), (3, "failed"), "page 2 was read")
+        self.page(path, key, runs, [failed], next_host="https://elsewhere.example.net")
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (2, "not_confirmed"))
+        self.assertNotIn("evidence", doc)
+
+    def test_redirects_are_not_followed(self):
+        class Redirecting(urllib.request.BaseHandler):
+            handler_order = 100  # ahead of the real https handler: nothing leaves the process
+            seen = []
+
+            def https_open(self, req):
+                self.seen.append((req.full_url, req.get_header("Authorization")))
+                headers = email.message.Message()
+                headers["Location"] = "http://elsewhere.example.net/steal"
+                resp = urllib.response.addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
+                resp.msg = "Found"
+                return resp
+        handler = Redirecting()
+        code, doc = self.run_vd(opener=vd.default_opener(handler))
+        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+        self.assertIn("redirect", doc["error"]["message"])
+        self.assertEqual(len(handler.seen), 1, "the redirect target was never requested")
 
     def test_usage_errors(self):
         code, doc = self.run_vd(env={})
@@ -342,10 +396,20 @@ class Verify:
         self.assertEqual(code, 2)
         code, doc = self.run_vd("--required-reviews", "3")
         self.assertEqual(code, 2)
-        for leak in (["--token", TOKEN], ["--token-env", TOKEN], [TOKEN], ["--forge", TOKEN], ["--number", TOKEN]):
+        leaks = (["--token", TOKEN], ["--token-env", TOKEN], [TOKEN], ["--forge", TOKEN], ["--number", TOKEN],
+                 ["--review", f"{TOKEN}=x"], ["--review", f"{TOKEN}=("], ["--review", f"x=({TOKEN}"],
+                 ["--verdict-pattern", f"({TOKEN}"])
+        for leak in leaks:
             with self.subTest(args=leak[0]):
                 code, doc = self.run_vd(*leak)  # run_vd asserts the token is not echoed
                 self.assertEqual(code, 2, "there is no way to pass a token as an argument")
+        # A token can look like a variable name; it is still never repeated.
+        ident = "ghp_" + "A1b2C3d4" * 4
+        out = io.StringIO()
+        code = vd.main(["--pr", FORGES[self.forge]["pr"], *FORGES[self.forge]["args"], "--token-env", ident],
+                       env={}, stdout=out, stderr=io.StringIO(), opener=self.fake)
+        self.assertEqual(code, 2)
+        self.assertNotIn(ident, out.getvalue())
 
     def test_pr_not_found(self):
         self.fake.data.pop("pull")

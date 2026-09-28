@@ -106,7 +106,7 @@ One JSON document on stdout:
 | 0 | `confirmed` | Record the `evidence` entries. |
 | 3 | `not_confirmed` | Do not record delivery. Report the failed checks. |
 | 4 | `pending` | Do not record delivery. CI is running, the PR is not merged yet, or the forge was unavailable: check again later. |
-| 2 | (usage) | Fix the invocation: the reference, `--api-base`, the token file, a pattern. Nothing was verified. |
+| 2 | (usage) | Fix the invocation: the reference, `--api-base`, the token file, a pattern. Also when the forge redirects or its next-page link points to another host (use the API base and repository name the forge uses now). Nothing was verified. |
 
 ## Rules
 
@@ -119,7 +119,10 @@ One JSON document on stdout:
   request acts on it.
 - Never print, log or paste the token, and never pass it as an argument.
   The helper reads it from the file, sends it only in the `Authorization`
-  header to the API host, and never includes it in its output.
+  header to the API host, and never includes it in its output. It follows
+  neither redirects nor next-page links to another host; since a partial
+  listing could hide a later review or a failed check, either one stops the
+  run with a usage error instead of a verdict.
 - The helper retries once, and only on a clear network error; every request
   has a timeout. It does not wait for CI: call it again later for a
   `pending` result.

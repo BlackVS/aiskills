@@ -26,7 +26,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
   evidence (`reviewed_head`, `human_merge`, `post_merge_ci`; at most 16
   entries of at most 512 bytes), and exits 0 confirmed, 3 not confirmed, 4
   pending or retryable, 2 usage error. The token comes from a file named by an
-  environment variable and never appears in the output. Tested offline against
+  environment variable and never appears in the output; redirects and
+  next-page links to another host are never followed, and stop the run
+  rather than yield a verdict from a partial listing. Tested offline against
   recorded GitHub and Gitea responses (`tests/test_verify_delivery.py`).
 
 ## [1.23.1] - 2026-09-27
