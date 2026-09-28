@@ -1,0 +1,26 @@
+{
+  "total_count": 3,
+  "check_runs": [
+    {
+      "id": 111,
+      "name": "tests (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/acme/widgets/actions/runs/5001/job/111"
+    },
+    {
+      "id": 112,
+      "name": "tests (windows-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/acme/widgets/actions/runs/5001/job/112"
+    },
+    {
+      "id": 113,
+      "name": "clients",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/acme/widgets/actions/runs/5002/job/113"
+    }
+  ]
+}
