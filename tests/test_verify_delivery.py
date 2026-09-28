@@ -17,7 +17,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "verify_delivery"
 HEAD = "3f2a9c1e5b7d4a6f8e0c2b4d6f8a0c2e4b6d8f0a"
 OLD = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
 MERGE = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
-TOKEN = "tok-4f1c9e-SECRET-do-not-print"
+TOKEN = "fixture-placeholder-not-a-real-token"  # a fake value; the tests check it is never printed
 FORGES = {
     "github": {"api": "https://api.github.com", "pr": "https://github.com/acme/widgets/pull/42", "args": [],
                "ci": "check_runs", "env": "GITHUB_TOKEN_FILE"},
