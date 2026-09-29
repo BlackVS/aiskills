@@ -67,6 +67,21 @@ Rules:
   ("the primary hub", "a peer hub", "a named backend"); when unsure whether a
   name is public, leave it out.
 
+Pull request lifecycle:
+
+- Open the PR as a **draft** with a **`WIP: `** title prefix, and keep it
+  that way while any gate is open.
+- Mark it ready only when both pre-merge gates are green at the current head:
+  the local high review posted and naming that head with
+  `READY_FOR_HUMAN_MERGE`, the external review (where configured) READY at
+  that head, and CI green. **Drop the `WIP: ` prefix in the same step**, so
+  the title is final before anyone merges.
+- A later commit makes both reviews stale. If fixes are needed after the PR
+  was marked ready, convert it back to a draft and restore the prefix until
+  the gates are green again.
+- The merge stays with the person. An agent never merges, even when every
+  gate is green.
+
 External reviewer labels (hands / OpenHands, where deployed — org-wide on the
 Gitea orgs a hands site covers, and on GitHub repos hands polls):
 
