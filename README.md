@@ -422,7 +422,9 @@ delivered, typically a team coordinator writing evidence into its team
 system. It asks the forge, read-only, and confirms four things: the required
 reviews are `READY_FOR_HUMAN_MERGE` at exactly the final head (by default the
 local `oh-code-review` pre-merge review and an external reviewer's, in the
-`[<reviewer> review] reviewed at head <sha>` format), the PR was merged by a
+`[<reviewer> review] reviewed at head <sha>` format, posted by an author the
+repository trusts: a listed account, or on GitHub an owner, member or
+collaborator), the PR was merged by a
 person, the merge commit's tree equals the reviewed head's tree, and CI on the
 merge commit is green. Its helper, `skills/verify-delivery/verify_delivery.py`,
 uses only the Python standard library and works against GitHub and Gitea:
@@ -436,7 +438,7 @@ It prints one JSON document (`verdict`, `checks`, and `evidence` only when
 confirmed) and exits 0 confirmed, 3 not confirmed, 4 pending or retryable, 2
 usage error. The token is read from the file an environment variable names,
 never from the command line, and never appears in the output. Review patterns,
-the required count, a merger allowlist, bot accounts and known-flaky checks are
+review author allowlists, the required count, a merger allowlist, bot accounts and known-flaky checks are
 options; `SKILL.md` documents them and how to read the result. The helper is
 tested offline against recorded API responses for both forges
 (`tests/test_verify_delivery.py`).

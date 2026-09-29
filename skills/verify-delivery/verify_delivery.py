@@ -30,6 +30,8 @@ DEFAULT_REVIEWS = [
 ]
 DEFAULT_VERDICT = r"(?m)^[ \t]*VERDICT[ \t]*\r?\n[ \t]*READY_FOR_HUMAN_MERGE\b"
 GITHUB_PASS = {"success", "neutral", "skipped"}
+# GitHub author_association values that count as the repository trusting a review's author.
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 GITEA_PASS = {"success"}
 GITEA_PENDING = {"pending"}
 
@@ -196,11 +198,28 @@ def when(stamp):
         return None
 
 
-def check_reviews(items, head, merged_at, specs, verdict_re):
-    """Each configured review must be READY_FOR_HUMAN_MERGE at exactly the final head, in its
-    latest comment for that head, posted before the merge."""
+def author_verdict(c, name, kind, authors, trust_any):
+    """None when the comment's author may give review NAME, else the reason it may not."""
+    if trust_any:
+        return None
+    if name in authors:
+        # Logins are case-insensitive on both forges.
+        return None if (c["author"] or "").lower() in authors[name] else "author not allowed"
+    if kind == "github":
+        assoc = c.get("association") or "missing"
+        return None if assoc in TRUSTED_ASSOCIATIONS else f"author association {assoc} not trusted"
+    return "no author allowlist for this review (required on Gitea)"
+
+
+def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", authors=None, trust_any=False):
+    """Each configured review must be READY_FOR_HUMAN_MERGE at exactly the final head, in the
+    latest comment for that head by an author the repository trusts, posted before the merge.
+    The author is checked first: an untrusted comment never counts and never displaces one."""
+    authors = authors or {}
     reviews, ignored = [], []
     for name, pattern in specs:
+        rule = ("disabled" if trust_any else "allowlist" if name in authors
+                else "association" if kind == "github" else "allowlist required")
         latest = None
         epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
         for c in sorted(items, key=lambda c: when(c["created_at"]) or epoch):
@@ -208,7 +227,10 @@ def check_reviews(items, head, merged_at, specs, verdict_re):
             if not m:
                 continue
             sha = m.group("sha").lower()
-            if not head.startswith(sha):
+            untrusted = author_verdict(c, name, kind, authors, trust_any)
+            if untrusted:
+                ignored.append({"review": name, "reason": untrusted, "author": c["author"], "sha": sha, "url": c["url"]})
+            elif not head.startswith(sha):
                 ignored.append({"review": name, "reason": "names an older or different head", "sha": sha, "url": c["url"]})
             elif when(merged_at) and when(c["created_at"]) and when(c["created_at"]) > when(merged_at):
                 ignored.append({"review": name, "reason": "posted after the merge", "sha": sha, "url": c["url"]})
@@ -216,12 +238,18 @@ def check_reviews(items, head, merged_at, specs, verdict_re):
                 ignored.append({"review": name, "reason": "edited after the merge", "sha": sha, "url": c["url"]})
             else:
                 latest = (c, sha)
+        if rule == "allowlist required":
+            reviews.append({"review": name, "status": "unsatisfiable", "author_rule": rule,
+                            "detail": "an author allowlist is required on Gitea: give --review-author "
+                                      f"{name}=LOGIN (or --trust-any-author where only trusted accounts can comment)"})
+            continue
         if latest is None:
-            reviews.append({"review": name, "status": "missing", "detail": "no review names the final head"})
+            reviews.append({"review": name, "status": "missing", "author_rule": rule,
+                            "detail": "no review by a trusted author names the final head"})
             continue
         c, sha = latest
         ready = bool(verdict_re.search(c["body"] or ""))
-        reviews.append({"review": name, "status": "ready" if ready else "not_ready", "sha": sha,
+        reviews.append({"review": name, "status": "ready" if ready else "not_ready", "author_rule": rule, "sha": sha,
                         "url": c["url"], "author": c["author"], "created_at": c["created_at"]})
     ready = sum(r["status"] == "ready" for r in reviews)
     return ready, reviews, ignored
@@ -290,15 +318,21 @@ def verify(args, forge, kind, number):
 
     # 1. reviewed head
     items = [{"body": c.get("body"), "created_at": c.get("created_at"), "updated_at": c.get("updated_at"),
-              "url": c.get("html_url"), "author": (c.get("user") or {}).get("login")}
+              "url": c.get("html_url"), "author": (c.get("user") or {}).get("login"),
+              "association": c.get("author_association")}
              for c in forge.pages(f"/issues/{number}/comments")]
     items += [{"body": r.get("body"), "created_at": r.get("submitted_at"), "url": r.get("html_url"),
-               "author": (r.get("user") or {}).get("login")} for r in forge.pages(f"/pulls/{number}/reviews")]
+               "author": (r.get("user") or {}).get("login"), "association": r.get("author_association")}
+              for r in forge.pages(f"/pulls/{number}/reviews")]
     head_commit = (forge.get_or_none(f"/git/commits/{head}") if head else None) or {}
     head_url = head_commit.get("html_url") or ""
-    ready, reviews, ignored = check_reviews(items, head, merged_at, args.reviews, args.verdict)
-    status = "passed" if ready >= args.required_reviews else "pending" if not merged and pr.get("state") == "open" else "failed"
+    ready, reviews, ignored = check_reviews(items, head, merged_at, args.reviews, args.verdict,
+                                            kind, args.review_authors, args.trust_any_author)
+    unsatisfiable = any(r["status"] == "unsatisfiable" for r in reviews)
+    status = ("passed" if ready >= args.required_reviews else "failed" if unsatisfiable
+              else "pending" if not merged and pr.get("state") == "open" else "failed")
     checks.append({"name": "reviewed_head", "status": status, "head_sha": head, "head_url": head_url,
+                   "author_check": "disabled" if args.trust_any_author else "enabled",
                    "required": args.required_reviews, "ready": ready, "reviews": reviews, "ignored": ignored})
 
     # 2. merge
@@ -386,6 +420,10 @@ def build_parser():
                    help="a required review: a regex with a (?P<sha>...) group; replaces the defaults, repeatable")
     p.add_argument("--required-reviews", type=int, help="how many of the reviews must be READY (default: all)")
     p.add_argument("--verdict-pattern", default=DEFAULT_VERDICT, help="regex a review must match to count as READY")
+    p.add_argument("--review-author", action="append", default=[], metavar="NAME=LOGIN",
+                   help="an account whose comments may give review NAME; replaces the default for NAME, repeatable")
+    p.add_argument("--trust-any-author", action="store_true",
+                   help="accept a review from any author (only where just trusted accounts can comment); reported")
     p.add_argument("--allow-bot-merge", action="store_true", help="accept a merge by a bot or app account")
     p.add_argument("--merger", action="append", default=[], help="allowlist of accounts that may merge, repeatable")
     p.add_argument("--bot-account", action="append", default=[], help="treat this account as a bot, repeatable")
@@ -421,6 +459,17 @@ def resolve(args, env):
             raise UsageError("a --review pattern needs a (?P<sha>...) group")
         compiled.append((name, pat))
     args.reviews = compiled
+    names = {name for name, _ in compiled}
+    args.review_authors = {}
+    for item in args.review_author:
+        name, sep, login = item.partition("=")
+        if not sep or not name or not login.strip():
+            raise UsageError("--review-author takes NAME=LOGIN")
+        if name not in names:
+            raise UsageError("--review-author names a review that is not configured (see --review)")
+        args.review_authors.setdefault(name, set()).add(login.strip().lower())
+    if args.trust_any_author and args.review_authors:
+        raise UsageError("give either --review-author or --trust-any-author, not both")
     args.required_reviews = len(compiled) if args.required_reviews is None else args.required_reviews
     if not 1 <= args.required_reviews <= len(compiled):
         raise UsageError(f"--required-reviews must be between 1 and {len(compiled)}")
