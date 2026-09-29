@@ -87,7 +87,8 @@ skill:
   external reviewer where one is configured (the `review-this` label). A new
   commit or a rebase makes both stale.
 
-Open a PR as a draft and mark it ready only when both gates are green at the
-current head. The merge stays with the maintainer. Repository-specific review
+Open a PR as a draft with a `WIP: ` title prefix, and mark it ready (dropping
+the prefix in the same step) only when both gates are green at the current
+head. The merge stays with the maintainer. Repository-specific review
 context lives in `.agents/skills/custom-codereview-guide/SKILL.md`; the
 reviewer reads it before every review.

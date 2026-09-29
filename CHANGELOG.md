@@ -9,6 +9,31 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-09-29
+
+### Added
+- `verify-delivery` checks who posted a review, not only its text: on a
+  public repository anyone can comment, so a comment in the review format
+  naming the final head could stand in for a real review. The author is
+  checked before the head and the verdict, so an untrusted comment never
+  counts and never displaces a trusted one. `--review-author NAME=LOGIN`
+  (repeatable) sets the accounts that may give review `NAME`; without it,
+  GitHub accepts authors whose `author_association` is `OWNER`, `MEMBER` or
+  `COLLABORATOR`, and on Gitea, which reports no association, the review
+  cannot be satisfied (`not_confirmed`). `--trust-any-author` turns the check
+  off and is reported as `"author_check": "disabled"`. Each comment ignored
+  for its author is listed with the reason and the login. Exit codes,
+  evidence format and GET-only behaviour are unchanged. **Gitea callers must
+  now pass `--review-author` for each review** (or `--trust-any-author`).
+
+### Changed
+- The review-gates block (`agents/review-gates.md`) now states the pull
+  request lifecycle: open as a draft with a `WIP: ` title prefix, mark ready
+  and drop the prefix in the same step only when both pre-merge gates are
+  green at the current head, go back to draft if fixes are needed after
+  that, and never merge as an agent. The repository's `AGENTS.md` says the
+  same for its own PRs.
+
 ## [1.24.0] - 2026-09-28
 
 ### Added

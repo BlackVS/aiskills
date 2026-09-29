@@ -7,6 +7,7 @@ Run: python3 -m unittest tests/test_verify_delivery.py
 """
 import copy, datetime, email.message, io, json, os, pathlib, subprocess, sys, tempfile, unittest, urllib.error, urllib.parse
 import urllib.request, urllib.response
+from unittest import mock
 
 from tests.test_install import ROOT
 
@@ -23,7 +24,9 @@ FORGES = {
     "github": {"api": "https://api.github.com", "pr": "https://github.com/acme/widgets/pull/42", "args": [],
                "ci": "check_runs", "env": "GITHUB_TOKEN_FILE"},
     "gitea": {"api": "https://git.example.org/api/v1", "pr": "https://git.example.org/acme/widgets/pulls/42",
-              "args": ["--api-base", "https://git.example.org/api/v1"], "ci": "status", "env": "GITEA_TOKEN_FILE"},
+              "args": ["--api-base", "https://git.example.org/api/v1"], "ci": "status", "env": "GITEA_TOKEN_FILE",
+              # Gitea has no author association: the default reviews need an allowlist there.
+              "authors": ["--review-author", "local=author", "--review-author", "external=maintainer"]},
 }
 
 
@@ -86,11 +89,12 @@ class Verify:
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_vd(self, *extra, env=None, opener=None):
+    def run_vd(self, *extra, env=None, opener=None, authors=None):
         cfg = FORGES[self.forge]
         out, err = io.StringIO(), io.StringIO()
         env = {cfg["env"]: str(self.token_file)} if env is None else env
-        code = vd.main(["--pr", cfg["pr"], *cfg["args"], *extra], env=env, stdout=out, stderr=err,
+        authors = cfg.get("authors", []) if authors is None else authors
+        code = vd.main(["--pr", cfg["pr"], *cfg["args"], *authors, *extra], env=env, stdout=out, stderr=err,
                        opener=opener or self.fake, sleep=self.sleeps.append)
         self.assertNotIn(TOKEN, out.getvalue() + err.getvalue(), "the token never appears in output")
         return code, json.loads(out.getvalue())
@@ -202,7 +206,7 @@ class Verify:
         self.comments().append({"id": 5, "user": {"login": "qa"}, "created_at": "2026-09-27T13:20:00Z",
                                 "html_url": "https://example.invalid/c/5",
                                 "body": f"QA passed at {HEAD[:10]}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n"})
-        code, doc = self.run_vd("--review", r"qa=QA passed at (?P<sha>[0-9a-f]{7,40})")
+        code, doc = self.run_vd("--review", r"qa=QA passed at (?P<sha>[0-9a-f]{7,40})", authors=["--review-author", "qa=qa"])
         self.assertEqual((code, doc["verdict"]), (0, "confirmed"))
         self.assertEqual([r["review"] for r in self.check(doc, "reviewed_head")["reviews"]], ["qa"])
 
@@ -386,6 +390,92 @@ class Verify:
         self.assertIn("redirect", doc["error"]["message"])
         self.assertEqual(len(handler.seen), 1, "the redirect target was never requested")
 
+    # ---- who posted the review
+    def external_at_head(self):
+        return next(c for c in self.comments() if c["body"].startswith("[example-bot") and HEAD in c["body"])
+
+    def forged(self, login="stranger", association="NONE", minutes=5, verdict="READY_FOR_HUMAN_MERGE"):
+        """A copy of the external READY review at the head, posted later by another account."""
+        orig = self.external_at_head()
+        later = (vd.when(orig["created_at"]) + datetime.timedelta(minutes=minutes)).isoformat()
+        c = {**orig, "id": 70 + minutes, "user": {"login": login, "id": 700}, "created_at": later, "updated_at": later,
+             "html_url": f"https://example.invalid/c/forged-{minutes}",
+             "body": orig["body"].replace("READY_FOR_HUMAN_MERGE", verdict)}
+        if self.forge == "github":
+            c["author_association"] = association
+        else:
+            c.pop("author_association", None)
+        return c
+
+    def replace_external_with_forged(self, **kw):
+        forged = self.forged(**kw)
+        self.drop_external_at_head()
+        self.comments().append(forged)
+        return forged
+
+    def assert_forgery_refused(self, association):
+        self.fake = FakeForge(self.forge)
+        forged = self.replace_external_with_forged(association=association)
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        self.assertNotIn("evidence", doc)
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertEqual(reviewed["author_check"], "enabled")
+        self.assertEqual({r["review"]: r["status"] for r in reviewed["reviews"]}["external"], "missing")
+        why = [i for i in reviewed["ignored"] if i["url"] == forged["html_url"] and i["review"] == "external"]
+        expected = f"author association {association} not trusted" if self.forge == "github" else "author not allowed"
+        self.assertEqual([(i["reason"], i["author"]) for i in why], [(expected, "stranger")])
+
+    def test_forged_review_is_not_counted(self):
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR"):
+            with self.subTest(association=association):
+                self.assert_forgery_refused(association)
+
+    def test_allowlisted_login_passes(self):
+        # On GitHub this is also an allowlisted NONE author: the list overrides the association default.
+        self.replace_external_with_forged(association="NONE")
+        code, doc = self.run_vd(authors=["--review-author", "local=author", "--review-author", "external=Stranger"])
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        external = {r["review"]: r for r in self.check(doc, "reviewed_head")["reviews"]}["external"]
+        self.assertEqual((external["author"], external["author_rule"]), ("stranger", "allowlist"))
+
+    def test_allowlist_excludes_accounts_not_on_it(self):
+        # The external review is by "maintainer" (OWNER on GitHub); a list without it rejects it.
+        code, doc = self.run_vd(authors=["--review-author", "local=author", "--review-author", "external=someone-else"])
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertIn(("author not allowed", "maintainer"),
+                      [(i["reason"], i["author"]) for i in reviewed["ignored"] if i["review"] == "external"])
+
+    def test_untrusted_newer_comment_does_not_displace_a_trusted_one(self):
+        orig = self.external_at_head()
+        self.comments().append(self.forged(verdict="RETURN_TO_IMPLEMENTATION"))
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        external = {r["review"]: r for r in self.check(doc, "reviewed_head")["reviews"]}["external"]
+        self.assertEqual(external["url"], orig["html_url"])
+
+    def test_trust_any_author_is_explicit_and_reported(self):
+        self.replace_external_with_forged()
+        code, doc = self.run_vd("--trust-any-author", authors=[])
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertEqual(reviewed["author_check"], "disabled")
+        self.assertEqual({r["author_rule"] for r in reviewed["reviews"]}, {"disabled"})
+
+    def test_seeded_fault_without_the_author_check_a_forgery_passes(self):
+        """Removing the author check must make the forged-review test fail."""
+        with mock.patch.object(vd, "author_verdict", lambda *a, **k: None):
+            with self.assertRaises(AssertionError):
+                self.assert_forgery_refused("NONE")
+
+    def test_review_author_usage(self):
+        for bad in (["--review-author", "external"], ["--review-author", "nosuchreview=someone"],
+                    ["--review-author", "external=someone", "--trust-any-author"]):
+            with self.subTest(args=bad):
+                code, doc = self.run_vd(*bad, authors=[])
+                self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+
     def test_usage_errors(self):
         code, doc = self.run_vd(env={})
         self.assertEqual((code, doc["error"]["kind"]), (2, "usage"), "no token file")
@@ -398,7 +488,7 @@ class Verify:
         self.assertEqual(code, 2)
         leaks = (["--token", TOKEN], ["--token-env", TOKEN], [TOKEN], ["--forge", TOKEN], ["--number", TOKEN],
                  ["--review", f"{TOKEN}=x"], ["--review", f"{TOKEN}=("], ["--review", f"x=({TOKEN}"],
-                 ["--verdict-pattern", f"({TOKEN}"])
+                 ["--verdict-pattern", f"({TOKEN}"], ["--review-author", f"{TOKEN}=x"], ["--review-author", TOKEN])
         for leak in leaks:
             with self.subTest(args=leak[0]):
                 code, doc = self.run_vd(*leak)  # run_vd asserts the token is not echoed
@@ -420,9 +510,36 @@ class Verify:
 class GitHub(Verify, unittest.TestCase):
     forge = "github"
 
+    def test_association_default_and_missing_association(self):
+        code, doc = self.run_vd()
+        self.assertEqual({r["author_rule"] for r in self.check(doc, "reviewed_head")["reviews"]}, {"association"})
+        forged = self.replace_external_with_forged()
+        forged.pop("author_association")
+        code, doc = self.run_vd()
+        self.assertEqual(code, 3)
+        self.assertIn("author association missing not trusted",
+                      [i["reason"] for i in self.check(doc, "reviewed_head")["ignored"]])
+
 
 class Gitea(Verify, unittest.TestCase):
     forge = "gitea"
+
+    def test_without_an_allowlist_the_reviews_cannot_be_satisfied(self):
+        code, doc = self.run_vd(authors=[])
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        self.assertNotIn("evidence", doc)
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertEqual({r["status"] for r in reviewed["reviews"]}, {"unsatisfiable"})
+        self.assertTrue(all("allowlist is required on Gitea" in r["detail"] for r in reviewed["reviews"]))
+        # Not something waiting helps with: an open PR is refused too, not left pending.
+        self.fake.data["pull"].update(state="open", merged=False, merged_at=None, merged_by=None, merge_commit_sha=None)
+        code, doc = self.run_vd(authors=[])
+        self.assertEqual((code, self.check(doc, "reviewed_head")["status"]), (3, "failed"))
+
+    def test_with_an_allowlist_the_reviews_pass(self):
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"))
+        self.assertEqual({r["author_rule"] for r in self.check(doc, "reviewed_head")["reviews"]}, {"allowlist"})
 
     def test_api_base_is_required(self):
         out = io.StringIO()

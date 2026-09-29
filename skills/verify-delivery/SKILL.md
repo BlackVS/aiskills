@@ -23,13 +23,27 @@ All four must pass for the verdict `confirmed`:
    The required reviews must be `READY_FOR_HUMAN_MERGE` at exactly that
    head: the latest review comment that names the head counts, one naming an
    older head does not, and one posted or edited after the merge does not.
-   Reviews are recognised by their text, not by who posted them. By default
+   Reviews are recognised by their text **and by an author the repository
+   trusts**; the author is checked first, so an untrusted comment never
+   counts and never displaces a trusted one, even when it is newer. By default
    two reviews are required, both in the `oh-code-review` comment format
    (`[<reviewer> review] reviewed at head <sha>`, then `VERDICT` /
    `READY_FOR_HUMAN_MERGE`):
    - `local`: the pre-merge `oh-code-review` review at level high (or max,
      ultra);
    - `external`: any other reviewer's comment in that format.
+
+   Who counts as trusted: the accounts you list for that review with
+   `--review-author NAME=LOGIN`; without a list, on GitHub, an author whose
+   `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` (anything else,
+   or none reported, is ignored with the reason). Gitea reports no
+   association, so there each review needs a `--review-author` list or it
+   cannot be satisfied (the result is `not_confirmed`). `--trust-any-author`
+   turns the check off, for private repositories where only trusted accounts
+   can comment; the output then says `"author_check": "disabled"`. The forge
+   does not report who edited a comment, so the check applies to its author.
+   Logins match case-insensitively. A reviewer that posts as an app or bot
+   account usually has no trusted association on GitHub: list it.
 2. **Merge.** The PR is merged; the merge commit and the account that
    merged it are recorded. By default that account must be a person (a
    GitHub `User`, not a `Bot`). Gitea has no bot flag: its system accounts
@@ -59,7 +73,8 @@ GITHUB_TOKEN_FILE=/path/to/read-only-token \
 
 GITEA_TOKEN_FILE=/path/to/read-only-token \
   python3 <skill-dir>/verify_delivery.py --pr https://git.example.org/OWNER/REPO/pulls/45 \
-  --api-base https://git.example.org/api/v1
+  --api-base https://git.example.org/api/v1 \
+  --review-author local=LOCAL_REVIEWER --review-author external=EXTERNAL_REVIEWER
 ```
 
 On Windows run it with `python` or `py -3`. The token needs read access to
@@ -76,6 +91,8 @@ Options for the checks:
 | --- | --- | --- |
 | `--review NAME=REGEX` (repeatable) | `local` and `external` as above | A required review. The regex must have a `(?P<sha>...)` group capturing the head it names (7 to 40 hex digits). Giving any `--review` replaces the defaults. |
 | `--required-reviews N` | all of them | How many of the reviews must be READY. |
+| `--review-author NAME=LOGIN` (repeatable) | GitHub: `OWNER`, `MEMBER`, `COLLABORATOR`; Gitea: none (required) | An account whose comments may give review `NAME`. A list for a review replaces the association default for it, in both directions. |
+| `--trust-any-author` | off | Accept a review from any author. Only where just trusted accounts can comment; reported as `"author_check": "disabled"`. Not combined with `--review-author`. |
 | `--verdict-pattern REGEX` | a `VERDICT` line followed by `READY_FOR_HUMAN_MERGE` | What makes a review READY. |
 | `--merger NAME` (repeatable) | anyone | Allowlist of accounts that may merge. |
 | `--bot-account NAME` (repeatable) | none | Treat this account as a bot. |
@@ -89,8 +106,10 @@ One JSON document on stdout:
 - `verdict`: `confirmed`, `not_confirmed` or `pending`.
 - `checks`: one entry per check (`reviewed_head`, `merge`, `tree_equality`,
   `post_merge_ci`) with its `status` (`passed`, `failed`, `pending`) and the
-  details: SHAs, URLs, the reviews found and the ones ignored with the
-  reason, who merged and their account type, each CI run with its result.
+  details: SHAs, URLs, the reviews found (with the author rule that applied)
+  and the comments ignored with the reason and, for an author reason, the
+  login; `reviewed_head` also says `author_check` (`enabled` or `disabled`).
+  Who merged and their account type, each CI run with its result.
 - `evidence`: present **only** when the verdict is `confirmed`: a list of
   `{kind, ref}` to record as they are, with at most 16 entries, each ref at
   most 512 bytes:
