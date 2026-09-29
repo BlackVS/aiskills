@@ -1,0 +1,19 @@
+{
+  "state": "success",
+  "sha": "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c",
+  "total_count": 2,
+  "statuses": [
+    {
+      "id": 21,
+      "context": "ci / tests",
+      "status": "success",
+      "target_url": "https://git.example.org/acme/widgets/actions/runs/31"
+    },
+    {
+      "id": 22,
+      "context": "ci / lint",
+      "status": "success",
+      "target_url": "https://git.example.org/acme/widgets/actions/runs/31"
+    }
+  ]
+}

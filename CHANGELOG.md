@@ -9,6 +9,28 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-09-28
+
+### Added
+- New skill `verify-delivery` (written here, PolyForm Noncommercial 1.0.0):
+  confirms from the forge, read-only, that a pull request was delivered. The
+  required reviews are `READY_FOR_HUMAN_MERGE` at exactly the final head
+  (defaults: the local `oh-code-review` pre-merge review and an external
+  reviewer's `reviewed at head <sha>` comment; patterns and count
+  configurable), the PR was merged by a person (bots and apps refused unless
+  allowed; optional merger allowlist), the merge commit's tree equals the
+  reviewed head's tree, and every check run (GitHub) or commit status (Gitea)
+  on the merge commit succeeded; known-flaky failures are reported apart and
+  still block. Its stdlib-only helper `verify_delivery.py` prints one JSON
+  document with the verdict, per-check details and, only when confirmed, the
+  evidence (`reviewed_head`, `human_merge`, `post_merge_ci`; at most 16
+  entries of at most 512 bytes), and exits 0 confirmed, 3 not confirmed, 4
+  pending or retryable, 2 usage error. The token comes from a file named by an
+  environment variable and never appears in the output; redirects and
+  next-page links to another host are never followed, and stop the run
+  rather than yield a verdict from a partial listing. Tested offline against
+  recorded GitHub and Gitea responses (`tests/test_verify_delivery.py`).
+
 ## [1.23.1] - 2026-09-27
 
 ### Fixed

@@ -1,10 +1,11 @@
 # Review skills — portable copies for architecture and code review
 
 Skills taken from `OpenHands/extensions` (see `UPSTREAM.txt` for the commit),
-plus one skill written here. The upstream skills carry an `oh-` prefix so they
+plus skills written here. The upstream skills carry an `oh-` prefix so they
 never shadow built-in skills of the same name (Claude Code ships its own
 `/code-review`, and the OpenHands public catalog has `code-review`,
-`code-simplifier`, ...). `architecture-review` is local and unprefixed.
+`code-simplifier`, ...). `architecture-review` and `verify-delivery` are local
+and unprefixed.
 All use the common `SKILL.md` format (YAML
 frontmatter with `name` and `description`, then instructions), so the same folder
 works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
@@ -19,6 +20,7 @@ works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
 | `oh-improve-agent-readiness` | extensions (onboarding plugin, `improve-agent-readiness`) | Turns a readiness report's gaps into 5–10 ranked, repo-specific fixes and implements the approved ones. |
 | `oh-qa-changes` | extensions (`qa-changes`) | QA a PR by RUNNING the software: env setup, exercise changed behavior as a user, PASS/FAIL report with before/after evidence. Not tests (CI's job), not reading code (review's job). |
 | `oh-learn-from-code-review` | extensions (`learn-from-code-review`) | Distill merged-PR review feedback into repo skills and the `custom-codereview-guide` the reviewer reads; Gitea+GitHub; AI-reviewer comments included as signal. |
+| `verify-delivery` | written here | Confirm from the forge that a PR was delivered: reviews READY at the final head, merged by a person, merged tree equal to the reviewed one, CI green on the merge commit. Read-only helper, JSON verdict and evidence. |
 
 `prompts/` holds ready-to-fill prompts for each skill. The command stubs the
 upstream ships were only "read SKILL.md, then `$ARGUMENTS`", so they were replaced
@@ -412,6 +414,32 @@ only in a folder you have trusted. Its instructions file is `GEMINI.md`, not
 and with `--user` writes the block into `~/.gemini/GEMINI.md` when `~/.gemini`
 exists. Anything else: paste the `SKILL.md` body into the system prompt or
 `AGENTS.md`.
+
+## Verifying delivery
+
+`verify-delivery` is for an agent that has to record a pull request as
+delivered, typically a team coordinator writing evidence into its team
+system. It asks the forge, read-only, and confirms four things: the required
+reviews are `READY_FOR_HUMAN_MERGE` at exactly the final head (by default the
+local `oh-code-review` pre-merge review and an external reviewer's, in the
+`[<reviewer> review] reviewed at head <sha>` format), the PR was merged by a
+person, the merge commit's tree equals the reviewed head's tree, and CI on the
+merge commit is green. Its helper, `skills/verify-delivery/verify_delivery.py`,
+uses only the Python standard library and works against GitHub and Gitea:
+
+```bash
+GITHUB_TOKEN_FILE=/path/to/read-only-token python3 skills/verify-delivery/verify_delivery.py \
+  --pr https://github.com/OWNER/REPO/pull/123
+```
+
+It prints one JSON document (`verdict`, `checks`, and `evidence` only when
+confirmed) and exits 0 confirmed, 3 not confirmed, 4 pending or retryable, 2
+usage error. The token is read from the file an environment variable names,
+never from the command line, and never appears in the output. Review patterns,
+the required count, a merger allowlist, bot accounts and known-flaky checks are
+options; `SKILL.md` documents them and how to read the result. The helper is
+tested offline against recorded API responses for both forges
+(`tests/test_verify_delivery.py`).
 
 ## Compatibility rules
 

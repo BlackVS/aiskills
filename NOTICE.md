@@ -6,7 +6,7 @@ This repository contains work under two licenses.
 | --- | --- |
 | `skills/oh-*/` (the upstream-derived skills), except the files listed in the next row | MIT for the upstream portions; PolyForm Noncommercial 1.0.0 for the changes made here |
 | `skills/oh-code-review/references/custom-codereview-guide.template.md`, `dispositions.md`, `external-review-labels.md`, `fan-out.md` | PolyForm Noncommercial 1.0.0 (written here, no upstream counterpart) |
-| Everything else: `skills/architecture-review/`, `prompts/`, `agents/`, `consumers/`, `processes/`, `tests/`, the installers and the documentation | PolyForm Noncommercial 1.0.0 |
+| Everything else: `skills/architecture-review/`, `skills/verify-delivery/`, `prompts/`, `agents/`, `consumers/`, `processes/`, `tests/`, the installers and the documentation | PolyForm Noncommercial 1.0.0 |
 
 ## Upstream skills: MIT
 
