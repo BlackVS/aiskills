@@ -279,17 +279,23 @@ export function activate(host) {
         }
         syncSecondary();
         rememberSaved();
+        root.querySelector('[data-warning="settings"]').textContent = settings.problems?.settings ? `Saved settings cannot be used: ${settings.problems.settings}` : '';
         // Unsaved reviewer choices made before a provider edit survive the reload, still unsaved.
+        // A restored choice that replaces the saved one clears that role's warning, as choosing
+        // it in the picker did; a role left as saved (or skipped) keeps its warning.
         if (pending) {
+          const saved = JSON.parse(savedSelection);
           for (const role of roles) {
             const picker = select(role, 'Provider'), choice = pending[role];
+            if (JSON.stringify(choice) === JSON.stringify(saved[role])) continue;
             if (choice && ![...picker.options].some(option => option.value === choice.provider)) continue;
             picker.value = choice ? choice.provider : '';
+            root.querySelector(`[data-warning="${role}"]`).textContent = '';
+            root.querySelector('[data-warning="settings"]').textContent = '';
             try { await models(role, choice?.model, choice?.effort); } catch { failures.push(role); }
           }
           syncSecondary();
         }
-        root.querySelector('[data-warning="settings"]').textContent = settings.problems?.settings ? `Saved settings cannot be used: ${settings.problems.settings}` : '';
         const attention = [...roles, 'settings'].some(role => root.querySelector(`[data-warning="${role}"]`).textContent);
         message(failures.length ? 'Could not fetch ' + failures.join(' and ') + ' models. Check the provider connection in Canvas, then reload.'
           : attention ? 'A saved profile needs attention; see the warning under its role.' : 'Current automatic review settings.');

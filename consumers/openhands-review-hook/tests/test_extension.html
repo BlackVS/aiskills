@@ -121,6 +121,18 @@ try {
   check(brokenForm.querySelector('[type=submit]').disabled && brokenForm.elements.primaryModel.options.length === 0, 'An unrelated edit never enables Save while the primary is unavailable');
   brokenForm.elements.primaryProvider.value='acp:codex'; brokenForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(warn('primary') === '' && warn('fallback') === '' && !brokenForm.querySelector('[type=submit]').disabled, 'Choosing replacements clears the warnings and enables Save');
+  // a provider edit before saving those replacements keeps them, with the warnings still cleared
+  const renamedRow = [...document.querySelector('[data-providers]').children].find(row => row.textContent.includes('Test API'));
+  [...renamedRow.querySelectorAll('button')].find(button => button.textContent === 'Edit').click();
+  const liveAdd = document.querySelector('[data-provider]');  // the page was mounted again above: use the live form
+  liveAdd.elements.display_name.value='Renamed again'; probeOK=true; liveAdd.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
+  check(lastUpdate.display_name === 'Renamed again', 'The provider edit was saved (' + document.querySelector('[data-new-result]').textContent + ')');
+  check(brokenForm.elements.primaryProvider.value === 'acp:codex' && brokenForm.elements.fallbackProvider.value === '', 'Provider edit keeps the pending replacements of broken profiles');
+  check(warn('primary') === '' && warn('fallback') === '' && !brokenForm.querySelector('[type=submit]').disabled, 'Restored replacements keep their warnings cleared and Save enabled');
+  document.querySelector('[data-revert]').click(); await settle();
+  check(brokenForm.elements.primaryProvider.value === 'unavailable' && brokenForm.querySelector('[type=submit]').disabled, 'Revert returns to the broken saved profile, which still cannot be saved');
+  brokenForm.elements.primaryProvider.value='acp:codex'; brokenForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
+  brokenForm.elements.fallbackProvider.value=''; brokenForm.elements.fallbackProvider.dispatchEvent(new Event('change')); await settle();
   problems = {};
   // an unreadable settings file: the tab still loads with nothing selected and says so; an explicit Save replaces it
   settings.primary = null; settings.fallback = null; settings.revision = 0; problems = {settings: 'the saved settings file cannot be read (Expecting value); choose profiles and save to replace it'};
@@ -130,6 +142,6 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list, safe edit, reopening reuses model cache, reload and test refresh, failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices survive a provider edit';
+  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list, safe edit, reopening reuses model cache, reload and test refresh, failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>
