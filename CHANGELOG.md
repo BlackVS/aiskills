@@ -9,6 +9,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+- `.gitignore` also ignores `.mcp.json`, the checkout-local MCP server
+  wiring, next to `.aimem.json`; nothing installed changes.
+
 ## [1.26.3] - 2026-09-30
 
 ### Fixed
