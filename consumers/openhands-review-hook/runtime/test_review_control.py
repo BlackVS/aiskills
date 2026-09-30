@@ -316,8 +316,8 @@ class RunnerTests(unittest.TestCase):
             def _write(self, runs):
                 self.writes += 1
                 if self.writes == 3:  # 1 save primary, 2 clear it, 3 save fallback
-                    self.log('run state not saved: injected'); return
-                super()._write(runs)
+                    self.log('run state not saved: injected'); return False
+                return super()._write(runs)
         logs = []
         with tempfile.TemporaryDirectory() as temp:
             store = Faulty(Path(temp) / 'runs.json', log=logs.append); seen = []
@@ -328,6 +328,39 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(store.writes, 3); self.assertIn('injected', logs[-1])
             starts, labels, failures = self.execute(resume=self.record(attempt=1, profile='claude-opus', conversation='2'), completed_first=True, quota=False)
             self.assertEqual(starts, []); self.assertTrue(labels)  # and a recorded fallback resumes as itself
+
+    def test_no_fallback_when_the_previous_record_cannot_be_cleared(self):
+        # writes 2 (clearing the primary's record) and 3 (the end-of-run clear) fail: the primary's
+        # record stays on disk, so this run must not start the fallback; the restart that resumes
+        # the record starts it once, and exactly one fallback conversation exists overall
+        class Faulty(RunStore):
+            writes = 0
+            def _write(self, runs):
+                self.writes += 1
+                if self.writes in (2, 3):
+                    self.log('run state not saved: injected'); return False
+                return super()._write(runs)
+        logs = []
+        with tempfile.TemporaryDirectory() as temp:
+            store = Faulty(Path(temp) / 'runs.json', log=logs.append)
+            starts, labels, failures = self.execute(runs=store)
+            self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra'], 'no fallback conversation')
+            self.assertIn('the fallback was not started because the run state could not be updated', failures[-1][-1])
+            left = store.load()
+            self.assertEqual([(r['attempt'], r['conversation']) for r in left], [(0, '1')])
+            starts, labels, failures = self.execute(resume=left[0], comment_after_calls=2)
+            self.assertEqual([s['agent_profile_id'] for s in starts], ['claude-opus'], 'the restart starts the one fallback')
+
+    def test_clear_and_save_report_whether_the_state_is_on_disk(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp) / 'runs.json', log=lambda _: None)
+            self.assertTrue(store.clear('owner/repo', 1), 'nothing to clear')
+            self.assertTrue(store.save(self.record()))
+            self.assertTrue(store.clear('owner/repo', 1))
+            missing = RunStore(Path(temp) / 'no-such-dir' / 'runs.json', log=lambda _: None)
+            self.assertFalse(missing.save(self.record()))
+            with patch.object(RunStore, '_read', return_value={'owner/repo#1': self.record()}):
+                self.assertFalse(missing.clear('owner/repo', 1), 'a record that cannot be removed is reported')
 
     def test_resumed_run_watches_the_recorded_conversation(self):
         starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record())
@@ -563,12 +596,22 @@ class RunnerTests(unittest.TestCase):
                 return list(comments)
             return api
         self.assertEqual(recovered_head(api_for(), 'o/r', 1, '[hands-bot review]', 'hands-bot'), HEAD)
-        self.assertIn('since=', seen[-1])  # only the watch window is read
+        self.assertIn('since=', [p for p in seen if '/comments' in p][-1])  # only the watch window is read
+        self.assertIn('/pulls/', seen[-1])  # and the head is read again after the comments
         self.assertIsNone(recovered_head(api_for(comments=()), 'o/r', 1, '[hands-bot review]', 'hands-bot'))  # nothing posted: the run is lost
         self.assertIsNone(recovered_head(api_for(head='c' * 40), 'o/r', 1, '[hands-bot review]', 'hands-bot'))  # a review for an older head does not count
         self.assertIsNone(recovered_head(api_for(state='closed'), 'o/r', 1, '[hands-bot review]', 'hands-bot'))
         self.assertIsNone(recovered_head(api_for(), 'o/r', 1, '[hands-bot review]', 'someone-else'))  # a comment by another user does not count
         self.assertEqual(recovered_head(api_for(), 'o/r', 1, '[hands-bot review]', None), HEAD)  # forges where the poster is the PAT owner
+
+    def test_recovered_head_rechecks_the_head_after_reading_the_comments(self):
+        review = {'user': {'login': 'hands-bot'}, 'body': f'[hands-bot review] reviewed at head {HEAD}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}
+        for later in ({'state': 'open', 'head': {'sha': 'c' * 40}}, {'state': 'closed', 'head': {'sha': HEAD}}):
+            with self.subTest(later=later):
+                prs = iter([{'state': 'open', 'head': {'sha': HEAD}}, later])
+                api = lambda path: next(prs) if '/pulls/' in path else [review]
+                self.assertIsNone(recovered_head(api, 'o/r', 1, '[hands-bot review]', 'hands-bot'),
+                                  'the PR moved while the comments were read: the old head\'s review does not complete the run')
 
     def test_only_structured_server_error_triggers_fallback(self):
         self.assertTrue(limit_error(QUOTA))

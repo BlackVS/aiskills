@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.3] - 2026-09-30
+
+### Fixed
+- Review runner, restart recovery (issue #10, item 10): `recovered_head()`
+  reads the pull request again after matching the review comment and
+  requires it to be open at the same head, so a PR that moved while the
+  comments were read no longer completes a restarted run with a review of
+  the old head.
+- Review runner, fallback after a failed state write (issue #10, item 15):
+  `RunStore.clear` and `save` report whether the state is on disk, and the
+  single quota/rate-limit fallback starts only after the previous attempt's
+  record is gone. When it cannot be removed, the run fails with that reason
+  instead of starting the fallback, so a restart can resume the first attempt
+  and start the one fallback, never a second. Hands sites deploy
+  `review_runner.py` (see `UPDATING.md`).
+
 ### Tests
 - The installer contract test (bash and PowerShell) now proves the managed
   review-gates block is replaced on a re-run: the re-run must succeed, stale

@@ -104,7 +104,13 @@ def recovered_head(api, repo, num, marker, bot=None, window=2700):
     head = pr['head']['sha']
     since = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - window))
     comments = api(f'/repos/{repo}/issues/{num}/comments?since={since}') or []
-    return head if any(valid_review(c, marker, head, bot) for c in comments) else None
+    if not any(valid_review(c, marker, head, bot) for c in comments):
+        return None
+    # The PR may have moved while the comments were read: the review must still be for its head.
+    pr = api(f'/repos/{repo}/pulls/{num}') or {}
+    if pr.get('state') != 'open' or (pr.get('head') or {}).get('sha') != head:
+        return None
+    return head
 
 
 class RunStore:
@@ -116,6 +122,9 @@ class RunStore:
     ends either way. The file is never a reason to fail a review: a write that
     fails is logged and the run goes on unrecorded (a restart then treats it
     as before: recovered if its comment is already posted, failed otherwise).
+    The one exception is the fallback: it starts only after the previous
+    attempt's record is gone (`clear` reports whether it is), so a restart can
+    never resume the first attempt and start a second fallback.
     """
 
     REQUIRED = ('repo', 'num', 'label', 'profile', 'choices', 'head', 'since', 'attempt', 'conversation', 'started', 'deadline')
@@ -139,12 +148,15 @@ class RunStore:
         return runs if isinstance(runs, dict) else {}
 
     def _write(self, runs):
+        """True when the runs are on disk; a failure is logged, never raised."""
         try:
             tmp = self.path.with_name(self.path.name + '.tmp')
             tmp.write_text(json.dumps(runs, indent=1, sort_keys=True))
             os.replace(tmp, self.path)  # atomic: a crash mid-write leaves the previous file
+            return True
         except OSError as error:
             self.log(f'run state not saved: {self.path.name}: {type(error).__name__}')
+            return False
 
     def load(self):
         """The recorded runs, oldest first. A record the receiver could not act
@@ -162,13 +174,15 @@ class RunStore:
         with self.lock:
             runs = self._read()
             runs[self.key(record['repo'], record['num'])] = record
-            self._write(runs)
+            return self._write(runs)
 
     def clear(self, repo, num):
+        """True when no record of the run is left to resume."""
         with self.lock:
             runs = self._read()
-            if runs.pop(self.key(repo, num), None) is not None:
-                self._write(runs)
+            if runs.pop(self.key(repo, num), None) is None:
+                return True
+            return self._write(runs)
 
 
 class Runner:
@@ -329,11 +343,14 @@ class Runner:
                 conv_id, ends = resume['conversation'], resume['deadline']
                 self.log(f'review resumed: {repo}#{num} head={head} profile={profile} attempt={attempt + 1} conversation={conv_id}')
             else:
-                if attempt and self.runs:
-                    # The previous attempt's record must not outlive it: if saving the
-                    # new one fails, a restart would resume the old conversation, see
-                    # its quota error again and start a second fallback.
-                    self.runs.clear(repo, num)
+                if attempt and self.runs and not self.runs.clear(repo, num):
+                    # The previous attempt's record must not outlive it: a restart would
+                    # resume the old conversation, see its quota error again and start a
+                    # second fallback. When it cannot be removed, no fallback starts here:
+                    # at most one fallback conversation ever exists for the request.
+                    self.fail(repo, num, 'quota or rate limit reached; the fallback was not started because the run '
+                              'state could not be updated (check the receiver\'s run state file), then re-add the label')
+                    return
                 workdir = f'{workspaces}/{repo.replace("/", "-")}-{num}-{uuid.uuid4().hex}'
                 conv = self.app_api('/api/conversations', {
                     'agent_profile_id': pid,
