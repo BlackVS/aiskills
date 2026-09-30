@@ -70,6 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.26.2 | Security fix in the discovery helper: when a provider connection is edited, its saved token is now tested only against the saved endpoint's own origin (scheme, host, port). A base URL for another host needs its token entered again; before, the saved token was sent to whatever URL was typed. Deploy `canvas_discovery.py` (re-read on every request, no restart). |
 | 1.22.0 | Receivers no longer default the forge and credentials: set `GITEA_API`, `GITEA_TOKEN_FILE` and `REVIEW_ORG` (Gitea receiver) and `GITHUB_TOKEN_FILE` (GitHub poller) in `review.env` before deploying `review_hook.py` / `github_review_poller.py`; a missing one stops the service at start. Render from the site's own site file (the files in `sites/` are examples), and point the skill source at `https://github.com/BlackVS/aiskills`. |
 | 1.7.0 | Review model changed to dispositions; the old per-site prompts named the removed output format. Re-render (1.9.0 template) — a 1.6-era prompt contradicts the skill. |
 | 1.9.0 | Prompts moved into the skill set as one template + site files. From here on: re-render per release, as above. The site B receiver passes `{label}`; site A already did. |

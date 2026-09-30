@@ -84,13 +84,45 @@ class DiscoveryTests(unittest.TestCase):
         with patch('canvas_discovery.api_models', return_value=models) as query:
             self.assertTrue(probe({'base_url': 'https://example.com', 'api_key': 'new-key'})['ok'])
             query.assert_called_with('https://example.com', 'new-key')
-            connection = SimpleNamespace(api_key_value=lambda: 'saved-key')
+            connection = SimpleNamespace(api_key_value=lambda: 'saved-key', base_url='https://provider.example/v1',
+                                         provider='custom')
             with patch('canvas_discovery.stores') as stores:
                 stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
-                self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://other.example'})['ok'])
-                query.assert_called_with('https://other.example', 'saved-key')
+                # The same origin, another path: the saved key may be reused.
+                self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://Provider.example:443/v2'})['ok'])
+                query.assert_called_with('https://Provider.example:443/v2', 'saved-key')
                 self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://other.example', 'api_key': 'replacement'})['ok'])
                 query.assert_called_with('https://other.example', 'replacement')
+
+    def test_probe_never_sends_a_saved_key_to_another_origin(self):
+        from types import SimpleNamespace
+        cases = {'custom': ('https://provider.example/v1', ['https://other.example/v1', 'http://provider.example/v1',
+                                                           'https://provider.example:8443/v1', 'https://provider.example.evil/v1',
+                                                           'https://sub.provider.example/v1']),
+                 'openai': (None, ['https://api.openai.com.evil/v1', 'http://api.openai.com/v1'])}
+        for kind, (stored, elsewhere) in cases.items():
+            connection = SimpleNamespace(api_key_value=lambda: 'saved-key', base_url=stored, provider=kind)
+            with patch('canvas_discovery.stores') as stores, patch('canvas_discovery.api_models', return_value=[]) as query:
+                stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
+                for url in elsewhere:
+                    with self.subTest(kind=kind, url=url):
+                        result = probe({'provider': 'connection:one', 'base_url': url})
+                        self.assertFalse(result['ok'])
+                        self.assertIn('Enter the API token', result['message'])
+                        self.assertNotIn('saved-key', json.dumps(result))
+                query.assert_not_called()
+        # A connection without a stored endpoint never lends its token, not even to an invalid URL.
+        connection = SimpleNamespace(api_key_value=lambda: 'saved-key', base_url=None, provider='custom')
+        with patch('canvas_discovery.stores') as stores, patch('canvas_discovery.api_models') as query:
+            stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
+            self.assertIn('Enter the API token', probe({'provider': 'connection:one', 'base_url': 'not a url'})['message'])
+            query.assert_not_called()
+        # OpenAI's default endpoint is the stored one when a connection has no URL.
+        connection = SimpleNamespace(api_key_value=lambda: 'saved-key', base_url=None, provider='openai')
+        with patch('canvas_discovery.stores') as stores, patch('canvas_discovery.api_models', return_value=[{'id': 'm', 'label': 'm'}]) as query:
+            stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
+            self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://api.openai.com/v1'})['ok'])
+            query.assert_called_with('https://api.openai.com/v1', 'saved-key')
 
     def test_effort_helpers(self):
         self.assertEqual(split_codex_model('gpt-6-astra/xhigh'), ('gpt-6-astra', 'xhigh'))
