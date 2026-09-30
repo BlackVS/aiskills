@@ -8,6 +8,9 @@ PowerShell cases run where powershell/pwsh is found (Windows, or pwsh elsewhere)
 import os, pathlib, re, shutil, subprocess, sys, tempfile, unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+# The managed block's markers, exactly as both installers write them.
+BLOCK_MARKERS = ("<!-- ai-skills:review-gates start (managed by install.sh, do not edit inside) -->",
+                 "<!-- ai-skills:review-gates end -->")
 CORE = ("architecture-review", "oh-code-review", "oh-technical-writing")
 BASH = shutil.which("bash") or next((p for p in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe") if os.path.exists(p)), None)
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
@@ -114,8 +117,19 @@ class InstallerContract:
         self.assertEqual(agents.read_text(encoding="utf-8").count("ai-skills:review-gates start"), 1)
         self.assertTrue((self.home / ".config/opencode/commands/code-review.md").is_file(), "prompts installed as OpenCode commands")
         self.assertFalse((self.home / ".config/opencode/prompts").exists())
-        r = self.install(*self.flags("user", "prompts", "agents"), home=self.home)  # a re-run replaces, never duplicates
-        self.assertEqual(agents.read_text(encoding="utf-8").count("ai-skills:review-gates start"), 1)
+        # A re-run replaces the managed block with the shipped one and keeps what is outside it.
+        start, end = BLOCK_MARKERS
+        agents.write_text(f"my notes before\n\n{start}\nstale gates text\n{end}\n\nmy notes after\n", encoding="utf-8")
+        r = self.install(*self.flags("user", "prompts", "agents"), home=self.home)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = agents.read_text(encoding="utf-8").replace("\r\n", "\n")
+        self.assertEqual(text.count("ai-skills:review-gates start"), 1, "replaced, never duplicated")
+        self.assertNotIn("stale gates text", text)
+        self.assertIn("my notes before", text)
+        self.assertIn("my notes after", text)
+        block = text.split(start + "\n", 1)[1].split(end, 1)[0]
+        shipped = (ROOT / "agents/review-gates.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+        self.assertEqual(block.rstrip("\n"), shipped.rstrip("\n"), "the block carries the shipped review-gates.md")
 
     def test_user_level_reaches_codex_and_gemini_only_when_they_are_installed(self):
         # Codex reads ~/.codex/AGENTS.md and Gemini CLI ~/.gemini/GEMINI.md: each is written (created if

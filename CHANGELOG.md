@@ -9,6 +9,13 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Tests
+- The installer contract test (bash and PowerShell) now proves the managed
+  review-gates block is replaced on a re-run: the re-run must succeed, stale
+  text seeded inside the block is gone, the block carries the shipped
+  `agents/review-gates.md`, and text outside the markers survives
+  (issue #9). Test-only; nothing installed changes.
+
 ## [1.26.2] - 2026-09-30
 
 ### Security
