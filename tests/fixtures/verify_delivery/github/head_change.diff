@@ -1,0 +1,23 @@
+diff --git a/src/widget.py b/src/widget.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/widget.py
++++ b/src/widget.py
+@@ -10,7 +10,8 @@ def render(widget):
+     """Render a widget."""
+     name = widget.name
+-    return name
++    label = name.strip()
++    return label
+ 
+ 
+ def size(widget):
+diff --git a/tests/test_widget.py b/tests/test_widget.py
+new file mode 100644
+index 0000000..9a8b7c6
+--- /dev/null
++++ b/tests/test_widget.py
+@@ -0,0 +1,4 @@
++from src.widget import render
++
++def test_render():
++    assert render(type("W", (), {"name": " x "})) == "x"

@@ -13,13 +13,14 @@ pushes. Standard library only.
 Prints one JSON document on stdout. Exit codes: 0 confirmed, 3 not confirmed,
 4 pending or retryable (the API was unavailable), 2 usage error. See SKILL.md.
 """
-import argparse, datetime, json, os, re, socket, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, hashlib, json, os, re, socket, sys, time, urllib.error, urllib.parse, urllib.request
 
 EXIT_CONFIRMED, EXIT_USAGE, EXIT_NOT_CONFIRMED, EXIT_PENDING = 0, 2, 3, 4
 TIMEOUT = 20        # seconds per request
 MAX_PAGES = 20      # per listing; 20 pages of 50-100 items is far past any real pull request
 MAX_REF = 512       # bytes per evidence ref
 MAX_EVIDENCE = 16   # evidence entries
+MAX_DIFF = 8 << 20  # bytes per diff read for the patch identity; a larger one is not read (pending)
 SHA = r"(?P<sha>[0-9a-fA-F]{7,40})"
 
 # The review comment format of the oh-code-review skill (references/dispositions.md):
@@ -72,18 +73,22 @@ class Http:
         self._sleep = sleep
         self._timeout = timeout
 
-    def get(self, url):
+    def get(self, url, accept=None, limit=None):
+        """(status, headers, body). With limit, at most limit + 1 bytes of the body are read."""
         headers = {"Accept": "application/json", "User-Agent": "ai-skills-verify-delivery"}
         if self._kind == "github":
             headers["Accept"] = "application/vnd.github+json"
             headers["X-GitHub-Api-Version"] = "2022-11-28"
+        if accept:
+            headers["Accept"] = accept
         if self._token:
             headers["Authorization"] = ("Bearer " if self._kind == "github" else "token ") + self._token
         for attempt in (1, 2):
             req = urllib.request.Request(url, headers=headers, method="GET")
             try:
                 with self._open(req, timeout=self._timeout) as resp:
-                    return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+                    body = resp.read() if limit is None else resp.read(limit + 1)
+                    return resp.status, {k.lower(): v for k, v in resp.headers.items()}, body
             except urllib.error.HTTPError as e:
                 hdrs = {k.lower(): v for k, v in (e.headers or {}).items()}
                 return e.code, hdrs, e.read() if e.fp else b""
@@ -103,8 +108,12 @@ class Forge:
         self.origin = urllib.parse.urlsplit(self.api)[:2]
         self.repo_path = f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}"
 
-    def _fetch(self, url):
-        status, headers, body = self.http.get(url)
+    def _fetch(self, url, accept=None, limit=None):
+        status, headers, body = self.http.get(url, accept, limit) if accept else self.http.get(url)
+        if status == 200 and accept:
+            if len(body) > limit:
+                raise Unavailable(f"the diff is larger than {limit} bytes")
+            return body.decode("utf-8", errors="replace"), headers
         if status == 200:
             try:
                 return json.loads(body.decode("utf-8")), headers
@@ -127,6 +136,11 @@ class Forge:
 
     def get(self, path):
         return self._fetch(self.api + self.repo_path + path)[0]
+
+    def diff(self, path):
+        """A diff as text, from GitHub's compare API (diff media type) or a Gitea .diff endpoint."""
+        accept = "application/vnd.github.diff" if self.kind == "github" else "text/plain"
+        return self._fetch(self.api + self.repo_path + path, accept=accept, limit=MAX_DIFF)[0]
 
     def get_or_none(self, path):
         try:
@@ -212,32 +226,42 @@ def author_verdict(c, name, kind, authors, trust_any):
 
 
 def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", authors=None, trust_any=False):
-    """Each configured review must be READY_FOR_HUMAN_MERGE at exactly the final head, in the
-    latest comment for that head by an author the repository trusts, posted before the merge.
+    """Each configured review must be READY_FOR_HUMAN_MERGE in the latest comment by an author the
+    repository trusts, posted before the merge. The latest one naming the final head counts; with
+    none, the latest one naming an older head does, and the merged-content check then requires
+    the merged change to be that head's change (a base-only update keeps a review valid).
     The author is checked first: an untrusted comment never counts and never displaces one."""
     authors = authors or {}
     reviews, ignored = [], []
     for name, pattern in specs:
         rule = ("disabled" if trust_any else "allowlist" if name in authors
                 else "association" if kind == "github" else "allowlist required")
-        latest = None
+        latest, older = None, []
         epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
         for c in sorted(items, key=lambda c: when(c["created_at"]) or epoch):
             m = pattern.search(c["body"] or "")
             if not m:
                 continue
-            sha = m.group("sha").lower()
+            sha = (m.group("sha") or "").lower()
             untrusted = author_verdict(c, name, kind, authors, trust_any)
-            if untrusted:
+            if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+                ignored.append({"review": name, "reason": "does not name a commit SHA (7 to 40 hex digits)", "url": c["url"]})
+            elif untrusted:
                 ignored.append({"review": name, "reason": untrusted, "author": c["author"], "sha": sha, "url": c["url"]})
-            elif not head.startswith(sha):
-                ignored.append({"review": name, "reason": "names an older or different head", "sha": sha, "url": c["url"]})
             elif when(merged_at) and when(c["created_at"]) and when(c["created_at"]) > when(merged_at):
                 ignored.append({"review": name, "reason": "posted after the merge", "sha": sha, "url": c["url"]})
             elif when(merged_at) and when(c.get("updated_at")) and when(c["updated_at"]) > when(merged_at):
                 ignored.append({"review": name, "reason": "edited after the merge", "sha": sha, "url": c["url"]})
-            else:
+            elif head.startswith(sha):
                 latest = (c, sha)
+            else:
+                older.append((c, sha))
+        at_final = latest is not None
+        if not at_final and older:
+            latest = older.pop()
+        for c, sha in older:
+            ignored.append({"review": name, "sha": sha, "url": c["url"],
+                            "reason": "names an older or different head" if at_final else "superseded by a later review"})
         if rule == "allowlist required":
             reviews.append({"review": name, "status": "unsatisfiable", "author_rule": rule,
                             "detail": "an author allowlist is required on Gitea: give --review-author "
@@ -245,12 +269,12 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
             continue
         if latest is None:
             reviews.append({"review": name, "status": "missing", "author_rule": rule,
-                            "detail": "no review by a trusted author names the final head"})
+                            "detail": "no review by a trusted author names a head of this pull request"})
             continue
         c, sha = latest
         ready = bool(verdict_re.search(c["body"] or ""))
         reviews.append({"review": name, "status": "ready" if ready else "not_ready", "author_rule": rule, "sha": sha,
-                        "url": c["url"], "author": c["author"], "created_at": c["created_at"]})
+                        "at_final_head": at_final, "url": c["url"], "author": c["author"], "created_at": c["created_at"]})
     ready = sum(r["status"] == "ready" for r in reviews)
     return ready, reviews, ignored
 
@@ -331,7 +355,9 @@ def verify(args, forge, kind, number):
     unsatisfiable = any(r["status"] == "unsatisfiable" for r in reviews)
     status = ("passed" if ready >= args.required_reviews else "failed" if unsatisfiable
               else "pending" if not merged and pr.get("state") == "open" else "failed")
+    reviewed_heads = sorted({head if r["at_final_head"] else r["sha"] for r in reviews if r["status"] == "ready"})
     checks.append({"name": "reviewed_head", "status": status, "head_sha": head, "head_url": head_url,
+                   "reviewed_heads": reviewed_heads,
                    "author_check": "disabled" if args.trust_any_author else "enabled",
                    "required": args.required_reviews, "ready": ready, "reviews": reviews, "ignored": ignored})
 
@@ -365,13 +391,20 @@ def verify(args, forge, kind, number):
         checks.append({"name": "post_merge_ci", "status": merge["status"], "detail": why})
         return checks, pr_url, head_url, None, []
 
-    # 3. tree equality
+    # 3. merged content = reviewed content: equal trees, or else an equal patch identity
     merge_commit = forge.get_or_none(f"/git/commits/{merge_sha}") or {}
     merge_url = merge_commit.get("html_url") or ""
     t_head, t_merge = tree_of(head_commit), tree_of(merge_commit)
-    checks.append({"name": "tree_equality", "status": "passed" if t_head and t_head == t_merge else "failed",
-                   "head_sha": head, "head_tree": t_head, "merge_commit_sha": merge_sha,
-                   "merge_commit_url": merge_url, "merge_tree": t_merge})
+    same = {"name": "tree_equality", "head_sha": head, "head_tree": t_head, "merge_commit_sha": merge_sha,
+            "merge_commit_url": merge_url, "merge_tree": t_merge}
+    results = [merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge)
+               for reviewed in (reviewed_heads or [head])]
+    worst = next((r for status in ("failed", "pending") for r in results if r["status"] == status), None)
+    shown = worst or next((r for r in results if r["rule"] == "patch_identity"), results[0])
+    same.update(shown, reviewed=results)
+    if not worst:
+        same["rule"] = "patch_identity" if any(r["rule"] == "patch_identity" for r in results) else "tree_equality"
+    checks.append(same)
 
     # 4. post-merge CI
     runs = ci_results(kind, merge_sha, forge, set(args.known_flaky))
@@ -390,6 +423,78 @@ def verify(args, forge, kind, number):
         ci["status"] = "passed"
     checks.append(ci)
     return checks, pr_url, head_url, merge_url, runs
+
+
+def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge):
+    """Is the merged content the content reviewed at head REVIEWED? Rule tree_equality: the merge
+    commit's tree is the reviewed (final) head's tree. Rule patch_identity, when the trees differ
+    because the base moved after the review: the merge commit's change against its first parent
+    has the same patch identity as the reviewed head's change against its merge base."""
+    result = {"reviewed_head": reviewed, "rule": None}
+    final = bool(head) and head.startswith(reviewed)
+    if final and t_head and t_head == t_merge:
+        return {**result, "status": "passed", "rule": "tree_equality"}
+    parent = ((merge_commit.get("parents") or [{}])[0] or {}).get("sha")
+    if not head or not parent:
+        return {**result, "status": "failed",
+                "detail": "the trees differ, and the merge commit has no parent to compare its change against"}
+    if kind == "github":
+        # Three-dot compare diffs from the merge base: of the first parent and the reviewed head,
+        # the reviewed change; of the first parent and the merge commit, the merge commit's change.
+        paths = (f"/compare/{parent}...{reviewed}", f"/compare/{parent}...{merge_sha}")
+    elif final:
+        paths = (f"/pulls/{number}.diff", f"/git/commits/{merge_sha}.diff")
+    else:
+        return {**result, "status": "failed",
+                "detail": "the review names an older head, and Gitea's API has no diff of an older head's "
+                          "change to compare with the merged change: re-review at the final head"}
+    try:
+        texts = [forge.diff(path) for path in paths]
+    except (Unavailable, NotFound) as e:
+        why = str(e) if isinstance(e, Unavailable) else "the forge did not find it"
+        return {**result, "status": "pending",
+                "detail": f"the trees differ, and a diff for the patch identity could not be read ({why})"}
+    try:
+        (was_reviewed, files), (merged, _) = (patch_identity(t) for t in texts)
+    except ValueError as e:
+        return {**result, "status": "failed", "detail": f"the trees differ, and the patch identity cannot be established: {e}"}
+    result.update(base_parent_sha=parent,
+                  patch_identity={"reviewed_change": was_reviewed, "merge_change": merged, "files": files})
+    if was_reviewed == merged:
+        result.update(status="passed", rule="patch_identity")
+    else:
+        result.update(status="failed", detail="the trees differ, and the merge commit's change is not the reviewed change")
+    return result
+
+
+def patch_identity(diff_text):
+    """(digest, number of files) of a unified git diff, the same function for both forges.
+
+    Kept, in order: each "diff --git" line, the mode, new/deleted file and rename/copy lines,
+    and every added, removed and "\\ No newline" line. Dropped: index lines, the ---/+++ lines,
+    hunk headers with their line numbers, context lines and similarity scores. Line endings
+    are normalised. So a change carried unchanged onto a newer base keeps its digest, and any
+    changed line changes it. A binary or empty change has no identity (ValueError)."""
+    kept, files, in_hunk = [], 0, False
+    for line in diff_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line.startswith("diff --git "):
+            files, in_hunk = files + 1, False
+            kept.append(line)
+        elif not files:
+            continue
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line[:1] in ("+", "-", "\\"):
+            kept.append(line)
+        elif (in_hunk and line[:1] == " ") or not line.strip():
+            continue
+        elif line.startswith(("Binary files ", "GIT binary patch")):
+            raise ValueError("the change includes a binary file")
+        elif not line.startswith(("index ", "--- ", "+++ ", "similarity index ", "dissimilarity index ")):
+            kept.append(line)
+    if not files:
+        raise ValueError("the change is empty")
+    return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest(), files
 
 
 def tree_of(commit):

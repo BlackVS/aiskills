@@ -6,5 +6,11 @@
     "tree": {
       "sha": "7e3d9c1b5a7f2e4d6c8b0a1f3e5d7c9b1a2f4e6d"
     }
-  }
+  },
+  "parents": [
+    {
+      "sha": "5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d",
+      "url": "https://git.example.org/api/v1/repos/acme/widgets/git/commits/5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d"
+    }
+  ]
 }
