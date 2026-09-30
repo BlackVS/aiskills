@@ -85,7 +85,8 @@ skill:
   explicitly waived before the push;
 - before merge: a review at level **high**, posted to the PR, plus the
   external reviewer where one is configured (the `review-this` label). A new
-  commit or a rebase makes both stale.
+  commit or a rebase makes both stale, except a base-only update whose patch
+  identity is unchanged (see `agents/review-gates.md`).
 
 Open a PR as a draft with a `WIP: ` title prefix, and mark it ready (dropping
 the prefix in the same step) only when both gates are green at the current

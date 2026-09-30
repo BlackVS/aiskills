@@ -425,8 +425,8 @@ local `oh-code-review` pre-merge review and an external reviewer's, in the
 `[<reviewer> review] reviewed at head <sha>` format, posted by an author the
 repository trusts: a listed account, or on GitHub an owner, member or
 collaborator), the PR was merged by a
-person, the merge commit's tree equals the reviewed head's tree, and CI on the
-merge commit is green. Its helper, `skills/verify-delivery/verify_delivery.py`,
+person, the merged content is the reviewed content (the same tree, or after a
+base-only update the same patch identity), and CI on the merge commit is green. Its helper, `skills/verify-delivery/verify_delivery.py`,
 uses only the Python standard library and works against GitHub and Gitea:
 
 ```bash

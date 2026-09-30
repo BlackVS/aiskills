@@ -70,7 +70,10 @@ changing production code to address them.
 
 Request the deployed external reviewer with plain review-this, then watch and
 read its result for the exact head. Never push while hands-reviewing is present.
-A source change makes the review stale: review the delta and re-trigger. Metadata
+A source change makes the review stale: review the delta and re-trigger. A
+base-only update keeps both reviews when the patch identity is unchanged
+(`git diff $(git merge-base <base> <head>) <head> | git patch-id --stable`, old and
+new head): post a delta note naming both heads and identities instead. Metadata
 or additional evidence alone does not require another source review. The human
 owns merge. Keep one active PR at a time unless explicitly exempted; postponed
 PRs step out of the queue. Rebase from fresh main/master before resuming them.

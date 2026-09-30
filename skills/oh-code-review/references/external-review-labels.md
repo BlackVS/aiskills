@@ -39,6 +39,16 @@ conversation is still running, so leave a `hands-reviewing` PR alone.
   `review-this` again and clear the stale `hands-reviewed` when you do. The
   reviewer is told to treat a PR with earlier `[hands-bot review]` comments as
   a RE-review (did the previous findings get addressed? what changed?).
+- The exception is a **base-only update** whose **patch identity** (the git
+  patch-id of the change against its merge base) is unchanged:
+  `git diff $(git merge-base <base> <head>) <head> | git patch-id --stable`,
+  run for the old and the new head. Equal identities keep the review valid
+  for the new head, because a reviewed patch on a newer base is the same
+  change: post a short delta note naming both heads, both identities and the
+  command, do not re-add `review-this`, and leave `hands-reviewed` in place.
+  CI still runs on the new head and must be green. Any change to the patch
+  itself (a conflict resolved with edits, any content change) is stale as
+  above.
 - Adding the label means **watching for the result**: start a background
   watch and act on the findings when the comment lands — never leave a
   triggered review for the user to discover.

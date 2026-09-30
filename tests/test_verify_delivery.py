@@ -19,6 +19,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "verify_delivery"
 HEAD = "3f2a9c1e5b7d4a6f8e0c2b4d6f8a0c2e4b6d8f0a"
 OLD = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
 MERGE = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
+PARENT = "5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d"  # the merge commit's first parent: the base it landed on
 TOKEN = "fixture-placeholder-not-a-real-token"  # a fake value; the tests check it is never printed
 FORGES = {
     "github": {"api": "https://api.github.com", "pr": "https://github.com/acme/widgets/pull/42", "args": [],
@@ -37,8 +38,8 @@ class Response:
         for k, v in (headers or {}).items():
             self.headers[k] = v
 
-    def read(self):
-        return self._body
+    def read(self, n=-1):
+        return self._body if n is None or n < 0 else self._body[:n]
 
     def __enter__(self):
         return self
@@ -53,6 +54,7 @@ class FakeForge:
     def __init__(self, forge):
         self.forge, self.cfg = forge, FORGES[forge]
         self.data = {p.stem: json.loads(p.read_text()) for p in (FIXTURES / forge).glob("*.json")}
+        self.diffs = {p.stem: p.read_text() for p in (FIXTURES / forge).glob("*.diff")}
         self.requests, self.overrides = [], {}
 
     def route(self, path):
@@ -60,7 +62,11 @@ class FakeForge:
         return {f"{repo}/pulls/42": "pull", f"{repo}/issues/42/comments": "issue_comments",
                 f"{repo}/pulls/42/reviews": "reviews", f"{repo}/git/commits/{HEAD}": "git_commit_head",
                 f"{repo}/git/commits/{MERGE}": "git_commit_merge", f"{repo}/commits/{MERGE}/check-runs": "check_runs",
-                f"{repo}/commits/{MERGE}/status": "status"}.get(path)
+                f"{repo}/commits/{MERGE}/status": "status",
+                # the two diffs of the patch identity rule
+                f"{repo}/compare/{PARENT}...{HEAD}": "head_change", f"{repo}/compare/{PARENT}...{MERGE}": "merge_change",
+                f"{repo}/compare/{PARENT}...{OLD}": "old_change",
+                f"{repo}/pulls/42.diff": "head_change", f"{repo}/git/commits/{MERGE}.diff": "merge_change"}.get(path)
 
     def __call__(self, req, timeout=None):
         self.requests.append({"method": req.get_method(), "url": req.full_url, "headers": dict(req.header_items()),
@@ -70,6 +76,8 @@ class FakeForge:
         if path in self.overrides:
             return self.overrides[path](req)
         name = self.route(path)
+        if name in self.diffs:
+            return Response(200, self.diffs[name].encode())
         if name is None or name not in self.data:
             raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b'{"message":"Not Found"}'))
         return Response(200, json.dumps(self.data[name]).encode())
@@ -151,15 +159,22 @@ class Verify:
         self.assertTrue(all(TOKEN not in r["url"] for r in self.fake.requests), "never in a URL")
         self.assertTrue(all(r["timeout"] for r in self.fake.requests), "every request has a timeout")
 
-    def test_review_at_older_head_does_not_count(self):
-        self.drop_external_at_head()  # the external review left only names the older head
+    def test_older_head_review_that_is_not_ready(self):
+        self.drop_external_at_head()  # the external review left names the older head: RETURN_TO_IMPLEMENTATION
         code, doc = self.run_vd()
         self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
         reviewed = self.check(doc, "reviewed_head")
         self.assertEqual(reviewed["status"], "failed")
-        self.assertEqual({r["review"]: r["status"] for r in reviewed["reviews"]}["external"], "missing")
-        self.assertIn(OLD, [i["sha"] for i in reviewed["ignored"]])
+        external = {r["review"]: r for r in reviewed["reviews"]}["external"]
+        self.assertEqual((external["status"], external["sha"], external["at_final_head"]), ("not_ready", OLD, False))
         self.assertNotIn("evidence", doc)
+
+    def test_older_head_review_is_ignored_when_the_final_head_is_reviewed(self):
+        code, doc = self.run_vd()
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertIn((OLD, "names an older or different head"), [(i["sha"], i["reason"]) for i in reviewed["ignored"]])
+        self.assertTrue(all(r["at_final_head"] for r in reviewed["reviews"]))
+        self.assertEqual(reviewed["reviewed_heads"], [HEAD])
 
     def test_missing_external_review(self):
         self.fake.data["issue_comments"] = [c for c in self.comments() if not c["body"].startswith("[example-bot")]
@@ -210,6 +225,16 @@ class Verify:
         self.assertEqual((code, doc["verdict"]), (0, "confirmed"))
         self.assertEqual([r["review"] for r in self.check(doc, "reviewed_head")["reviews"]], ["qa"])
 
+    def test_a_review_pattern_must_capture_a_commit_sha(self):
+        self.comments().append({"id": 6, "user": {"login": "qa"}, "author_association": "MEMBER",
+                                "created_at": "2026-09-27T13:20:00Z", "html_url": "https://example.invalid/c/6",
+                                "body": "QA passed at ../../elsewhere\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n"})
+        code, doc = self.run_vd("--review", r"qa=QA passed at (?P<sha>\S*)", authors=["--review-author", "qa=qa"])
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertIn("does not name a commit SHA (7 to 40 hex digits)", [i["reason"] for i in reviewed["ignored"]])
+        self.assertFalse(any("elsewhere" in r["url"] for r in self.fake.requests))
+
     def test_bot_merge(self):
         if self.forge == "github":
             self.fake.data["pull"]["merged_by"] = {"login": "merge-helper[bot]", "id": 9, "type": "Bot"}
@@ -234,6 +259,9 @@ class Verify:
     def test_tree_mismatch(self):
         merge = self.fake.data["git_commit_merge"]
         (merge.get("tree") or merge["commit"]["tree"])["sha"] = "1" * 40
+        # ...and the merged change is not the reviewed one: it carries an extra line.
+        self.fake.diffs["merge_change"] = self.fake.diffs["merge_change"].replace(
+            "+    return label\n", "+    return label\n+    print('unreviewed')\n")
         code, doc = self.run_vd()
         self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
         self.assertEqual(self.check(doc, "tree_equality")["status"], "failed")
@@ -390,6 +418,108 @@ class Verify:
         self.assertIn("redirect", doc["error"]["message"])
         self.assertEqual(len(handler.seen), 1, "the redirect target was never requested")
 
+    # ---- merged content: tree equality, or the patch identity after a base-only update
+    def base_only_update(self):
+        """The base moved after the review: the merge commit's tree differs from the head's."""
+        merge = self.fake.data["git_commit_merge"]
+        (merge.get("commit") or merge)["tree"]["sha"] = "6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e"
+
+    def diff_requests(self):
+        return [r for r in self.fake.requests if "/compare/" in r["url"] or r["url"].endswith(".diff")]
+
+    def test_tree_equality_passes_without_reading_diffs(self):
+        code, doc = self.run_vd()
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((code, same["status"], same["rule"]), (0, "passed", "tree_equality"))
+        self.assertNotIn("patch_identity", same)
+        self.assertEqual(self.diff_requests(), [], "diffs are only read when the trees differ")
+
+    def test_base_only_update_passes_on_patch_identity(self):
+        self.base_only_update()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["rule"], same["base_parent_sha"]), ("passed", "patch_identity", PARENT))
+        ids = same["patch_identity"]
+        self.assertEqual((ids["reviewed_change"], ids["files"]), (ids["merge_change"], 2))
+        self.assertNotEqual(self.fake.diffs["head_change"], self.fake.diffs["merge_change"],
+                            "the fixtures differ in index lines, hunk positions and context")
+        requests = self.diff_requests()
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(all(r["method"] == "GET" for r in requests))
+        if self.forge == "github":
+            self.assertTrue(all(r["headers"].get("Accept") == "application/vnd.github.diff" for r in requests))
+
+    def assert_changed_line_fails(self):
+        self.fake = FakeForge(self.forge)
+        self.base_only_update()
+        diff = self.fake.diffs["merge_change"]
+        self.fake.diffs["merge_change"] = diff.replace("+    label = name.strip()", "+    label = name.lstrip()")
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        self.assertNotIn("evidence", doc)
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["rule"]), ("failed", None))
+        self.assertNotEqual(same["patch_identity"]["reviewed_change"], same["patch_identity"]["merge_change"])
+
+    def test_one_changed_line_fails(self):
+        self.assert_changed_line_fails()
+
+    def test_seeded_fault_identity_that_ignores_content(self):
+        """A patch identity that looked only at the file list must let the changed line through."""
+        def files_only(text):
+            lines = [l for l in text.splitlines() if l.startswith("diff --git ")]
+            return "|".join(lines), len(lines)
+        with mock.patch.object(vd, "patch_identity", files_only):
+            with self.assertRaises(AssertionError):
+                self.assert_changed_line_fails()
+
+    def test_unreadable_diff_is_pending(self):
+        merge_diff = "/repos/acme/widgets" + (f"/compare/{PARENT}...{MERGE}" if self.forge == "github"
+                                              else f"/git/commits/{MERGE}.diff")
+        cases = {
+            "not found": lambda: self.fake.diffs.pop("merge_change"),
+            "server error": lambda: self.fake.overrides.__setitem__(merge_diff, lambda req: (_ for _ in ()).throw(
+                urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, io.BytesIO(b"")))),
+        }
+        for name, break_it in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.base_only_update()
+                break_it()
+                code, doc = self.run_vd()
+                self.assertEqual((code, doc["verdict"]), (4, "pending"))
+                self.assertNotIn("evidence", doc)
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((same["status"], same["rule"]), ("pending", None))
+        with self.subTest("larger than the limit"):
+            self.fake = FakeForge(self.forge)
+            self.base_only_update()
+            with mock.patch.object(vd, "MAX_DIFF", 64):
+                code, doc = self.run_vd()
+            self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (4, "pending"))
+            self.assertIn("larger than 64 bytes", self.check(doc, "tree_equality")["detail"])
+
+    def test_no_identity_for_binary_or_parentless_merges(self):
+        self.base_only_update()
+        self.fake.diffs["merge_change"] += "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (3, "failed"))
+        self.assertIn("binary", self.check(doc, "tree_equality")["detail"])
+        self.fake = FakeForge(self.forge)
+        self.base_only_update()
+        self.fake.data["git_commit_merge"].pop("parents")
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (3, "failed"))
+        self.assertEqual(self.diff_requests(), [])
+
+    def reviewed_only_at_older_head(self):
+        """The external review READY at OLD, none at the final head: the branch was only updated
+        from its base after that review, so the review still stands for the merged change."""
+        self.drop_external_at_head()
+        c = next(c for c in self.comments() if OLD in c["body"])
+        c["body"] = c["body"].replace("RETURN_TO_IMPLEMENTATION", "READY_FOR_HUMAN_MERGE")
+
     # ---- who posted the review
     def external_at_head(self):
         return next(c for c in self.comments() if c["body"].startswith("[example-bot") and HEAD in c["body"])
@@ -421,7 +551,8 @@ class Verify:
         self.assertNotIn("evidence", doc)
         reviewed = self.check(doc, "reviewed_head")
         self.assertEqual(reviewed["author_check"], "enabled")
-        self.assertEqual({r["review"]: r["status"] for r in reviewed["reviews"]}["external"], "missing")
+        # Not counted: what remains for "external" is the trusted review of an older head, not READY.
+        self.assertNotEqual({r["review"]: r["status"] for r in reviewed["reviews"]}["external"], "ready")
         why = [i for i in reviewed["ignored"] if i["url"] == forged["html_url"] and i["review"] == "external"]
         expected = f"author association {association} not trusted" if self.forge == "github" else "author not allowed"
         self.assertEqual([(i["reason"], i["author"]) for i in why], [(expected, "stranger")])
@@ -510,6 +641,28 @@ class Verify:
 class GitHub(Verify, unittest.TestCase):
     forge = "github"
 
+    def test_review_at_an_older_head_carries_over_a_base_only_update(self):
+        self.reviewed_only_at_older_head()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertEqual(sorted(reviewed["reviewed_heads"]), sorted([HEAD, OLD]))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["rule"]), ("passed", "patch_identity"))
+        rules = {r["reviewed_head"]: r["rule"] for r in same["reviewed"]}
+        self.assertEqual(rules, {HEAD: "tree_equality", OLD: "patch_identity"})
+        self.assertTrue(any(r["url"].endswith(f"/compare/{PARENT}...{OLD}") for r in self.fake.requests))
+
+    def test_review_at_an_older_head_does_not_cover_a_later_change(self):
+        self.reviewed_only_at_older_head()
+        # What was reviewed at OLD lacks a line the merged change has: a commit after the review.
+        self.fake.diffs["old_change"] = self.fake.diffs["old_change"].replace("+    return label\n", "")
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["reviewed_head"]), ("failed", OLD))
+        self.assertNotIn("evidence", doc)
+
     def test_association_default_and_missing_association(self):
         code, doc = self.run_vd()
         self.assertEqual({r["author_rule"] for r in self.check(doc, "reviewed_head")["reviews"]}, {"association"})
@@ -523,6 +676,14 @@ class GitHub(Verify, unittest.TestCase):
 
 class Gitea(Verify, unittest.TestCase):
     forge = "gitea"
+
+    def test_review_at_an_older_head_cannot_be_carried_over_on_gitea(self):
+        self.reviewed_only_at_older_head()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["reviewed_head"]), ("failed", OLD))
+        self.assertIn("re-review at the final head", same["detail"])
 
     def test_without_an_allowlist_the_reviews_cannot_be_satisfied(self):
         code, doc = self.run_vd(authors=[])
@@ -551,6 +712,25 @@ class Gitea(Verify, unittest.TestCase):
 
 
 class References(unittest.TestCase):
+    def test_patch_identity_is_canonical(self):
+        diff = ("diff --git a/f.txt b/f.txt\nindex 1111111..2222222 100644\n--- a/f.txt\n+++ b/f.txt\n"
+                "@@ -1,3 +1,3 @@ top\n a\n-b\n+B\n c\n\\ No newline at end of file\n")
+        same = (diff.replace("index 1111111..2222222", "index 3333333333..4444444444")
+                    .replace("@@ -1,3 +1,3 @@ top", "@@ -40,3 +40,3 @@ elsewhere")
+                    .replace(" a\n", " other context\n").replace("\n", "\r\n"))
+        self.assertEqual(vd.patch_identity(diff), vd.patch_identity(same))
+        for changed in (diff.replace("+B", "+C"), diff.replace("-b", "-x"), diff.replace("f.txt", "g.txt"),
+                        diff.replace("-b\n+B", "+B\n-b"), diff.replace("-b", "--- b"),
+                        diff.replace("\\ No newline at end of file\n", ""),
+                        diff.replace("index 1111111..2222222 100644", "old mode 100644\nnew mode 100755\nindex 1..2")):
+            self.assertNotEqual(vd.patch_identity(diff), vd.patch_identity(changed), changed)
+        self.assertEqual(vd.patch_identity(diff)[1], 1)
+        self.assertEqual(vd.patch_identity(diff), vd.patch_identity(diff.replace("\ndiff", "\n\ndiff") + "\n\n"),
+                         "blank separator lines do not count")
+        for no_identity in ("", "not a diff\n", "diff --git a/p b/p\nBinary files a/p and b/p differ\n"):
+            with self.assertRaises(ValueError):
+                vd.patch_identity(no_identity)
+
     def test_parse(self):
         self.assertEqual(vd.parse_ref("https://github.com/acme/widgets/pull/42", None, None, None),
                          ("github", "https://api.github.com", "acme", "widgets", 42))

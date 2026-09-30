@@ -9,6 +9,45 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-09-30
+
+### Changed
+- A base-only update keeps reviews valid when the patch is unchanged. With
+  several agents working on one repository, every merge puts the other open
+  PRs behind their base, and updating a branch from its base produced a new
+  head that forced a full external re-review and a WIP round-trip for a
+  byte-identical change. The review gates (`agents/review-gates.md`, the
+  block the installers write into agent instructions), the external review
+  labels reference of `oh-code-review`, `AGENTS.md` and the aimem handbook
+  now define the **patch identity** (`git diff $(git merge-base <base>
+  <head>) <head> | git patch-id --stable`): when a base-only update leaves it
+  unchanged, both reviews stay valid for the new head. The author posts a
+  delta note naming both heads, both identities and the command, does not
+  re-add `review-this`, keeps `hands-reviewed`, and the PR stays ready. Any
+  change to the patch itself makes both reviews stale as before, and CI must
+  still be green on the new head.
+
+### Added
+- `verify-delivery` accepts merged content by either rule, and reports which
+  one matched (`rule` in the `tree_equality` check): `tree_equality` (the
+  merge commit's tree equals the reviewed head's) or `patch_identity` (the
+  merge commit's change against its first parent has the same patch identity
+  as the reviewed head's change against its merge base). The diffs come from
+  GitHub's compare API (diff media type) and Gitea's `.diff` endpoints; the
+  identity is a documented canonical digest, the same on both forges. A diff
+  that cannot be read or is over 8 MiB leaves the check pending, never
+  passed. Exit codes, evidence and GET-only behaviour are unchanged.
+- `verify-delivery` carries a review across a base-only update: with no
+  review of the final head, the latest trusted review of an older head
+  counts, and the merged change must then have that head's patch identity
+  (read with GitHub's compare API). A later content change is therefore
+  never covered. Gitea's API cannot diff an older head, so there such a
+  review fails with "re-review at the final head". `reviewed_head` lists
+  `reviewed_heads`, and each review says `at_final_head`.
+- `verify-delivery` ignores a review comment whose `(?P<sha>...)` capture is
+  not 7 to 40 hex digits (a custom `--review` pattern could otherwise match
+  every head, and the value now goes into a compare request).
+
 ## [1.25.0] - 2026-09-29
 
 ### Added

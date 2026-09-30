@@ -1,6 +1,6 @@
 ---
 name: verify-delivery
-description: Confirm from the forge (GitHub or Gitea) that a pull request was actually delivered, before recording it as done. Checks that the required reviews are READY_FOR_HUMAN_MERGE at exactly the final head, that the pull request was merged by a person, that the merge commit's tree equals the reviewed head's tree, and that CI on the merge commit is green. Read-only; returns JSON with a verdict and, only when confirmed, the evidence to record. Use when a coordinator or any agent must decide whether a PR counts as delivered.
+description: Confirm from the forge (GitHub or Gitea) that a pull request was actually delivered, before recording it as done. Checks that the required reviews are READY_FOR_HUMAN_MERGE at exactly the final head, that the pull request was merged by a person, that the merged content is the reviewed content (the same tree, or the same patch identity after a base-only update), and that CI on the merge commit is green. Read-only; returns JSON with a verdict and, only when confirmed, the evidence to record. Use when a coordinator or any agent must decide whether a PR counts as delivered.
 ---
 
 # Verify delivery
@@ -20,9 +20,14 @@ skill confirms, it does not act.
 All four must pass for the verdict `confirmed`:
 
 1. **Reviewed head.** The PR's final head commit is taken from the forge.
-   The required reviews must be `READY_FOR_HUMAN_MERGE` at exactly that
-   head: the latest review comment that names the head counts, one naming an
-   older head does not, and one posted or edited after the merge does not.
+   The required reviews must be `READY_FOR_HUMAN_MERGE`: the latest review
+   comment that names the final head counts, and one posted or edited after
+   the merge does not. With no review of the final head, the latest one of an
+   older head counts instead, but only as far as check 3 finds the merged
+   change to be that head's change (a base-only update after the review keeps
+   it valid; any other later change does not). On Gitea that link cannot be
+   read through the API, so there a review of an older head fails: re-review
+   at the final head. `reviewed_heads` lists the heads the READY reviews name.
    Reviews are recognised by their text **and by an author the repository
    trusts**; the author is checked first, so an untrusted comment never
    counts and never displaces a trusted one, even when it is newer. By default
@@ -49,9 +54,32 @@ All four must pass for the verdict `confirmed`:
    GitHub `User`, not a `Bot`). Gitea has no bot flag: its system accounts
    count as bots, and you name any other bot accounts with `--bot-account`.
    `--merger NAME` restricts who may merge; `--allow-bot-merge` accepts bots.
-3. **Tree equality.** The merge commit's tree equals the reviewed head's
-   tree, so the merged content is exactly what was reviewed. This holds for
-   merge, squash and rebase merges of an up-to-date branch.
+3. **Merged content = reviewed content** (the `tree_equality` check), for
+   every head a READY review names (`reviewed` lists each with its result).
+   One of two rules must match, and the check's `rule` says which:
+   - `tree_equality`: the merge commit's tree equals the reviewed head's
+     tree. This holds for merge, squash and rebase merges of an up-to-date
+     branch, and needs no diff.
+   - `patch_identity`: the trees differ because the base moved after the
+     review (a base-only update, or a squash onto a newer base), but the
+     merge commit's change against its first parent has the same patch
+     identity as the reviewed head's change against its merge base. The
+     reviewed patch on a newer base is the same change. The diffs are read
+     on GitHub from the compare API with the diff media type
+     (`<first parent>...<head>` and `<first parent>...<merge commit>`), and
+     on Gitea from `pulls/{index}.diff` and `git/commits/{merge}.diff`.
+
+   The patch identity is a SHA-256 over a canonical form of the diff, the
+   same function for both forges (not byte-compatible with `git patch-id`):
+   each `diff --git` line, the mode, new/deleted file and rename/copy lines,
+   and every added, removed and `\ No newline` line are kept in order;
+   index lines, the `---`/`+++` lines, hunk headers and their line numbers,
+   context lines and similarity scores are dropped; line endings are
+   normalised. A diff that cannot be read, or is larger than 8 MiB, leaves
+   the check `pending`, never passed. A binary or empty change, or a merge
+   commit without a parent, has no identity and fails. A rebase merge of
+   several commits is compared by its last commit only, so it matches only
+   through tree equality.
 4. **Post-merge CI.** Every check run (GitHub) or commit status (Gitea) on
    the merge commit completed successfully (`skipped` and `neutral` pass on
    GitHub; on Gitea only `success` passes, `pending` is pending, and `error`,
@@ -124,7 +152,7 @@ One JSON document on stdout:
 | --- | --- | --- |
 | 0 | `confirmed` | Record the `evidence` entries. |
 | 3 | `not_confirmed` | Do not record delivery. Report the failed checks. |
-| 4 | `pending` | Do not record delivery. CI is running, the PR is not merged yet, or the forge was unavailable: check again later. |
+| 4 | `pending` | Do not record delivery. CI is running, the PR is not merged yet, or the forge (or a diff for the patch identity) was unavailable: check again later. |
 | 2 | (usage) | Fix the invocation: the reference, `--api-base`, the token file, a pattern. Also when the forge redirects or its next-page link points to another host (use the API base and repository name the forge uses now). Nothing was verified. |
 
 ## Rules
