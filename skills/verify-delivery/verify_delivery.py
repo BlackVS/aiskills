@@ -21,6 +21,8 @@ MAX_PAGES = 20      # per listing; 20 pages of 50-100 items is far past any real
 MAX_REF = 512       # bytes per evidence ref
 MAX_EVIDENCE = 16   # evidence entries
 MAX_DIFF = 8 << 20  # bytes per diff read for the patch identity; a larger one is not read (pending)
+MAX_JSON = 32 << 20  # bytes per JSON response; a larger one is not read (pending)
+MAX_ERROR = 64 << 10  # bytes read from an HTTP error response's body; the rest is never read
 SHA = r"(?P<sha>[0-9a-fA-F]{7,40})"
 
 # The review comment format of the oh-code-review skill (references/dispositions.md):
@@ -74,7 +76,9 @@ class Http:
         self._timeout = timeout
 
     def get(self, url, accept=None, limit=None):
-        """(status, headers, body). With limit, at most limit + 1 bytes of the body are read."""
+        """(status, headers, body). At most limit + 1 bytes of a body are read, and at most
+        MAX_ERROR bytes of an error response's body, so no response is read without a bound."""
+        limit = MAX_JSON if limit is None else limit
         headers = {"Accept": "application/json", "User-Agent": "ai-skills-verify-delivery"}
         if self._kind == "github":
             headers["Accept"] = "application/vnd.github+json"
@@ -87,11 +91,11 @@ class Http:
             req = urllib.request.Request(url, headers=headers, method="GET")
             try:
                 with self._open(req, timeout=self._timeout) as resp:
-                    body = resp.read() if limit is None else resp.read(limit + 1)
+                    body = resp.read(limit + 1)
                     return resp.status, {k.lower(): v for k, v in resp.headers.items()}, body
             except urllib.error.HTTPError as e:
                 hdrs = {k.lower(): v for k, v in (e.headers or {}).items()}
-                return e.code, hdrs, e.read() if e.fp else b""
+                return e.code, hdrs, e.read(MAX_ERROR) if e.fp else b""
             except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as e:
                 if attempt == 2:
                     reason = getattr(e, "reason", e)
@@ -109,11 +113,12 @@ class Forge:
         self.repo_path = f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}"
 
     def _fetch(self, url, accept=None, limit=None):
+        limit = MAX_JSON if limit is None else limit
         status, headers, body = self.http.get(url, accept, limit) if accept else self.http.get(url)
+        if status == 200 and len(body) > limit:
+            raise Unavailable(f"the response is larger than {limit} bytes")
         if status == 200 and accept:
-            if len(body) > limit:
-                raise Unavailable(f"the diff is larger than {limit} bytes")
-            return body.decode("utf-8", errors="replace"), headers
+            return body, headers  # a diff stays bytes: its identity is computed without decoding
         if status == 200:
             try:
                 return json.loads(body.decode("utf-8")), headers
@@ -138,7 +143,7 @@ class Forge:
         return self._fetch(self.api + self.repo_path + path)[0]
 
     def diff(self, path):
-        """A diff as text, from GitHub's compare API (diff media type) or a Gitea .diff endpoint."""
+        """A diff as raw bytes, from GitHub's compare API (diff media type) or a Gitea .diff endpoint."""
         accept = "application/vnd.github.diff" if self.kind == "github" else "text/plain"
         return self._fetch(self.api + self.repo_path + path, accept=accept, limit=MAX_DIFF)[0]
 
@@ -467,34 +472,38 @@ def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge
     return result
 
 
-def patch_identity(diff_text):
+def patch_identity(diff):
     """(digest, number of files) of a unified git diff, the same function for both forges.
 
     Kept, in order: each "diff --git" line, the mode, new/deleted file and rename/copy lines,
-    and every added, removed and "\\ No newline" line. Dropped: index lines, the ---/+++ lines,
-    hunk headers with their line numbers, context lines and similarity scores. Line endings
-    are normalised. So a change carried unchanged onto a newer base keeps its digest, and any
-    changed line changes it. A binary or empty change has no identity (ValueError)."""
+    and every hunk line: context, added, removed and "\\ No newline". Dropped: index lines,
+    the ---/+++ lines, hunk headers with their line numbers, similarity scores and blank
+    separator lines. Only CRLF line endings are normalised; the bytes are hashed as they are, never
+    decoded, so text that is not UTF-8 keeps every byte. A change carried onto a newer base
+    keeps its digest only when its hunks, context included, are unchanged; any changed line
+    or context changes it. A binary or empty change has no identity (ValueError)."""
+    if isinstance(diff, str):
+        diff = diff.encode("utf-8")
     kept, files, in_hunk = [], 0, False
-    for line in diff_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        if line.startswith("diff --git "):
+    for line in diff.replace(b"\r\n", b"\n").split(b"\n"):
+        if line.startswith(b"diff --git "):
             files, in_hunk = files + 1, False
             kept.append(line)
-        elif not files:
+        elif not files or not line:
             continue
-        elif line.startswith("@@"):
+        elif line.startswith(b"@@"):
             in_hunk = True
-        elif in_hunk and line[:1] in ("+", "-", "\\"):
+        elif in_hunk and line[:1] in (b" ", b"+", b"-", b"\\"):
             kept.append(line)
-        elif (in_hunk and line[:1] == " ") or not line.strip():
+        elif not line.strip():
             continue
-        elif line.startswith(("Binary files ", "GIT binary patch")):
+        elif line.startswith((b"Binary files ", b"GIT binary patch")):
             raise ValueError("the change includes a binary file")
-        elif not line.startswith(("index ", "--- ", "+++ ", "similarity index ", "dissimilarity index ")):
+        elif not line.startswith((b"index ", b"--- ", b"+++ ", b"similarity index ", b"dissimilarity index ")):
             kept.append(line)
     if not files:
         raise ValueError("the change is empty")
-    return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest(), files
+    return hashlib.sha256(b"\n".join(kept)).hexdigest(), files
 
 
 def tree_of(commit):

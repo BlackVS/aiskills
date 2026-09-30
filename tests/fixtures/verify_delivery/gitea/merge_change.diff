@@ -3,7 +3,7 @@ index 7c1d2e3f4a..4b5a6f7e8d 100644
 --- a/src/widget.py
 +++ b/src/widget.py
 @@ -14,7 +14,8 @@ def render(widget):
-     """Render a widget as text."""
+     """Render a widget."""
      name = widget.name
 -    return name
 +    label = name.strip()
