@@ -17,7 +17,7 @@ in Claude Code `/oh-code-review max` also works. The levels:
 | --- | --- |
 | Pre-push, every push | **medium**, run inline by the reviewer itself, no sub-agents. Cheap, keeps the rhythm; its misses are what the next gate exists for. |
 | Pre-merge local review, posted to the PR | **high**: one pass plus verification, no fan-out. Where an external reviewer (hands) is deployed it carries the pre-merge weight and the local pass is the second reader from another model family. |
-| Pre-merge re-review after fixes | **high** on the delta only, naming the new head; re-trigger the external reviewer, which costs nothing on the local side. |
+| Pre-merge re-review after fixes | **high** on the delta only, naming the new head; re-trigger the external reviewer, which costs nothing on the local side. Not needed after a base-only update with an unchanged patch identity (see the PR lifecycle below). |
 | Docs-only PRs | **high**. |
 | `max` and `ultra` | Only when the person asks, for example a security or installer change right before a production deploy. No gate chooses them: a fan-out costs on the order of a million tokens per pass, and in practice the external reviewer finds the blockers that matter while the fan-out's own catch is test adequacy, which a single pass finds as well. |
 
@@ -76,9 +76,25 @@ Pull request lifecycle:
   `READY_FOR_HUMAN_MERGE`, the external review (where configured) READY at
   that head, and CI green. **Drop the `WIP: ` prefix in the same step**, so
   the title is final before anyone merges.
-- A later commit makes both reviews stale. If fixes are needed after the PR
-  was marked ready, convert it back to a draft and restore the prefix until
-  the gates are green again.
+- A later commit makes both reviews stale, with one exception: a
+  **base-only update** (the branch updated from its base, nothing else) whose
+  **patch identity** is unchanged. The patch identity is the git patch-id of
+  the change against its merge base; compute it for the old and the new head:
+
+  ```sh
+  git diff $(git merge-base <base> <head>) <head> | git patch-id --stable
+  ```
+
+  Equal identities: both reviews stay valid for the new head, because a
+  reviewed patch on a newer base is the same change. Post a short delta note
+  on the PR naming the old head, the new head, the two identities and the
+  command; do not re-add `review-this`, do not restore `WIP: ` or draft, and
+  leave `hands-reviewed` in place. The PR stays ready for human merge. CI
+  still runs on the new head and must be green.
+- Any other later commit (a conflict resolved with edits, any content change)
+  makes both reviews stale: the local delta review names the new head, the
+  external review is re-requested, and a PR already marked ready goes back
+  to a draft with the prefix until the gates are green again.
 - The merge stays with the person. An agent never merges, even when every
   gate is green.
 
@@ -112,6 +128,9 @@ Gitea orgs a hands site covers, and on GitHub repos hands polls):
   hand-edit the other two labels.
 - Any later commit or rebase makes the review stale: re-trigger by adding
   `review-this` again, and clear the stale `hands-reviewed` when you do.
+  The exception is a base-only update with an unchanged patch identity (see
+  the PR lifecycle above): the review stands, `review-this` is not re-added
+  and `hands-reviewed` stays.
 - Never push to the PR while `hands-reviewing` is present: the reviewer
   refuses to post for a head that moved, and the runner then holds the label
   for its whole watch (45 minutes) before anyone can re-trigger. Land
