@@ -450,6 +450,28 @@ def prepare(selection, switch=False):
     return {'profile': name}
 
 
+class TokenRequired(ValueError):
+    """An edited provider URL points to another origin: its stored key is not sent there."""
+
+
+def connection_url(connection):
+    """The URL a stored connection's key belongs to (OpenAI's default when it has none)."""
+    if not connection.base_url and getattr(connection, 'provider', None) == 'openai':
+        return 'https://api.openai.com/v1'
+    return connection.base_url
+
+
+def origin(url):
+    """(scheme, host, port) of a URL, the port made explicit; None when it has no host."""
+    parts = urlsplit(url or '')
+    scheme = (parts.scheme or '').lower()
+    try:
+        port = parts.port or {'http': 80, 'https': 443}.get(scheme)
+    except ValueError:
+        return None
+    return (scheme, parts.hostname.lower(), port) if parts.hostname else None
+
+
 def discover(provider):
     if provider not in {p['id'] for p in inventory()['providers']}:
         raise ValueError('Unknown provider')
@@ -460,9 +482,7 @@ def discover(provider):
     cipher, connections, profiles = stores()
     if kind == 'connection':
         connection = connections.get(name, cipher=cipher)
-        url, key = connection.base_url, connection.api_key_value()
-        if not url and connection.provider == 'openai':
-            url = 'https://api.openai.com/v1'
+        url, key = connection_url(connection), connection.api_key_value()
     else:
         profile = profiles.load(name, cipher=cipher)
         url = profile.base_url
@@ -484,6 +504,11 @@ def probe(request):
             connection = connections.get(request['provider'].split(':', 1)[1], cipher=cipher)
             if connection is None:
                 raise ValueError('Unknown provider')
+            # The stored key belongs to the stored endpoint: it is reused only for the same origin
+            # (scheme, host and port). A URL typed for another origin needs its own token.
+            saved = origin(connection_url(connection))
+            if 'api_key' not in request and (saved is None or origin(request['base_url']) != saved):
+                raise TokenRequired()
             models = api_models(request['base_url'], request.get('api_key') or connection.api_key_value())
         elif set(request) == {'base_url', 'api_key'} and all(isinstance(v, str) and v for v in request.values()):
             models = api_models(request['base_url'], request['api_key'])
@@ -492,6 +517,9 @@ def probe(request):
         if not models:
             return {'ok': False, 'message': 'Connected, but the provider returned no models.'}
         return {'ok': True, 'models': models}
+    except TokenRequired:
+        return {'ok': False, 'message': 'The API base URL points to another host. Enter the API token for it; '
+                'the saved token is only used with its own host.'}
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
             message = 'Authentication rejected. Check the API token and its permissions.'

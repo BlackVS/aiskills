@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.2] - 2026-09-30
+
+### Security
+- Auto Reviews: testing an edited provider connection no longer sends its
+  saved token to a caller-typed base URL. The saved token is reused only
+  when the typed URL has the saved endpoint's origin (scheme, host, port;
+  OpenAI's default endpoint when the connection has none). Another host, a
+  switch to http or another port needs the token entered again, and the
+  check says so. Since the app saves an edit only after this check passes,
+  the saved token no longer follows a host change either. Hands sites deploy
+  `canvas_discovery.py` (see `UPDATING.md`). Closes item 1 of issue #11.
+
 ## [1.26.1] - 2026-09-30
 
 ### Fixed
