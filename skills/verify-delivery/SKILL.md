@@ -72,11 +72,17 @@ All four must pass for the verdict `confirmed`:
    The patch identity is a SHA-256 over a canonical form of the diff, the
    same function for both forges (not byte-compatible with `git patch-id`):
    each `diff --git` line, the mode, new/deleted file and rename/copy lines,
-   and every added, removed and `\ No newline` line are kept in order;
-   index lines, the `---`/`+++` lines, hunk headers and their line numbers,
-   context lines and similarity scores are dropped; line endings are
-   normalised. A diff that cannot be read, or is larger than 8 MiB, leaves
-   the check `pending`, never passed. A binary or empty change, or a merge
+   and every hunk line (context, added, removed and `\ No newline`) are kept
+   in order; index lines, the `---`/`+++` lines, hunk headers with their line
+   numbers, similarity scores and blank separator lines are dropped. Only
+   CRLF line endings are normalised: the bytes are hashed as they are, never
+   decoded, so a file that is not UTF-8 keeps every byte. Because context
+   counts, the same line added elsewhere in a file does not match, and a
+   base update that changed the lines next to a hunk does not match either
+   (the conservative outcome: re-review). A diff that cannot be read, or is
+   larger than 8 MiB, leaves the check `pending`, never passed. Every
+   response is read with a bound (32 MiB for JSON, 64 KiB of an error
+   body). A binary or empty change, or a merge
    commit without a parent, has no identity and fails. A rebase merge of
    several commits is compared by its last commit only, so it matches only
    through tree equality.

@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-09-30
+
+### Fixed
+- `verify-delivery`'s patch identity is stricter (follow-ups from 1.26.0):
+  - context lines now count, in order, as in `git patch-id --stable`. The
+    same added line at another position in a file no longer matches, and a
+    base update that changed the lines next to a hunk falls back to "not
+    matched" (re-review), the conservative outcome. Index lines, hunk-header
+    line numbers and line endings are still normalised away;
+  - the diff's bytes are hashed as they are, never decoded, so two diffs
+    that differ only in a byte that is not valid UTF-8 no longer collide;
+  - every response is read with a bound: 8 MiB for a diff, 32 MiB for JSON
+    (larger is pending) and 64 KiB of an HTTP error body, which was read in
+    full before.
+  Exit codes, the evidence format and GET-only behaviour are unchanged.
+
 ## [1.26.0] - 2026-09-30
 
 ### Changed

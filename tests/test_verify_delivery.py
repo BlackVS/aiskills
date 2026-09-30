@@ -77,7 +77,8 @@ class FakeForge:
             return self.overrides[path](req)
         name = self.route(path)
         if name in self.diffs:
-            return Response(200, self.diffs[name].encode())
+            diff = self.diffs[name]
+            return Response(200, diff if isinstance(diff, bytes) else diff.encode())
         if name is None or name not in self.data:
             raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b'{"message":"Not Found"}'))
         return Response(200, json.dumps(self.data[name]).encode())
@@ -443,7 +444,7 @@ class Verify:
         ids = same["patch_identity"]
         self.assertEqual((ids["reviewed_change"], ids["files"]), (ids["merge_change"], 2))
         self.assertNotEqual(self.fake.diffs["head_change"], self.fake.diffs["merge_change"],
-                            "the fixtures differ in index lines, hunk positions and context")
+                            "the fixtures differ in index lines and hunk positions")
         requests = self.diff_requests()
         self.assertEqual(len(requests), 2)
         self.assertTrue(all(r["method"] == "GET" for r in requests))
@@ -465,11 +466,69 @@ class Verify:
     def test_one_changed_line_fails(self):
         self.assert_changed_line_fails()
 
+    def test_the_same_line_at_another_position_does_not_match(self):
+        """An identical added line at a different place in the same file is another change."""
+        self.base_only_update()
+        diff = self.fake.diffs["merge_change"]
+        moved = diff.replace("     name = widget.name\n-    return name\n", "-    return name\n     name = widget.name\n")
+        self.assertNotEqual(moved, diff)
+        self.fake.diffs["merge_change"] = moved
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        self.assertEqual(self.check(doc, "tree_equality")["status"], "failed")
+
+    def test_changed_context_on_the_new_base_does_not_match(self):
+        """The conservative outcome: context the base changed next to the hunk is not the reviewed patch."""
+        self.base_only_update()
+        self.fake.diffs["merge_change"] = self.fake.diffs["merge_change"].replace(
+            '     """Render a widget."""\n', '     """Render a widget as text."""\n')
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (3, "failed"))
+
+    def test_diffs_that_differ_only_in_an_invalid_byte_do_not_match(self):
+        self.base_only_update()
+        for name, byte in (("head_change", b"\xe9"), ("merge_change", b"\xea")):
+            self.fake.diffs[name] = self.fake.diffs[name].encode().replace(b"label = name.strip()",
+                                                                           b"label = name.strip() # " + byte)
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        ids = self.check(doc, "tree_equality")["patch_identity"]
+        self.assertNotEqual(ids["reviewed_change"], ids["merge_change"])
+        # The same invalid byte on both sides is the same change: nothing is lost in decoding.
+        self.fake.diffs["merge_change"] = self.fake.diffs["merge_change"].replace(b"# \xea", b"# \xe9")
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"))
+
+    def test_an_oversized_error_body_is_not_read_in_full(self):
+        class Endless(io.RawIOBase):
+            """An error body that never ends; counts what was read from it."""
+            read_bytes = 0
+
+            def readable(self):
+                return True
+
+            def readinto(self, b):
+                Endless.read_bytes += len(b)
+                b[:] = b"x" * len(b)
+                return len(b)
+        path = "/repos/acme/widgets/pulls/42"
+        self.fake.overrides[path] = lambda req: (_ for _ in ()).throw(
+            urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, io.BufferedReader(Endless())))
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (4, "pending"))
+        self.assertLessEqual(Endless.read_bytes, vd.MAX_ERROR + io.DEFAULT_BUFFER_SIZE)
+
+    def test_an_oversized_json_response_is_pending(self):
+        with mock.patch.object(vd, "MAX_JSON", 64):
+            code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (4, "pending"))
+        self.assertIn("larger than 64 bytes", doc["error"]["message"])
+
     def test_seeded_fault_identity_that_ignores_content(self):
         """A patch identity that looked only at the file list must let the changed line through."""
-        def files_only(text):
-            lines = [l for l in text.splitlines() if l.startswith("diff --git ")]
-            return "|".join(lines), len(lines)
+        def files_only(diff):
+            lines = [l for l in bytes(diff).splitlines() if l.startswith(b"diff --git ")]
+            return b"|".join(lines).decode(), len(lines)
         with mock.patch.object(vd, "patch_identity", files_only):
             with self.assertRaises(AssertionError):
                 self.assert_changed_line_fails()
@@ -717,9 +776,13 @@ class References(unittest.TestCase):
                 "@@ -1,3 +1,3 @@ top\n a\n-b\n+B\n c\n\\ No newline at end of file\n")
         same = (diff.replace("index 1111111..2222222", "index 3333333333..4444444444")
                     .replace("@@ -1,3 +1,3 @@ top", "@@ -40,3 +40,3 @@ elsewhere")
-                    .replace(" a\n", " other context\n").replace("\n", "\r\n"))
+                    .replace("\n", "\r\n"))
         self.assertEqual(vd.patch_identity(diff), vd.patch_identity(same))
-        for changed in (diff.replace("+B", "+C"), diff.replace("-b", "-x"), diff.replace("f.txt", "g.txt"),
+        self.assertEqual(vd.patch_identity(diff), vd.patch_identity(diff.encode()), "text and bytes hash alike")
+        self.assertNotEqual(vd.patch_identity(diff.replace("+B\n", "+B\r+x\n")),
+                            vd.patch_identity(diff.replace("+B\n", "+B\n+x\n")), "a lone CR is content, not a line end")
+        for changed in (diff.replace("+B", "+C"), diff.replace(" a\n", " other context\n"),
+                        diff.replace(" a\n-b\n", "-b\n a\n"), diff.replace("-b", "-x"), diff.replace("f.txt", "g.txt"),
                         diff.replace("-b\n+B", "+B\n-b"), diff.replace("-b", "--- b"),
                         diff.replace("\\ No newline at end of file\n", ""),
                         diff.replace("index 1111111..2222222 100644", "old mode 100644\nnew mode 100755\nindex 1..2")):
