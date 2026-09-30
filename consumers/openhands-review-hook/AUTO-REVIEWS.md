@@ -250,7 +250,8 @@ The browser fixture in `tests/test_extension.html` exercises the actual
 extension module with fake APIs. Open it with a local static file server, or
 headless Chrome with file-module access enabled. A successful run displays
 `PASS` for selection restore, provider changes, save, provider creation,
-credential clearing, HTML escaping, failure handling, and reload. This fixture
+credential clearing, HTML escaping, failure handling, reload, and unsaved
+reviewer choices surviving a provider edit. This fixture
 checks UI behavior; repeat Save/Reload in the installed Canvas app to check its
 host integration.
 

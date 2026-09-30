@@ -55,6 +55,9 @@ try {
   [...apiRow.querySelectorAll('button')].find(button => button.textContent === 'List models').click(); await settle();
   check(apiRow.textContent.includes('qwen'), 'Independent provider model listing');
   check(before === [form.elements.primaryProvider.value, form.elements.primaryModel.value, form.elements.fallbackProvider.value, form.elements.fallbackModel.value].join('|'), 'Inspection preserves reviewers');
+  // an unsaved reviewer change survives a provider edit that reloads the providers
+  form.elements.primaryModel.value='sol'; form.elements.primaryModel.dispatchEvent(new Event('change'));
+  check(document.querySelector('[data-unsaved]').textContent === 'Unsaved changes', 'Pending reviewer change is marked unsaved');
   [...apiRow.querySelectorAll('button')].find(button => button.textContent === 'Edit').click();
   check(add.elements.api_key.value === '' && !add.elements.api_key.required, 'Edit does not expose saved token');
   add.elements.display_name.value='Renamed';
@@ -62,6 +65,11 @@ try {
   check(!lastUpdate, 'Failed edit does not update stored provider');
   probeOK=true; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastUpdate.display_name === 'Renamed' && !('api_key' in lastUpdate), 'Blank token omitted from edit');
+  check(form.elements.primaryProvider.value === 'acp:codex' && form.elements.primaryModel.value === 'sol', 'Provider edit keeps the pending reviewer model');
+  check(document.querySelector('[data-unsaved]').textContent === 'Unsaved changes' && !form.querySelector('[type=submit]').disabled, 'Pending change stays unsaved and can be saved');
+  check(document.querySelector('[data-new-result]').textContent.includes('unsaved reviewer changes are kept'), 'The edit says the pending change was kept');
+  document.querySelector('[data-revert]').click(); await settle();
+  check(form.elements.primaryModel.value === 'astra' && document.querySelector('[data-unsaved]').textContent === '', 'Revert still restores the persisted selection');
   check(lastProbe.provider === 'connection:test' && !('api_key' in lastProbe), 'Edit checks existing credential');
   // reasoning effort and the secondary (reading) profile of combined mode
   check(form.elements.primaryEffort.value === '' && form.elements.primaryEffort.options.length === 5 && form.elements.primaryEffort.options[0].text === 'Adapter default' && !form.elements.primaryEffort.disabled, 'Codex account: adapter default plus four selectable efforts');
@@ -122,6 +130,6 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list, safe edit, reopening reuses model cache, reload and test refresh, failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save';
+  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list, safe edit, reopening reuses model cache, reload and test refresh, failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>
