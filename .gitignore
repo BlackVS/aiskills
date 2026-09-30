@@ -4,9 +4,10 @@
 # Local temporary scripts and private working artifacts
 /.work/
 
-# The operator's own aimem binding (hub and project) for this checkout.
-# It is meaningless on anyone else's machine.
+# The operator's own aimem binding (hub and project) and MCP server wiring
+# for this checkout. Both are meaningless on anyone else's machine.
 .aimem.json
+.mcp.json
 
 # aimem's session handoff. It carries in-flight operational state, and this
 # repository is public, so it stays local.
