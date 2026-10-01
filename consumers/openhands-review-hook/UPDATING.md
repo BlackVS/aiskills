@@ -42,11 +42,12 @@ deployed **from this repository** and never edited in place on a site.
 the next deploy from the repo silently reverts it — 1.11.0 exists because
 exactly that happened. To change receiver or app code: branch here, run
 `python3 -m unittest test_review_control test_adapters test_discovery
-test_canvas_integration` from `runtime/` (the integration case only runs
-inside the Canvas container with `OH_PERSISTENCE_DIR` set to a fresh
-`/tmp/auto-reviews-test-*/state` and a test-only `OH_SECRET_KEY`, as
-AUTO-REVIEWS.md "Verify" describes — elsewhere it skips, so a green run on a
-workstation has not exercised the SDK store) and the browser fixture in
+test_canvas_integration` from `runtime/` (the integration cases run only
+where the SDK is installed, inside the Canvas container or a virtual
+environment with the image's SDK versions, with `OH_PERSISTENCE_DIR` set to a
+fresh `/tmp/auto-reviews-test-*/state` and a test-only `OH_SECRET_KEY`, as
+AUTO-REVIEWS.md "Verify" describes — elsewhere they skip, so a green run
+without the SDK has not exercised the SDK store) and the browser fixture in
 `tests/test_extension.html`, review, merge, then deploy.
 
 Deploying: back up the current files to

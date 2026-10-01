@@ -209,10 +209,19 @@ Canvas image unchanged during this installation.
 Run `python3 -m unittest -v test_review_control test_adapters test_discovery` from `runtime/`, plus
 `python3 -m py_compile *.py`. Run `python3 render.py --check` from the consumer
 directory. The tests use fake forges and agents and never post a PR comment.
-`test_canvas_integration.py` runs inside Canvas only with `OH_PERSISTENCE_DIR`
+`test_canvas_integration.py` runs only with `OH_PERSISTENCE_DIR`
 set to a fresh `/tmp/auto-reviews-test-*/state` directory and `OH_SECRET_KEY` set to an arbitrary test-only value. It creates an encrypted fake
 provider and checks model selection, profile reuse, and credential separation
-using the real SDK stores. Never point it at live persistence.
+using the real SDK stores. A second case runs the combined-mode chain end to
+end: it saves a primary, a secondary and a fallback through the settings API
+(the discovery helper runs in-process against the test's stores), then routes a
+review with the runner from the profile files that save wrote, and checks that
+the conversation starts on the reading profile, switches to the primary's LLM
+profile and is signed with the primary's model. Never point it at live
+persistence. Both cases need the SDK packages: run them inside the Canvas
+container, or in a Python 3.12 virtual environment with the image's versions
+(agent-canvas 1.20.0: `openhands-sdk==1.49.1` and
+`openhands-agent-server==1.27.1`).
 
 Verify API requests without authentication return 401. In Canvas, save, reload
 and confirm both selections persist; a second tab saving an old revision must
