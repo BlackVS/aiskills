@@ -9,6 +9,26 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.4] - 2026-10-01
+
+### Changed
+- Auto Reviews discovery helper: `server_environment()` no longer computes
+  `OPENHANDS_AGENT_SERVER_CONFIG_PATH` or its default
+  `workspace/openhands_agent_server_config.json`. The SDK builds its
+  configuration from `OH_*` variables only and has no config file (observed
+  on agent-canvas 1.20.0, SDK 1.49.1; 1.29.3), so the helper copies only
+  `OH_SECRET_KEY` and, when set, `OH_PERSISTENCE_DIR`. Two agent-server
+  processes that differ only in that unused variable no longer count as
+  ambiguous.
+
+### Fixed
+- Auto Reviews app 0.2.8: when Canvas's request helper throws on an error
+  status (it does, with the parsed body in `response`), the connection test
+  shows the server's own `message` instead of the generic "unavailable" text.
+  Only the message is taken from a thrown answer, so it is never a success.
+  Fixture cases cover a thrown message, a thrown body without one, and a
+  thrown body that claims success.
+
 ## [1.29.3] - 2026-10-01
 
 ### Changed

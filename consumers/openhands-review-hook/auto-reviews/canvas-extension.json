@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "auto-reviews",
   "display_name": "Auto Reviews",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Manage providers and choose primary, secondary (reading) and fallback models with reasoning effort for automatic PR reviews.",
   "entrypoint": "extension.js",
   "contributes": {

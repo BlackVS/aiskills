@@ -10,7 +10,7 @@ let probeFailure = null, lastSaved, lastProvider, lastUpdate, lastUpdatePath, la
 const host = {apiVersion:'1', registerPage(id, callback) { mountPage = () => callback({container:document.querySelector('main')}); return mountPage(); },
 agentServer:{async request({path,method,body}) {
   if(path === '/api/review-control/test-provider') { probeRequests++; lastProbe = {...body};
-    if(probeFailure) { if(probeFailure.throws) throw Error('HTTP ' + probeFailure.status); return probeFailure.body; }  // an error status, as the host helper may report it
+    if(probeFailure) { if(probeFailure.throws) { const error = Error('HTTP request failed (' + probeFailure.status + ' )'); error.name = 'HttpError'; error.status = probeFailure.status; if('body' in probeFailure) error.response = probeFailure.body; throw error; } return probeFailure.body; }  // Canvas throws an HttpError carrying the parsed body in `response`  // an error status, as the host helper may report it
     return probeOK ? {ok:true,models:probeModels} : {ok:false,message:'Authentication rejected.'}; }
   if(method === 'PATCH') { lastUpdate = {...body}; lastUpdatePath = path; writes++; return {}; }
   if(path === '/api/llm/provider-connections') { writes++; lastProvider = {...body}; providers.push({id:'api-7f3c',editable:true,connection_id:'test',name:body.display_name,kind:'api',url:body.base_url + '/',efforts:['none','low','medium','high','xhigh','max'],switchable:true}); return {id:'test'}; }
@@ -80,6 +80,9 @@ try {
   check(await testRow({status: 200, body: {ok: true}}) === 'Connection test unavailable. Try again.', 'ok without a model list is not a success');
   check(await testRow({status: 500, body: {ok: false, message: {detail: 'host error object'}}}) === 'Connection test unavailable. Try again.', 'A message that is not text is never shown');
   check(await testRow({status: 503, throws: true}) === 'Connection test unavailable. Try again.', 'An error thrown by the host shows the generic text');
+  check(await testRow({status: 400, throws: true, body: {ok: false, message: 'Invalid connection test'}}) === 'Invalid connection test', 'A thrown HttpError shows the server\'s own message');
+  check(await testRow({status: 404, throws: true, body: {error: 'Not found'}}) === 'Connection test unavailable. Try again.', 'A thrown answer without a message shows the generic text');
+  check(await testRow({status: 500, throws: true, body: {ok: true, models: [{id: 'x', label: 'x'}]}}) === 'Connection test unavailable. Try again.', 'A thrown answer is never a success');
   add.elements.display_name.value='Other'; add.elements.base_url.value='https://other.example/v1'; add.elements.api_key.value='other-key';
   for (const failure of [{status: 400, throws: true}, {status: 200, body: {ok: true}}]) {
     probeFailure = failure; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle(); probeFailure = null;
@@ -194,6 +197,6 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws, safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>
