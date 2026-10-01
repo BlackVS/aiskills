@@ -252,7 +252,8 @@ headless Chrome with file-module access enabled. A successful run displays
 `PASS` for selection restore, provider changes, save, provider creation
 (and the request that tests it), provider edits (the connection they update,
 and leaving edit mode), a token of spaces refused, credential clearing, HTML escaping, failure handling,
-reload, Test connection refreshing the model list, and unsaved reviewer
+reload, Test connection refreshing the model list, connection-test errors
+shown the same whether the host's request helper resolves or throws, and unsaved reviewer
 choices surviving a provider edit. This fixture
 checks UI behavior; repeat Save/Reload in the installed Canvas app to check its
 host integration.

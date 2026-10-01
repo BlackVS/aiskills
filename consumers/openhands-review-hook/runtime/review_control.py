@@ -44,15 +44,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def fail(self, status, text):
+        """Answer an error. The connection test answers every outcome as {ok, message} (its
+        results are {ok: true, models} or {ok: false, message}); the settings API as {error}.
+        The app reads only a string message and treats anything but ok: true as a failure,
+        whether the host's request helper resolves or throws on an error status."""
+        if urlsplit(self.path).path == '/api/review-control/test-provider':
+            self.reply(status, {'ok': False, 'message': text})
+        else:
+            self.reply(status, {'error': text})
+
     def json_body(self):
         """The request's JSON body (at most 4 KiB), or REPLIED after a 415 or 413 answer.
         Unparseable JSON raises ValueError, which each caller answers with its own 400."""
         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
-            self.reply(415, {'error': 'Use application/json'})
+            self.fail(415, 'Use application/json')
             return REPLIED
         length = int(self.headers.get('Content-Length', '0'))
         if not 0 < length <= 4096 or self.headers.get('Transfer-Encoding'):
-            self.reply(413, {'error': 'Invalid request size'})
+            self.fail(413, 'Invalid request size')
             return REPLIED
         return json.loads(self.rfile.read(length))
 
@@ -62,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
         if not supplied and self.headers.get('Authorization', '').startswith('Bearer '):
             supplied = self.headers['Authorization'][7:]
         if not expected or not hmac.compare_digest(expected.encode(), supplied.encode()):
-            self.reply(401, {'error': 'Authentication required'})
+            self.fail(401, 'Authentication required')
             return False
         return True
 
@@ -71,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path)
         if path.path not in ('/api/review-control/settings', '/api/review-control/providers', '/api/review-control/models'):
-            self.reply(404, {'error': 'Not found'})
+            self.fail(404, 'Not found')
             return
         try:
             if not write and path.path == '/api/review-control/providers':
@@ -85,7 +95,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, discovery('models', provider=provider))
                 return
             if path.path != '/api/review-control/settings':
-                self.reply(405, {'error': 'Method not allowed'})
+                self.fail(405, 'Method not allowed')
                 return
             if write:
                 candidate = self.json_body()
@@ -118,19 +128,19 @@ class Handler(BaseHTTPRequestHandler):
                 data, problems = load_settings()
             self.reply(200, {'settings': data, 'profiles': profiles(), 'problems': problems})
         except FileExistsError:
-            self.reply(409, {'error': 'Settings changed; reload before saving'})
+            self.fail(409, 'Settings changed; reload before saving')
         except PairMismatch as error:  # names profile fields only: the caller needs them to repair the pair
-            self.reply(400, {'error': str(error)})
+            self.fail(400, str(error))
         except (ValueError, TypeError):
-            self.reply(400, {'error': 'Invalid settings. Select different, existing profiles and reload if needed.'})
+            self.fail(400, 'Invalid settings. Select different, existing profiles and reload if needed.')
         except (OSError, subprocess.TimeoutExpired):
-            self.reply(503, {'error': 'Canvas discovery or settings unavailable. Check provider URL, credentials, and account login, then reload.'})
+            self.fail(503, 'Canvas discovery or settings unavailable. Check provider URL, credentials, and account login, then reload.')
 
     def do_POST(self):
         if not self.authorized():
             return
         if urlsplit(self.path).path != '/api/review-control/test-provider':
-            self.reply(404, {'error': 'Not found'})
+            self.fail(404, 'Not found')
             return
         try:
             candidate = self.json_body()
@@ -139,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
             probe_shape(candidate)
             self.reply(200, discovery('probe', request=candidate))
         except (ValueError, TypeError):
-            self.reply(400, {'error': 'Invalid connection test'})
+            self.fail(400, 'Invalid connection test')
         except (OSError, subprocess.TimeoutExpired):
             self.reply(200, {'ok': False, 'message': 'Connection test unavailable or timed out. Try again.'})
 

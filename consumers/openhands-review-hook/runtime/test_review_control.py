@@ -186,12 +186,23 @@ class PolicyTests(unittest.TestCase):
                             (400, valid, {'Content-Length': 'many'}),
                             (400, b'{not json', {})]:
                         with self.subTest(method=method, status=expected, headers=headers):
-                            self.assertEqual(send(method, path, body, **headers)[0], expected)
+                            status, answer = send(method, path, body, **headers)
+                            self.assertEqual(status, expected)
+                            # one shape per endpoint: the connection test {ok, message}, settings {error}
+                            if path == probe:
+                                self.assertEqual((set(answer), answer['ok'], type(answer['message'])), ({'ok', 'message'}, False, str))
+                            else:
+                                self.assertEqual((set(answer), type(answer['error'])), ({'error'}, str))
+                    with self.subTest(method=method, status=401):
+                        status, answer = send(method, path, valid, **{'X-Session-API-Key': 'wrong'})
+                        self.assertEqual(status, 401)
+                        self.assertEqual(answer, {'ok': False, 'message': 'Authentication required'} if path == probe else {'error': 'Authentication required'})
                 self.assertEqual(send('POST', '/api/review-control/other', valid), (404, {'error': 'Not found'}))
+                self.assertEqual(send('GET', probe), (404, {'ok': False, 'message': 'Not found'}), 'the connection test path keeps its shape for any method')
                 for body in [[], {}, {'provider': ''}, {'provider': 7}, {'base_url': 'https://example.com'},
                              {'provider': 'connection:one', 'api_key': 'key'}, dict(json.loads(valid), extra='x')]:
                     with self.subTest(body=body):
-                        self.assertEqual(send('POST', probe, json.dumps(body).encode()), (400, {'error': 'Invalid connection test'}))
+                        self.assertEqual(send('POST', probe, json.dumps(body).encode()), (400, {'ok': False, 'message': 'Invalid connection test'}))
                 discovery.assert_not_called()
             unavailable = {'ok': False, 'message': 'Connection test unavailable or timed out. Try again.'}
             for error in [OSError('Canvas discovery failed'), subprocess.TimeoutExpired('docker', 55)]:

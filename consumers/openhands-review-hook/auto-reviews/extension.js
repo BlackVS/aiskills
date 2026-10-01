@@ -3,6 +3,16 @@ export function activate(host) {
   const modelCache = new Map();
   const cacheKey = provider => JSON.stringify([provider.id, provider.url || null]);
   const request = (path, method = "GET", body) => host.agentServer.request({path, method, ...(body === undefined ? {} : {body})});
+  // The connection test answers {ok: true, models} or {ok: false, message}, the latter also with
+  // an error status. The host's request helper may resolve or throw on an error status: either
+  // way only ok: true with a model list is a success, and only a string message is shown.
+  const UNAVAILABLE = 'Connection test unavailable. Try again.';
+  async function testProvider(body) {
+    let data = null;
+    try { data = await request('/api/review-control/test-provider', 'POST', body); } catch { /* reported below */ }
+    if (data?.ok === true && Array.isArray(data.models)) return data;
+    return {ok: false, message: typeof data?.message === 'string' && data.message ? data.message : UNAVAILABLE};
+  }
   function providerModels(provider) {
     const key = cacheKey(provider);
     if (!modelCache.has(key)) {
@@ -217,7 +227,7 @@ export function activate(host) {
                   data = {ok: true, ...await providerModels(p)};
                 } else {
                   modelCache.delete(cacheKey(p));
-                  data = await request('/api/review-control/test-provider', 'POST', {provider: p.id});
+                  data = await testProvider({provider: p.id});
                   if (data.ok) modelCache.set(cacheKey(p), Promise.resolve({models: data.models}));
                 }
                 if (disposed) return;
@@ -229,7 +239,7 @@ export function activate(host) {
                   result.append(modelsList);
                 }
                 message(label === 'List models' ? `${p.name}: models loaded.` : `${p.name}: connection check passed.`);
-              } catch { if (!disposed) result.textContent = 'Connection test unavailable. Try again.'; message('Connection test unavailable. Try again.'); }
+              } catch { if (!disposed) result.textContent = UNAVAILABLE; message(UNAVAILABLE); }
               finally { if (!disposed) lock(false); }
             };
             return button;
@@ -354,7 +364,7 @@ export function activate(host) {
         const probe = {base_url: body.base_url};
         if (editingProvider) probe.provider = editingProvider;
         if (body.api_key) probe.api_key = body.api_key;
-        const checked = await request('/api/review-control/test-provider', 'POST', probe);
+        const checked = await testProvider(probe);
         if (disposed) return;
         if (!checked.ok) { feedback.textContent = checked.message + ' Provider was not saved.'; message(feedback.textContent); return; }
         if (!save) { feedback.textContent = `Connection check passed: ${checked.models.length} models. Nothing saved; no inference request sent.`; message(feedback.textContent); return; }
