@@ -5,7 +5,7 @@ Run: python3 -m unittest tests/test_install.py
 bash cases run wherever a bash is found (Linux, macOS, Git Bash on Windows);
 PowerShell cases run where powershell/pwsh is found (Windows, or pwsh elsewhere).
 """
-import os, pathlib, re, shutil, subprocess, sys, tempfile, unittest
+import datetime, json, os, pathlib, re, shutil, subprocess, sys, tempfile, unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # The managed block's markers, exactly as both installers write them.
@@ -14,33 +14,50 @@ BLOCK_MARKERS = ("<!-- aiskills:review-gates start (managed by install.sh, do no
 CORE = ("architecture-review", "oh-code-review", "oh-technical-writing")
 BASH = shutil.which("bash") or next((p for p in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe") if os.path.exists(p)), None)
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
+GIT = shutil.which("git")
+MANIFEST_FIELDS = ["version", "commit", "skills", "archive_sha256", "installed_at"]
 
 
 def posix(p):
     return str(p).replace("\\", "/")
 
 
-def clean_env(xdg_config=None):
-    # XDG_CONFIG_HOME moves OpenCode's config dir; CI runners set it, so a test sets it only on purpose
-    env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+def clean_env(xdg_config=None, extra=None):
+    # XDG_CONFIG_HOME moves OpenCode's config dir; CI runners set it, so a test sets it only on purpose;
+    # the manifest's inputs likewise come only from the test
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_CONFIG_HOME", "AI_SKILLS_COMMIT", "AI_SKILLS_ARCHIVE_SHA256")}
     if xdg_config is not None:
         env["XDG_CONFIG_HOME"] = str(xdg_config)
+    env.update(extra or {})
     return env
 
 
-def bash_install(*args, home=None, xdg_config=None):
-    env = clean_env(xdg_config)
+def bash_install(*args, home=None, xdg_config=None, env=None, root=ROOT):
+    e = clean_env(xdg_config, env)
     if home is not None:
-        env["HOME"] = posix(home)
-    return subprocess.run([BASH, posix(ROOT / "install.sh"), *args], capture_output=True, text=True, env=env)
+        e["HOME"] = posix(home)
+    return subprocess.run([BASH, posix(pathlib.Path(root) / "install.sh"), *args], capture_output=True, text=True, env=e)
 
 
-def ps_install(*args, home=None, xdg_config=None):
+def ps_install(*args, home=None, xdg_config=None, env=None, root=ROOT):
     script = ""
     if home is not None:
         script += f"Set-Variable -Name HOME -Value '{home}' -Force; "
-    script += "& '" + str(ROOT / "install.ps1") + "' " + " ".join(a if re.fullmatch(r"-[A-Za-z]+", a) else "'" + a.replace("'", "''") + "'" for a in args)  # values quoted (empty, comma, space); parameter names bare
-    return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True, env=clean_env(xdg_config))
+    script += "& '" + str(pathlib.Path(root) / "install.ps1") + "' " + " ".join(a if re.fullmatch(r"-[A-Za-z]+", a) else "'" + a.replace("'", "''") + "'" for a in args)  # values quoted (empty, comma, space); parameter names bare
+    return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True, env=clean_env(xdg_config, env))
+
+
+def source_commit():
+    """HEAD of this checkout, or None when the tests run from an unpacked archive."""
+    if not GIT or not (ROOT / ".git").exists():
+        return None
+    return subprocess.run([GIT, "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def copy_source(dest):
+    """A copy of the installer and what it installs, outside any checkout of this repository."""
+    shutil.copytree(ROOT, dest, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+    return dest
 
 
 def complete(skill_dir):
@@ -99,7 +116,7 @@ class InstallerContract:
             self.assertTrue((self.home / client_dir / "oh-code-review/SKILL.md").is_file(), f"~/{client_dir} missing")
 
     def flags(self, *names):
-        table = {"user": ("--user", "-User"), "prompts": ("-p", "-Prompts"), "agents": ("-a", "-AgentsMd")}
+        table = {"user": ("--user", "-User"), "prompts": ("-p", "-Prompts"), "agents": ("-a", "-AgentsMd"), "dry": ("--dry-run", "-DryRun")}
         return [table[n][0 if self.flavor == "bash" else 1] for n in names]
 
     def test_user_level_reaches_opencode_only_when_it_is_installed(self):
@@ -197,6 +214,74 @@ class InstallerContract:
         self.assertFalse((self.repo / ".opencode/prompts").exists())
         self.assertFalse((self.repo / ".claude").exists())
 
+    def manifest(self, dest):
+        raw = (dest / ".ai-skills.json").read_bytes()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), "no BOM")
+        self.assertNotIn(b"\r", raw, "LF line ends")
+        m = json.loads(raw.decode("utf-8"))
+        self.assertEqual(list(m), MANIFEST_FIELDS, "the fields, in the documented order")
+        return m
+
+    def test_manifest_records_what_was_installed(self):
+        before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        r = self.install(str(self.repo))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        for client_dir in (".claude/skills", ".agents/skills"):
+            m = self.manifest(self.repo / client_dir)
+            self.assertEqual(m["version"], version)
+            self.assertEqual(m["commit"], source_commit())
+            self.assertEqual(m["skills"], sorted(CORE))
+            self.assertIsNone(m["archive_sha256"])
+            at = datetime.datetime.strptime(m["installed_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+            self.assertTrue(before <= at <= datetime.datetime.now(datetime.timezone.utc), m["installed_at"])
+        self.assertEqual(sorted(p.name for p in (self.repo / ".claude/skills").iterdir()), [".ai-skills.json", *sorted(CORE)],
+                         "no temporary file left behind")
+
+    def test_manifest_is_replaced_and_names_only_this_runs_skills(self):
+        self.install(str(self.repo), "-t", "codex")
+        r = self.install(str(self.repo), "-t", "codex", "-s", "oh-code-review",
+                         env={"AI_SKILLS_ARCHIVE_SHA256": "AB" * 32})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = self.manifest(self.repo / ".agents/skills")
+        self.assertEqual(m["skills"], ["oh-code-review"], "a subset install does not claim the skills it did not install")
+        self.assertEqual(m["archive_sha256"], "ab" * 32)
+        self.assertEqual(sorted(p.name for p in (self.repo / ".agents/skills").iterdir()), [".ai-skills.json", *sorted(CORE)],
+                         "replaced in place, no temporary file left behind")
+
+    def test_manifest_takes_the_commit_from_the_caller_outside_a_checkout(self):
+        src = copy_source(self.tmp / "src")
+        commit = "0123456789abcdef" * 2 + "01234567"
+        r = self.install(str(self.repo), "-t", "claude", root=src, env={"AI_SKILLS_COMMIT": commit})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.manifest(self.repo / ".claude/skills")["commit"], commit)
+
+    @unittest.skipUnless(GIT, "no git found")
+    def test_manifest_ignores_an_enclosing_repository(self):
+        # unpacked inside some other checkout: that checkout's HEAD is not the source's commit
+        outer = self.tmp / "outer"; outer.mkdir()
+        def g(*a):
+            subprocess.run([GIT, "-C", str(outer), "-c", "user.name=t", "-c", "user.email=t@example.invalid", *a],
+                           capture_output=True, text=True, check=True)
+        g("init", "-q"); g("commit", "-q", "--allow-empty", "-m", "outer")
+        src = copy_source(outer / "aiskills")
+        r = self.install(str(self.repo), "-t", "claude", root=src)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.manifest(self.repo / ".claude/skills")["commit"])
+
+    def test_manifest_refuses_malformed_inputs(self):
+        r = self.install(str(self.repo), "-t", "claude", root=copy_source(self.tmp / "src"),
+                         env={"AI_SKILLS_COMMIT": 'abc", "x": "', "AI_SKILLS_ARCHIVE_SHA256": "not-a-digest"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = self.manifest(self.repo / ".claude/skills")
+        self.assertIsNone(m["commit"]); self.assertIsNone(m["archive_sha256"])
+
+    def test_dry_run_writes_no_manifest(self):
+        r = self.install(str(self.repo), "-t", "claude", *self.flags("dry"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(".ai-skills.json", r.stdout)
+        self.assertFalse((self.repo / ".claude").exists())
+
     def test_empty_tool_selection_is_refused(self):
         for empty in ("", ",", ",,"):
             with self.subTest(value=empty):
@@ -215,16 +300,16 @@ class InstallerContract:
 class BashInstaller(InstallerContract, unittest.TestCase):
     flavor = "bash"
 
-    def install(self, *args, home=None, xdg_config=None):
-        return bash_install(*args, home=home, xdg_config=xdg_config)
+    def install(self, *args, home=None, xdg_config=None, env=None, root=ROOT):
+        return bash_install(*args, home=home, xdg_config=xdg_config, env=env, root=root)
 
 
 @unittest.skipUnless(PWSH, "no PowerShell found")
 class PowerShellInstaller(InstallerContract, unittest.TestCase):
     flavor = "powershell"
 
-    def install(self, *args, home=None, xdg_config=None):
-        return ps_install(*args, home=home, xdg_config=xdg_config)
+    def install(self, *args, home=None, xdg_config=None, env=None, root=ROOT):
+        return ps_install(*args, home=home, xdg_config=xdg_config, env=env, root=root)
 
     def test_empty_array_tool_selection_is_refused(self):
         # native PowerShell form: an explicit empty array binds as zero items, unlike an omitted parameter

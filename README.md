@@ -124,6 +124,35 @@ leaves anything else alone; an upgrade is the same command again after `git
 pull`. Selecting `architecture-review` automatically adds the two skills it
 links to.
 
+Each run also writes a manifest into every skills directory it installs to,
+`<dest>/.ai-skills.json`, so a tool can tell which version a client sees:
+
+```json
+{
+  "version": "1.28.0",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "skills": ["architecture-review", "oh-code-review", "oh-technical-writing"],
+  "archive_sha256": null,
+  "installed_at": "2026-10-01T12:00:00Z"
+}
+```
+
+- `version`: the set's `VERSION`.
+- `commit`: the commit installed from. That is the source checkout's `HEAD`, or
+  `AI_SKILLS_COMMIT` when the source is not a checkout; otherwise `null`.
+- `skills`: the skills this run installed into that directory, sorted. A
+  subset install names only its subset, and skills left there by an earlier
+  run are not claimed.
+- `archive_sha256`: the SHA-256 of the archive installed from, passed in
+  `AI_SKILLS_ARCHIVE_SHA256`; otherwise `null`.
+- `installed_at`: UTC, ISO 8601.
+
+The file is UTF-8 without a BOM and has LF line endings. It is replaced
+whole on every run, and a dry run leaves it alone. Clients ignore it, since it
+is not a skill directory. A consumer must treat a missing manifest, or a
+`null` field, as unknown, never as a version: installs made before 1.28.0
+have no manifest.
+
 | Platform | Installer | User-level destinations | Status |
 | --- | --- | --- | --- |
 | Linux | `install.sh` | `~/.claude/skills`, `~/.agents/skills` | exercised (tests in `tests/test_install.py`, CI on `ubuntu-latest`) |
