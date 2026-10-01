@@ -3,7 +3,7 @@ offline here (AI_SKILLS_ARCHIVE points at an archive built from the checkout).
 
 Run: python3 -m unittest tests/test_boot.py
 """
-import hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile, unittest
+import hashlib, json, os, pathlib, re, shutil, subprocess, sys, tempfile, unittest
 
 from tests.test_install import BASH, PWSH, ROOT, clean_env, posix
 
@@ -116,6 +116,12 @@ RELEASE_JSON = ('{"url": "https://api.github.com/repos/BlackVS/aiskills/releases
                 ' {"url": "https://api.github.com/repos/BlackVS/aiskills/releases/assets/2", "id": 2, "name": "SHA256SUMS"}]}')
 
 
+def flat(text):
+    """Output as one line: PowerShell 7 colors an error and wraps it into "     | " continuation lines."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    return re.sub(r"\s*\n\s*(?:\|\s*)?", " ", text)
+
+
 def sha256_of(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
@@ -149,7 +155,7 @@ class ReleaseFixture:
 
     def assert_refused(self, r, message):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(message, r.stdout + r.stderr)
+        self.assertIn(message, flat(r.stdout + r.stderr))
         self.assertFalse((self.home / ".claude").exists(), "nothing is installed")
 
 
@@ -207,7 +213,7 @@ class ReleaseCases(ReleaseFixture):
         self.assertIn("https://git.example.invalid/BlackVS/aiskills/releases/download/v9.9.9/SHA256SUMS", urls)
 
 
-@unittest.skipUnless(BASH, "no bash")
+@unittest.skipUnless(BASH and os.name != "nt", "needs a POSIX bash to put a fake curl on PATH (Git Bash puts its own curl first)")
 class BashBootRelease(ReleaseCases, unittest.TestCase):
     """boot.sh: the latest release by default, verified against SHA256SUMS; main only on request."""
 
@@ -218,14 +224,11 @@ class BashBootRelease(ReleaseCases, unittest.TestCase):
 
     def run_boot(self, location="", **extra):
         env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
-        env.update(HOME=str(self.home), PATH=self.bin_path(env), FAKE_LOG=str(self.log),
+        env.update(HOME=str(self.home), PATH=f"{self.bin}:{env['PATH']}", FAKE_LOG=str(self.log),
                    FAKE_ARCHIVE=str(self.archive), FAKE_SUMS=str(self.sums), FAKE_RELEASE=RELEASE_JSON,
                    FAKE_LOCATION=location)
         env.update(extra)
         return subprocess.run([BASH, str(ROOT / "boot.sh"), "--user", "-s", "core"], capture_output=True, text=True, env=env)
-
-    def bin_path(self, env):
-        return str(self.bin) + os.pathsep + env["PATH"]
 
     def assert_stopped(self, r):
         self.assert_refused(r, "could not look up the latest release")
