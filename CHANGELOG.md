@@ -9,6 +9,27 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.7] - 2026-10-01
+
+### Changed
+- Auto Reviews backend: the connection-test request shapes are listed once
+  (`PROBE_SHAPES` and `probe_shape()` in the discovery helper), and the
+  settings API checks a request against that same list instead of its own
+  copy. The JSON body checks that saving settings and testing a connection
+  both made (415 for another content type, 413 for an empty, oversized or
+  chunked body) are one method, `json_body()`. Nothing a user sees changes;
+  a connection test with an empty provider id is now refused on its shape
+  before the helper reads the provider list, with the same message as before
+  (issue #11, item 4).
+
+### Added
+- Tests for the backend paths that had none: the connection-test endpoint's
+  415, 413 and 400 answers (and that none reaches discovery), its "unavailable"
+  answer when discovery fails or times out, the same body checks on saving
+  settings, the helper refusing every other request shape, its timeout and
+  catch-all messages, and that a saved connection is opened with the agent
+  server's cipher.
+
 ## [1.26.6] - 2026-10-01
 
 ### Changed

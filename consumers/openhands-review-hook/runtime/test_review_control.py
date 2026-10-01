@@ -159,6 +159,47 @@ class PolicyTests(unittest.TestCase):
             self.assertFalse(review_policy.settings_path().exists())
         finally: server.shutdown(); server.server_close(); thread.join()
 
+    def test_json_endpoints_refuse_bad_bodies_before_any_discovery(self):
+        import http.client
+        import subprocess
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        def send(method, path, body=b'', **headers):
+            connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=10)
+            try:
+                headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json',
+                           'Content-Length': str(len(body)), **headers}
+                connection.request(method, path, body=body, headers=headers)
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+            finally: connection.close()
+        probe, settings = '/api/review-control/test-provider', '/api/review-control/settings'
+        valid = json.dumps({'base_url': 'https://example.com', 'api_key': 'test-only'}).encode()
+        try:
+            with patch('review_control.discovery') as discovery:
+                for method, path in [('POST', probe), ('PUT', settings)]:
+                    for expected, body, headers in [
+                            (415, valid, {'Content-Type': 'text/plain'}),
+                            (413, b'', {}),
+                            (413, b'{' + b' ' * 4096 + b'}', {}),
+                            (413, valid, {'Transfer-Encoding': 'chunked'}),
+                            (400, valid, {'Content-Length': 'many'}),
+                            (400, b'{not json', {})]:
+                        with self.subTest(method=method, status=expected, headers=headers):
+                            self.assertEqual(send(method, path, body, **headers)[0], expected)
+                self.assertEqual(send('POST', '/api/review-control/other', valid), (404, {'error': 'Not found'}))
+                for body in [[], {}, {'provider': ''}, {'provider': 7}, {'base_url': 'https://example.com'},
+                             {'provider': 'connection:one', 'api_key': 'key'}, dict(json.loads(valid), extra='x')]:
+                    with self.subTest(body=body):
+                        self.assertEqual(send('POST', probe, json.dumps(body).encode()), (400, {'error': 'Invalid connection test'}))
+                discovery.assert_not_called()
+            unavailable = {'ok': False, 'message': 'Connection test unavailable or timed out. Try again.'}
+            for error in [OSError('Canvas discovery failed'), subprocess.TimeoutExpired('docker', 55)]:
+                with self.subTest(error=type(error)), patch('review_control.discovery', side_effect=error):
+                    self.assertEqual(send('POST', probe, valid), (200, unavailable))
+            self.assertFalse(review_policy.settings_path().exists())
+        finally: server.shutdown(); server.server_close(); thread.join()
+
     def test_settings_with_secondary_prepare_a_switch_profile(self):
         server = HTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
