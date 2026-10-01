@@ -9,6 +9,19 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.4] - 2026-10-01
+
+### Fixed
+- Auto Reviews settings API: a failure of the discovery helper itself (exit
+  status, timeout, output that is not JSON, an error it reports, `docker`
+  missing) is no longer only "unavailable" with no trace (issue #11, item 8).
+  The user text stays the same; `review-control` now logs a line with a fixed,
+  non-secret reason on stderr, never the helper's output. Helper output that
+  is not JSON was answered as an invalid request (400 "Invalid connection
+  test" or "Invalid settings"); it is now the same "unavailable" answer as
+  any other helper failure (200 for the connection test, 503 for settings
+  and discovery). `AUTO-REVIEWS.md` says where to find the reason.
+
 ## [1.27.3] - 2026-10-01
 
 ### Fixed
