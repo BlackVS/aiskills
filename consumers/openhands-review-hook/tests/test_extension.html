@@ -43,6 +43,13 @@ try {
   check(document.querySelector('[data-new-result]').textContent.includes('Authentication rejected'), 'Actionable preflight error');
   probeOK=true; document.querySelector('[data-test-new]').click(); await settle();
   check(writes === 0, 'Test-only never stores provider');
+  // a token of spaces only passes "required" but is refused before anything is sent
+  const probesBefore = probeRequests;
+  add.elements.api_key.value='   '; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
+  document.querySelector('[data-test-new]').click(); await settle();
+  check(probeRequests === probesBefore && writes === 0 && add.elements.api_key.validationMessage.includes('Spaces alone are not a token'), 'A token of spaces is refused in add mode before any request');
+  add.elements.api_key.value='test-only-key'; add.elements.api_key.dispatchEvent(new Event('input'));
+  check(add.elements.api_key.validity.valid, 'Typing a token clears the refusal');
   add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastProvider.api_key === 'test-only-key' && lastProvider.provider === 'custom', 'Provider submitted to Canvas');
   check(sameFields(lastProbe, {base_url:'https://example.com/v1', api_key:'test-only-key'}), 'A new provider is tested with its URL and token only: ' + JSON.stringify(lastProbe));
@@ -66,6 +73,17 @@ try {
   check(document.querySelector('[data-unsaved]').textContent === 'Unsaved changes', 'Pending reviewer change is marked unsaved');
   [...apiRow.querySelectorAll('button')].find(button => button.textContent === 'Edit').click();
   check(add.elements.api_key.value === '' && !add.elements.api_key.required, 'Edit does not expose saved token');
+  const editProbes = probeRequests;
+  add.elements.api_key.value='  '; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
+  check(probeRequests === editProbes && !lastUpdate && add.elements.api_key.validationMessage.includes('Clear the field to keep the current token'), 'A token of spaces is refused in edit mode instead of keeping the saved token');
+  const editButton = () => [...apiRow.querySelectorAll('button')].find(button => button.textContent === 'Edit');
+  editButton().click();
+  check(!add.elements.api_key.validity.customError && editing(), 'Editing again starts without the old refusal');
+  add.elements.api_key.value='  '; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
+  check(add.elements.api_key.validity.customError, 'Refused again');
+  document.querySelector('[data-cancel-edit]').click();
+  check(!add.elements.api_key.validity.customError && !editing(), 'Cancel edit clears the refusal with the edit');
+  editButton().click();
   add.elements.display_name.value='Renamed';
   probeOK=false; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(!lastUpdate, 'Failed edit does not update stored provider');
@@ -152,6 +170,6 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list, safe edit (PATCH path, leaves edit mode), add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list, safe edit (PATCH path, leaves edit mode), a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>
