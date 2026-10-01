@@ -135,12 +135,14 @@ if command -v git >/dev/null 2>&1 && top="$(git -C "$HERE" rev-parse --show-topl
   m_commit="$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)"
 fi
 [ -n "$m_commit" ] || m_commit="${AI_SKILLS_COMMIT:-}"
-m_archive="$(printf '%s' "${AI_SKILLS_ARCHIVE_SHA256:-}" | tr 'A-F' 'a-f')"
+# the sentinel keeps a trailing newline, which $(...) would strip, so it is refused as in install.ps1
+m_archive="$(printf '%s.' "${AI_SKILLS_ARCHIVE_SHA256:-}" | tr 'A-F' 'a-f')"; m_archive="${m_archive%.}"
 jstr() { if [ -n "$1" ]; then printf '"%s"' "$1"; else printf 'null'; fi; }
-# only well-formed values reach the file: anything else is unknown (null)
-printf '%s' "$m_version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || m_version=""
-printf '%s' "$m_commit" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?' || m_commit=""
-printf '%s' "$m_archive" | grep -Eqx '[0-9a-f]{64}' || m_archive=""
+# only well-formed values reach the file, matched as whole strings (a newline inside fails): anything else is unknown (null)
+re_version='^[0-9]+[.][0-9]+[.][0-9]+$' re_commit='^[0-9a-f]{40}([0-9a-f]{24})?$' re_archive='^[0-9a-f]{64}$'
+[[ $m_version =~ $re_version ]] || m_version=""
+[[ $m_commit =~ $re_commit ]] || m_commit=""
+[[ $m_archive =~ $re_archive ]] || m_archive=""
 write_manifest() {  # dest: <dest>/.ai-skills.json, written whole and renamed into place
   local dest="$1" tmp names
   if [ $dry -eq 1 ]; then echo "  [dry-run] write $dest/.ai-skills.json"; return; fi

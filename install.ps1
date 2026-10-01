@@ -198,10 +198,10 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 }
 if (-not $MCommit) { $MCommit = "$env:AI_SKILLS_COMMIT" }
 $MArchive = "$env:AI_SKILLS_ARCHIVE_SHA256".ToLowerInvariant()
-# only well-formed values reach the file: anything else is unknown (null)
-if ($MVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { $MVersion = '' }
-if ($MCommit -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { $MCommit = '' }
-if ($MArchive -cnotmatch '^[0-9a-f]{64}$') { $MArchive = '' }
+# only well-formed values reach the file, matched as whole strings (\z: no final newline): anything else is unknown (null)
+if ($MVersion -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { $MVersion = '' }
+if ($MCommit -cnotmatch '\A[0-9a-f]{40}([0-9a-f]{24})?\z') { $MCommit = '' }
+if ($MArchive -cnotmatch '\A[0-9a-f]{64}\z') { $MArchive = '' }
 function ConvertTo-JsonText([string]$Value) {
     if ($Value) { '"' + ($Value -replace '[\\"]', '\$0') + '"' } else { 'null' }
 }

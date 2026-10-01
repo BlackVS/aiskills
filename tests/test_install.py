@@ -270,11 +270,17 @@ class InstallerContract:
         self.assertIsNone(self.manifest(self.repo / ".claude/skills")["commit"])
 
     def test_manifest_refuses_malformed_inputs(self):
-        r = self.install(str(self.repo), "-t", "claude", root=copy_source(self.tmp / "src"),
-                         env={"AI_SKILLS_COMMIT": 'abc", "x": "', "AI_SKILLS_ARCHIVE_SHA256": "not-a-digest"})
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        m = self.manifest(self.repo / ".claude/skills")
-        self.assertIsNone(m["commit"]); self.assertIsNone(m["archive_sha256"])
+        src = copy_source(self.tmp / "src")
+        # whole values are checked: a valid line followed by a newline (and more) is not a valid value
+        for commit, digest in (('abc", "x": "', "not-a-digest"),
+                               ("a" * 40 + "\n", "b" * 64 + "\n"),
+                               ("a" * 40 + "\nb", "b" * 64 + "\nextra")):
+            with self.subTest(commit=commit, digest=digest):
+                r = self.install(str(self.repo), "-t", "claude", root=src,
+                                 env={"AI_SKILLS_COMMIT": commit, "AI_SKILLS_ARCHIVE_SHA256": digest})
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                m = self.manifest(self.repo / ".claude/skills")
+                self.assertIsNone(m["commit"]); self.assertIsNone(m["archive_sha256"])
 
     def test_dry_run_writes_no_manifest(self):
         r = self.install(str(self.repo), "-t", "claude", *self.flags("dry"))
