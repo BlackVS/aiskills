@@ -9,6 +9,16 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.5] - 2026-10-01
+
+### Fixed
+- `AUTO-REVIEWS.md`: the paragraph on "unavailable" messages (added in 1.27.4)
+  said the provider was not asked. The discovery helper may reach the provider
+  before failing, for example on a model list without models, and the settings
+  answer also covers a settings file that cannot be read or saved. It now says
+  so, and to check the logged reason before changing a provider's URL or
+  credentials. Documentation only.
+
 ## [1.27.4] - 2026-10-01
 
 ### Fixed
