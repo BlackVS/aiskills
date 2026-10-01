@@ -59,6 +59,51 @@ local Canvas HTTP API:
 - The receivers run as root on the reference site; the hooks directory is
   writable, so the run records of 1.18.0 are written there.
 
+Auto Reviews discovery helper and app, observed 2026-10-01 on agent-canvas
+1.20.0 (openhands-agent-server 1.27.1, SDK 1.49.1) with aiskills 1.29.2
+deployed (every runtime file and app 0.2.7 equal to the release by `cmp`),
+from read-only checks inside the Canvas container and through the
+review-control API. These re-check the contracts first noted on 2026-09-14
+(agent-canvas 1.17.0) in issue #11:
+
+- Two `openhands-agent-server` processes run, both with cwd `/`, both with
+  `OH_SECRET_KEY` and `OH_PERSISTENCE_DIR` set to identical values, and
+  without `OPENHANDS_AGENT_SERVER_CONFIG_PATH`. `server_environment()`
+  therefore finds one unique configuration; two processes is normal, not a
+  sign of a stale server.
+- The SDK has no config file and no default config path any more:
+  `get_default_config()` is built from `OH_*` environment variables only
+  (`from_env(Config, "OH")`), and no installed `openhands` module mentions
+  `OPENHANDS_AGENT_SERVER_CONFIG_PATH` or `openhands_agent_server_config`. The
+  helper's literal `workspace/openhands_agent_server_config.json` (and the
+  variable it reads) has no SDK counterpart now; it is harmless, since the
+  helper only exports the computed path and takes the cipher from
+  `get_default_config().cipher`, i.e. from `OH_SECRET_KEY`. On 1.17.0 the
+  literal equalled the SDK default.
+- `LLMProfileStore.load(name, cipher=None)` returns the Fernet ciphertext as
+  the profile's `api_key`: a `SecretStr` that is truthy, whose value is
+  non-empty, starts with `gAAAAA`, and differs from the value loaded with the
+  server cipher. A truthy `api_key` from a `cipher=None` load is therefore no
+  evidence of a usable key.
+- Every stored provider connection has a `base_url` (2 of 2, provider
+  `custom`). Code may still treat a missing one as possible (OpenAI's default
+  endpoint), but no reviewer should report it as observed.
+- The "401 with a body" race does not reproduce: 140 sequential
+  `POST /api/review-control/test-provider` calls for one saved connection all
+  answered `ok: true`, with no HTTP error and no transport error (also not
+  reproduced in 140 runs on 2026-09-14).
+- Canvas's app request helper `host.agentServer.request()` **throws** on an
+  error status; it does not resolve with the body. The error's `name` is
+  `HttpError` (its constructor name is minified), with `status`, an empty
+  `statusText`, `message` `HTTP request failed (<status> ): <raw body>`, and
+  `response` holding the parsed JSON body. It has no `statusCode`, `body`,
+  `data` or `cause`. Seen on two 404s: the control service's
+  `{"ok": false, "message": "Not found"}` and the agent server's
+  `{"error": "Not found"}`. The app's `testProvider()` (1.27.3) handles both
+  resolving and throwing, so this contract confirms it rather than changing
+  it; an app that wants the server's own text on an error status reads
+  `error.response.message`.
+
 Forge pagination, observed credential-free on 2026-09-24:
 
 - GitHub `GET /repos/{owner}/{repo}/issues/{n}/comments?since=...` returns

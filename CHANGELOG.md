@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.3] - 2026-10-01
+
+### Changed
+- The repository review guide (`.agents/skills/custom-codereview-guide`)
+  records the Auto Reviews runtime contracts observed on 2026-10-01 on
+  agent-canvas 1.20.0 with aiskills 1.29.2 deployed, closing the last note of
+  issue #11: two agent-server processes with one configuration and cwd `/`;
+  the SDK has no config file or default config path any more (the helper's
+  literal is unused but harmless); a `cipher=None` profile load returns the
+  Fernet ciphertext as a truthy `SecretStr`; no stored connection lacks a
+  `base_url`; the "401 with a body" race does not reproduce in 140 runs; and
+  Canvas's app request helper throws an `HttpError` carrying `status` and the
+  parsed body in `response` on an error status. Documentation only.
+
 ## [1.29.2] - 2026-10-01
 
 ### Changed
