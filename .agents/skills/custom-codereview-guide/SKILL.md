@@ -74,12 +74,11 @@ review-control API. These re-check the contracts first noted on 2026-09-14
 - The SDK has no config file and no default config path any more:
   `get_default_config()` is built from `OH_*` environment variables only
   (`from_env(Config, "OH")`), and no installed `openhands` module mentions
-  `OPENHANDS_AGENT_SERVER_CONFIG_PATH` or `openhands_agent_server_config`. The
-  helper's literal `workspace/openhands_agent_server_config.json` (and the
-  variable it reads) has no SDK counterpart now; it is harmless, since the
-  helper only exports the computed path and takes the cipher from
-  `get_default_config().cipher`, i.e. from `OH_SECRET_KEY`. On 1.17.0 the
-  literal equalled the SDK default.
+  `OPENHANDS_AGENT_SERVER_CONFIG_PATH` or `openhands_agent_server_config`.
+  The helper's literal `workspace/openhands_agent_server_config.json` and the
+  variable it read had no SDK counterpart any more and were removed in 1.29.4;
+  `server_environment()` copies only `OH_SECRET_KEY` and, when set,
+  `OH_PERSISTENCE_DIR`. On 1.17.0 the literal equalled the SDK default.
 - `LLMProfileStore.load(name, cipher=None)` returns the Fernet ciphertext as
   the profile's `api_key`: a `SecretStr` that is truthy, whose value is
   non-empty, starts with `gAAAAA`, and differs from the value loaded with the
@@ -100,9 +99,9 @@ review-control API. These re-check the contracts first noted on 2026-09-14
   `data` or `cause`. Seen on two 404s: the control service's
   `{"ok": false, "message": "Not found"}` and the agent server's
   `{"error": "Not found"}`. The app's `testProvider()` (1.27.3) handles both
-  resolving and throwing, so this contract confirms it rather than changing
-  it; an app that wants the server's own text on an error status reads
-  `error.response.message`.
+  resolving and throwing; since app 0.2.8 (1.29.4) it shows the server's own
+  text from `error.response.message` when the helper throws, and a thrown
+  answer is never a success.
 
 Forge pagination, observed credential-free on 2026-09-24:
 

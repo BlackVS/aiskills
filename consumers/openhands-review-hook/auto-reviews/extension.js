@@ -7,12 +7,15 @@ export function activate(host) {
   const cacheKey = provider => provider.id;
   const request = (path, method = "GET", body) => host.agentServer.request({path, method, ...(body === undefined ? {} : {body})});
   // The connection test answers {ok: true, models} or {ok: false, message}, the latter also with
-  // an error status. The host's request helper may resolve or throw on an error status: either
-  // way only ok: true with a model list is a success, and only a string message is shown.
+  // an error status. Canvas's request helper throws on an error status, an HttpError carrying the
+  // parsed body in `response` (observed on agent-canvas 1.20.0); only that body's message is taken
+  // from it, so a thrown answer is never a success. Only ok: true with a model list is a success,
+  // and only a string message is shown.
   const UNAVAILABLE = 'Connection test unavailable. Try again.';
   async function testProvider(body) {
     let data = null;
-    try { data = await request('/api/review-control/test-provider', 'POST', body); } catch { /* reported below */ }
+    try { data = await request('/api/review-control/test-provider', 'POST', body); }
+    catch (error) { data = {ok: false, message: error?.response?.message}; }
     if (data?.ok === true && Array.isArray(data.models)) return data;
     return {ok: false, message: typeof data?.message === 'string' && data.message ? data.message : UNAVAILABLE};
   }
