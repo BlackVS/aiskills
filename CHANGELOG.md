@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.4] - 2026-09-30
+
+### Fixed
+- Auto Reviews app 0.2.2 (issue #12): saving a provider edit reloaded the
+  page from the saved settings and discarded reviewer choices that had not
+  been saved yet (a changed primary or fallback model disappeared, and Save
+  and Revert both lost it). The pending choices now survive the reload,
+  still marked unsaved, and the edit says so; Revert still restores the
+  saved selection. A browser-fixture case in `tests/test_extension.html`
+  covers it. Hands sites re-install the app (see `UPDATING.md`).
+
 ### Changed
 - `.gitignore` also ignores `.mcp.json`, the checkout-local MCP server
   wiring, next to `.aimem.json`; nothing installed changes.

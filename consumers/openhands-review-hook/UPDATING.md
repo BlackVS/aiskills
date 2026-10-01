@@ -70,6 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.26.4 | Auto Reviews app 0.2.2: saving a provider edit no longer discards reviewer choices that were not saved yet; they stay selected and marked unsaved. Re-install and enable the app from the repo path (no service restart). |
 | 1.26.3 | Runner fixes: restart recovery re-reads the PR head after finding the review comment, and the quota fallback starts only after the previous attempt's run record is removed (otherwise the run fails with that reason, so no second fallback is possible after a restart). Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.26.2 | Security fix in the discovery helper: when a provider connection is edited, its saved token is now tested only against the saved endpoint's own origin (scheme, host, port). A base URL for another host needs its token entered again; before, the saved token was sent to whatever URL was typed. Deploy `canvas_discovery.py` (re-read on every request, no restart). |
 | 1.22.0 | Receivers no longer default the forge and credentials: set `GITEA_API`, `GITEA_TOKEN_FILE` and `REVIEW_ORG` (Gitea receiver) and `GITHUB_TOKEN_FILE` (GitHub poller) in `review.env` before deploying `review_hook.py` / `github_review_poller.py`; a missing one stops the service at start. Render from the site's own site file (the files in `sites/` are examples), and point the skill source at `https://github.com/BlackVS/aiskills`. |
