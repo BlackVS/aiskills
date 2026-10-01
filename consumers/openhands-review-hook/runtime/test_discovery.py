@@ -163,12 +163,12 @@ class DiscoveryTests(unittest.TestCase):
             empty = Path(temp) / 'empty'; empty.mkdir()
             with patch.dict(os.environ, {}, clear=False), patch('canvas_discovery.inventory') as action:
                 os.environ.pop('OH_SECRET_KEY', None)
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, 'unique Canvas server'):
                     main({'action': 'inventory'}, proc_root=str(empty))
                 action.assert_not_called()
                 self.assertNotIn('OH_SECRET_KEY', os.environ, 'nothing is put in place')
             with patch.dict(os.environ, {}, clear=False):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, 'Unknown action'):
                     main({'action': 'unknown'}, proc_root=str(proc))
 
     def test_effort_helpers(self):
