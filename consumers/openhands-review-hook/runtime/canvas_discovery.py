@@ -118,10 +118,17 @@ def session_models(result):
     return list(found.values())
 
 
+def child_environment():
+    """This process's environment without the cipher key copied in from the agent server:
+    an account agent started for model discovery has no use for it."""
+    return {name: value for name, value in os.environ.items() if name != 'OH_SECRET_KEY'}
+
+
 async def acp_models(binary):
     process = await asyncio.create_subprocess_exec(binary,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, start_new_session=True, limit=2_000_000)
+        stderr=asyncio.subprocess.DEVNULL, start_new_session=True, limit=2_000_000,
+        env=child_environment())
     async def rpc(number, method, params):
         process.stdin.write((json.dumps({'jsonrpc': '2.0', 'id': number,
             'method': method, 'params': params}) + '\n').encode())

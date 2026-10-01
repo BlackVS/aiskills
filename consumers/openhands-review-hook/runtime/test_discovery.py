@@ -8,7 +8,7 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
-from canvas_discovery import api_models, session_models, probe, server_environment, split_codex_model, effort_options, normalize_effort, profile_name, _stem, bare_model, model_string, effort_body
+from canvas_discovery import api_models, acp_models, session_models, probe, server_environment, split_codex_model, effort_options, normalize_effort, profile_name, _stem, bare_model, model_string, effort_body
 from reasoning_profiles import block
 
 
@@ -123,6 +123,21 @@ class DiscoveryTests(unittest.TestCase):
             stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
             self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://api.openai.com/v1'})['ok'])
             query.assert_called_with('https://api.openai.com/v1', 'saved-key')
+
+    @unittest.skipIf(os.name == 'nt', 'the stand-in ACP binary is a POSIX shell script')
+    def test_acp_discovery_child_never_receives_the_cipher_key(self):
+        import asyncio
+        with tempfile.TemporaryDirectory() as temp:
+            out, binary = Path(temp) / 'seen', Path(temp) / 'fake-acp'
+            binary.write_text('#!/bin/sh\n'
+                              'if [ -n "${OH_SECRET_KEY+x}" ]; then echo inherited; else echo absent; fi > "$FAKE_ACP_OUT"\n'
+                              'echo "$KEEP_ME" >> "$FAKE_ACP_OUT"\n')
+            binary.chmod(0o755)
+            with patch.dict(os.environ, {'OH_SECRET_KEY': 'test-only-value', 'FAKE_ACP_OUT': str(out), 'KEEP_ME': 'kept'}):
+                with self.assertRaises(ValueError):  # the stand-in answers nothing, so discovery fails
+                    asyncio.run(asyncio.wait_for(acp_models(str(binary)), 10))
+                self.assertEqual(os.environ['OH_SECRET_KEY'], 'test-only-value', 'only the child loses the key')
+            self.assertEqual(out.read_text().split(), ['absent', 'kept'], 'the key is withheld, the rest is passed on')
 
     def test_effort_helpers(self):
         self.assertEqual(split_codex_model('gpt-6-astra/xhigh'), ('gpt-6-astra', 'xhigh'))

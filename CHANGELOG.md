@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.5] - 2026-10-01
+
+### Security
+- Auto Reviews discovery helper: the account agent (`claude-agent-acp`,
+  `codex-acp`) it starts to list a provider's models no longer inherits
+  `OH_SECRET_KEY`. The helper copies the agent server's cipher key into its
+  own environment to read the stores, and every child process inherited it;
+  the agent is now started with that environment minus the key (issue #11,
+  item 2). Reproduced with a stand-in binary before the fix. Hands sites
+  deploy `canvas_discovery.py` (see `UPDATING.md`).
+
 ## [1.26.4] - 2026-09-30
 
 ### Fixed
