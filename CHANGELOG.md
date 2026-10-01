@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.1] - 2026-10-01
+
+### Added
+- Auto Reviews browser fixture (`tests/test_extension.html`): four
+  assertions that used to stay green on a regression now fail on it
+  (issue #11, item 5). The fixture checks that a provider edit sends its
+  PATCH to the edited connection's path and then leaves edit mode (a failed
+  edit stays in it), that a new provider is tested with its URL and token
+  only, and that Test connection refreshes the model list: List models right
+  after it makes no request and shows the refreshed list. No change to the
+  app.
+
 ## [1.27.0] - 2026-10-01
 
 ### Changed
