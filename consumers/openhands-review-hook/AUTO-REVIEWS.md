@@ -249,9 +249,11 @@ Customize > Apps. Neither operation requires a Canvas container restart.
 The browser fixture in `tests/test_extension.html` exercises the actual
 extension module with fake APIs. Open it with a local static file server, or
 headless Chrome with file-module access enabled. A successful run displays
-`PASS` for selection restore, provider changes, save, provider creation,
-credential clearing, HTML escaping, failure handling, reload, and unsaved
-reviewer choices surviving a provider edit. This fixture
+`PASS` for selection restore, provider changes, save, provider creation
+(and the request that tests it), provider edits (the connection they update,
+and leaving edit mode), credential clearing, HTML escaping, failure handling,
+reload, Test connection refreshing the model list, and unsaved reviewer
+choices surviving a provider edit. This fixture
 checks UI behavior; repeat Save/Reload in the installed Canvas app to check its
 host integration.
 
