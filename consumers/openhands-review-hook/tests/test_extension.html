@@ -13,7 +13,7 @@ agentServer:{async request({path,method,body}) {
     if(probeFailure) { if(probeFailure.throws) throw Error('HTTP ' + probeFailure.status); return probeFailure.body; }  // an error status, as the host helper may report it
     return probeOK ? {ok:true,models:probeModels} : {ok:false,message:'Authentication rejected.'}; }
   if(method === 'PATCH') { lastUpdate = {...body}; lastUpdatePath = path; writes++; return {}; }
-  if(path === '/api/llm/provider-connections') { writes++; lastProvider = {...body}; providers.push({id:'connection:test',name:body.display_name,kind:'api',url:body.base_url,efforts:['none','low','medium','high','xhigh','max'],switchable:true}); return {id:'test'}; }
+  if(path === '/api/llm/provider-connections') { writes++; lastProvider = {...body}; providers.push({id:'connection:test',name:body.display_name,kind:'api',url:body.base_url + '/',efforts:['none','low','medium','high','xhigh','max'],switchable:true}); return {id:'test'}; }
   if(path.endsWith('/providers')) return {providers: legacy ? providers.map(({efforts, switchable, ...p}) => p) : providers, selections};
   if(path.includes('/models?')) { modelRequests++; if(failModels && path.includes('codex')) throw Error('temporary discovery failure'); if(!providers.some(p => path.includes(encodeURIComponent(p.id)) || path.includes(p.id))) throw Error('Unknown provider'); return {models: path.includes('codex') ? [{id:'astra',label:'Astra'},{id:'sol',label:'Sol'}] : path.includes('claude') ? [{id:'opus',label:'Opus 5'},{id:'fable',label:'Fable 5.1'}] : [{id:'qwen',label:'Qwen'}]}; }
   if(method === 'PUT') { puts++; if(conflict) throw Error('409'); lastSaved = body; settings.revision++;
@@ -106,6 +106,10 @@ try {
   check(editing() && add.elements.display_name.value === 'Renamed', 'A failed edit stays in edit mode with the typed values');
   probeOK=true; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastUpdate.display_name === 'Renamed' && !('api_key' in lastUpdate), 'Blank token omitted from edit');
+  // the inventory stores the URL as '.../v1/': the cache is keyed on the provider id, so the edit's test result is kept
+  const afterEdit = [modelRequests, probeRequests];
+  [...[...document.querySelector('[data-providers]').children].find(row => row.textContent.includes('Test API')).querySelectorAll('button')].find(button => button.textContent === 'List models').click(); await settle();
+  check(modelRequests === afterEdit[0] && probeRequests === afterEdit[1], 'List models after an edit reuses its test result although the stored URL differs in form');
   check(lastUpdatePath === '/api/llm/provider-connections/test', 'The edit updates the edited connection: ' + lastUpdatePath);
   check(!editing() && add.elements.display_name.value === '' && add.elements.api_key.required, 'A saved edit leaves edit mode');
   check(form.elements.primaryProvider.value === 'acp:codex' && form.elements.primaryModel.value === 'sol', 'Provider edit keeps the pending reviewer model');
@@ -186,6 +190,6 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list, connection-test errors shown the same whether the host resolves or throws, safe edit (PATCH path, leaves edit mode), a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws, safe edit (PATCH path, leaves edit mode), a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>

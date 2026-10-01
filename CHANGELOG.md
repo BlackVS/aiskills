@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.6] - 2026-10-01
+
+### Fixed
+- Auto Reviews app 0.2.5: the model cache is keyed on the provider id
+  (issue #11, item 9). It was keyed on the id and URL. After adding or editing
+  a provider, the app stored the test's model list under the URL as typed, then
+  dropped it on the next load because Canvas returned the URL in another form
+  (a trailing slash): List models fetched again. A fixture case has the fake
+  inventory return the URL with a trailing slash, for the add and the edit.
+  A URL changed in Canvas outside the app shows its models after Reload.
+
 ## [1.27.5] - 2026-10-01
 
 ### Fixed
