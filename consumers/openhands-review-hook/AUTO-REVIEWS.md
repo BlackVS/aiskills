@@ -56,7 +56,7 @@ Services read the settings and prompt for each new review; running reviews keep
 their snapshot. A missing file preserves the environment's primary with no
 fallback; a corrupt file fails closed. Canvas's ordinary conversation default
 is independent. The app lists Canvas API providers and installed Claude/Codex
-account adapters separately. Successful model lists are cached in memory for the current app session and reused when reopening the page or selecting the provider again. Reload clears the model cache; Test connection refreshes that provider. Failed lookups are retried, and provider edits replace the cached list. Selecting an uncached provider fetches its live model list;
+account adapters separately. Successful model lists are cached in memory for the current app session and reused when reopening the page or selecting the provider again. Reload clears the model cache; Test connection refreshes that provider. Failed lookups are retried, and provider edits replace the cached list. The cache is keyed on the provider, not its URL, so a URL changed in Canvas outside the app shows its models after Reload. Selecting an uncached provider fetches its live model list;
 authentication failures leave the model picker unavailable. A provider's model
 catalog can include models that do not support review tools, so validate a new
 model with a small review before using it as the default.

@@ -1,7 +1,10 @@
 export function activate(host) {
   if (host.apiVersion !== "1") throw new Error("Auto Reviews requires Canvas host API 1");
   const modelCache = new Map();
-  const cacheKey = provider => JSON.stringify([provider.id, provider.url || null]);
+  // Keyed on the provider id only: the URL typed in the editor and the one the inventory returns
+  // may differ in form (a trailing slash), and a key built from either would miss the other.
+  // A provider edit replaces its entry; Reload clears them all.
+  const cacheKey = provider => provider.id;
   const request = (path, method = "GET", body) => host.agentServer.request({path, method, ...(body === undefined ? {} : {body})});
   // The connection test answers {ok: true, models} or {ok: false, message}, the latter also with
   // an error status. The host's request helper may resolve or throw on an error status: either
@@ -373,12 +376,10 @@ export function activate(host) {
           const update = {display_name: body.display_name, base_url: body.base_url};
           if (body.api_key) update.api_key = body.api_key;
           await request('/api/llm/provider-connections/' + encodeURIComponent(editingProvider.slice('connection:'.length)), 'PATCH', update);
-          const previous = providers.find(provider => provider.id === editingProvider);
-          if (previous) modelCache.delete(cacheKey(previous));
-          modelCache.set(cacheKey({id: editingProvider, url: body.base_url}), Promise.resolve({models: checked.models}));
+          modelCache.set(cacheKey({id: editingProvider}), Promise.resolve({models: checked.models}));
         } else {
           const created = await request('/api/llm/provider-connections', 'POST', body);
-          modelCache.set(cacheKey({id: 'connection:' + created.id, url: body.base_url}), Promise.resolve({models: checked.models}));
+          modelCache.set(cacheKey({id: 'connection:' + created.id}), Promise.resolve({models: checked.models}));
         }
         if (disposed) return;
         const pending = hasChanges() ? currentSelection() : null;
