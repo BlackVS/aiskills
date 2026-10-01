@@ -22,6 +22,10 @@ class DiscoveryFailed(OSError):
         self.reason = reason
 
 
+class ProfileLimitReached(Exception):
+    """Canvas's profile store is full; the helper's message (counts only) is for the user."""
+
+
 def discovery(action, **kwargs):
     source = Path(__file__).with_name('canvas_discovery.py').read_text()
     command = ['docker', 'exec', '-i', '-e', 'OPENHANDS_SUPPRESS_BANNER=1',
@@ -36,6 +40,8 @@ def discovery(action, **kwargs):
         raise DiscoveryFailed('helper output is not JSON') from None
     if not isinstance(data, dict):
         raise DiscoveryFailed('helper output is not a JSON object')
+    if data.get('error') == 'profile-limit' and isinstance(data.get('message'), str):
+        raise ProfileLimitReached(data['message'])
     if 'error' in data:
         raise DiscoveryFailed('helper reported an error')
     return data
@@ -159,6 +165,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'settings': data, 'profiles': profiles(), 'problems': problems})
         except FileExistsError:
             self.fail(409, 'Settings changed; reload before saving')
+        except ProfileLimitReached as error:  # counts only: the person has to delete profiles in Canvas
+            self.fail(409, str(error))
         except PairMismatch as error:  # names profile fields only: the caller needs them to repair the pair
             self.fail(400, str(error))
         except (ValueError, TypeError):

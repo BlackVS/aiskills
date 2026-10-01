@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.5] - 2026-10-01
+
+### Fixed
+- Auto Reviews: a save that needs a new generated profile while Canvas's agent
+  or LLM profile store holds its limit of 50 is refused before anything is
+  written, so a full agent store no longer leaves a new LLM profile behind. The
+  settings API answers 409 with a message that gives the count and how many of
+  those profiles Auto Reviews generated (no names), and app 0.2.9 shows the
+  settings API's own error text on a failed save, falling back to the generic
+  text when there is none. A selection that matches an existing profile still
+  saves. The discovery helper reports the full store as `profile-limit`; any
+  other failure keeps its fixed text. Unit tests cover the check, the helper's
+  answer and the 409; fixture cases cover the shown text and the fallback.
+
 ## [1.29.4] - 2026-10-01
 
 ### Changed

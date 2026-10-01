@@ -113,7 +113,12 @@ reason for a broken primary or secondary (a broken fallback is skipped). The
 runtime never deletes or rewrites profiles or settings; a person fixes or
 replaces them. It does not activate profiles or change Canvas's conversation
 default. Failed saves can leave an unused generated profile in Canvas; existing
-review settings remain intact. Profiles created from shared connections reference those connections; variants of existing inline-key profiles stay in Canvas's LLM profile store.
+review settings remain intact. Canvas keeps at most 50 agent profiles and 50 LLM
+profiles, and generated ones accumulate because nothing deletes them. A save
+that needs a new profile in a full store is refused before anything is written,
+with a message giving the count and how many of those profiles Auto Reviews
+generated (`review-...`); delete the ones no longer selected in Canvas and save
+again. A selection that matches an existing profile still saves. Profiles created from shared connections reference those connections; variants of existing inline-key profiles stay in Canvas's LLM profile store.
 
 ## Model sources and existing profiles
 
