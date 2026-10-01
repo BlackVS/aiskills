@@ -9,6 +9,19 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.2] - 2026-10-01
+
+### Changed
+- Auto Reviews app 0.2.7, a refactor with no change in behavior (issue #11,
+  item 11). The provider editor's state is one value, the row being edited
+  or none, and `showEditor()` renders every part of the editor from it (form
+  values, token rule and placeholder, button caption, Cancel, heading, hint);
+  Edit, Cancel and a saved change all go through it. Each provider row is
+  built by `providerRow()`, and its buttons carry an explicit action key
+  (`data-action`: `list`, `test`, `edit`) that one handler dispatches on,
+  instead of comparing caption text. The fixture from 1.29.1 passes
+  unchanged against the new app; a new case pins the action keys.
+
 ## [1.29.1] - 2026-10-01
 
 ### Changed

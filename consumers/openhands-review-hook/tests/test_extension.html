@@ -59,6 +59,8 @@ try {
   check(!document.querySelector('[data-providers] b'), 'Provider name is text, not HTML');
   const before = [form.elements.primaryProvider.value, form.elements.primaryModel.value, form.elements.fallbackProvider.value, form.elements.fallbackModel.value].join('|');
   let apiRow = [...document.querySelector('[data-providers]').children].find(row => row.textContent.includes('<b>Test API</b>'));
+  const actionsOf = row => [...row.querySelectorAll('button')].map(button => button.dataset.action).join(',');
+  check(actionsOf(apiRow) === 'list,test,edit' && [...document.querySelector('[data-providers]').children].filter(row => row !== apiRow).every(row => actionsOf(row) === 'list,test'), 'Row buttons carry explicit actions; only the editable row has edit');
   const beforeList = modelRequests, beforeProbe = probeRequests;
   [...apiRow.querySelectorAll('button')].find(button => button.textContent === 'List models').click(); await settle();
   check(modelRequests === beforeList && probeRequests === beforeProbe, 'List models reuses successful add preflight');
@@ -192,6 +194,6 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws, safe edit (PATCH path, leaves edit mode), a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure, reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws, safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>

@@ -214,58 +214,7 @@ export function activate(host) {
         const available = new Set(providers.map(cacheKey));
         for (const key of modelCache.keys()) if (!available.has(key)) modelCache.delete(key);
         const list = root.querySelector('[data-providers]'); list.replaceChildren();
-        for (const p of providers) {
-          const item = document.createElement('li');
-          const title = document.createElement('div');
-          title.textContent = p.name + (p.kind === 'subscription' ? ' · Account connection (ACP)' : ' · API provider');
-          const result = document.createElement('div'); result.setAttribute('role', 'status');
-          const buttons = ['List models', 'Test connection'].map(label => {
-            const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
-            button.onclick = async () => {
-              if (busy) return;
-              lock(true); result.replaceChildren(); message(`Checking ${p.name}…`);
-              try {
-                let data;
-                if (label === 'List models') {
-                  data = {ok: true, ...await providerModels(p)};
-                } else {
-                  modelCache.delete(cacheKey(p));
-                  data = await testProvider({provider: p.id});
-                  if (data.ok) modelCache.set(cacheKey(p), Promise.resolve({models: data.models}));
-                }
-                if (disposed) return;
-                if (!data.ok) { result.textContent = data.message; message(`${p.name}: ${data.message}`); return; }
-                result.textContent = label === 'List models' ? `${data.models.length} models available. Use Test connection to refresh.` : `Connected. ${data.models.length} models available. No inference request sent.`;
-                if (label === 'List models') {
-                  const modelsList = document.createElement('ul'); modelsList.setAttribute('data-model-list', '');
-                  for (const model of data.models) { const row = document.createElement('li'); row.textContent = model.id; modelsList.append(row); }
-                  result.append(modelsList);
-                }
-                message(label === 'List models' ? `${p.name}: models loaded.` : `${p.name}: connection check passed.`);
-              } catch { if (!disposed) result.textContent = UNAVAILABLE; message(UNAVAILABLE); }
-              finally { if (!disposed) lock(false); }
-            };
-            return button;
-          });
-          item.append(title, ...buttons, result);
-          if (p.editable) {  // the server says which rows are Canvas connections; ids are opaque here
-            const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Edit';
-            edit.onclick = () => {
-              if (busy) return;
-              editingProvider = p;
-              add.elements.display_name.value = p.name; add.elements.base_url.value = p.url || '';
-              add.elements.api_key.value = ''; add.elements.api_key.required = false; add.elements.api_key.setCustomValidity('');
-              add.elements.api_key.placeholder = 'Leave blank to keep the current token';
-              add.querySelector('[type="submit"]').textContent = 'Save provider';
-              root.querySelector('[data-cancel-edit]').hidden = false;
-              root.querySelector('[data-new-result]').textContent = 'Changes are tested before saving. A blank token keeps the current token.';
-              const editor = root.querySelector('[data-provider-editor]'); editor.open = true;
-              editor.querySelector('summary').textContent = 'Edit API provider'; editor.scrollIntoView({block:'nearest'});
-            };
-            item.insertBefore(edit, result);
-          }
-          list.append(item);
-        }
+        for (const p of providers) list.append(providerRow(p));
         const failures = [];
         for (const role of roles) {
           const picker = select(role, 'Provider'); picker.replaceChildren();
@@ -339,14 +288,69 @@ export function activate(host) {
       } catch { message('Could not save. Settings may have changed, or provider discovery failed. Reload before trying again.'); }
       finally { if (!disposed) lock(false); }
     };
-    function resetProviderEditor() {
-      editingProvider = null; add.reset(); add.elements.api_key.required = true; add.elements.api_key.setCustomValidity('');
-      add.elements.api_key.placeholder = ''; add.querySelector('[type="submit"]').textContent = 'Add provider';
-      root.querySelector('[data-cancel-edit]').hidden = true;
-      root.querySelector('[data-provider-editor] summary').textContent = 'Add API provider';
-      root.querySelector('[data-new-result]').textContent = '';
+    // One provider row. Each button carries an explicit action key; the handler dispatches on the
+    // key, never on the caption, so a reworded caption cannot change what a button does.
+    function providerRow(p) {
+      const item = document.createElement('li');
+      const title = document.createElement('div');
+      title.textContent = p.name + (p.kind === 'subscription' ? ' · Account connection (ACP)' : ' · API provider');
+      const result = document.createElement('div'); result.setAttribute('role', 'status');
+      const actions = [['list', 'List models'], ['test', 'Test connection']];
+      if (p.editable) actions.push(['edit', 'Edit']);  // the server says which rows are Canvas connections; ids are opaque here
+      const buttons = actions.map(([action, label]) => {
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+        button.dataset.action = action;
+        button.onclick = () => rowAction(action, p, result);
+        return button;
+      });
+      item.append(title, ...buttons, result);
+      return item;
     }
-    root.querySelector('[data-cancel-edit]').onclick = () => { if (!busy) resetProviderEditor(); };
+    async function rowAction(action, p, result) {
+      if (busy) return;
+      if (action === 'edit') { showEditor(p); return; }
+      lock(true); result.replaceChildren(); message(`Checking ${p.name}…`);
+      try {
+        let data;
+        if (action === 'list') {
+          data = {ok: true, ...await providerModels(p)};
+        } else {
+          modelCache.delete(cacheKey(p));
+          data = await testProvider({provider: p.id});
+          if (data.ok) modelCache.set(cacheKey(p), Promise.resolve({models: data.models}));
+        }
+        if (disposed) return;
+        if (!data.ok) { result.textContent = data.message; message(`${p.name}: ${data.message}`); return; }
+        if (action === 'list') {
+          result.textContent = `${data.models.length} models available. Use Test connection to refresh.`;
+          const modelsList = document.createElement('ul'); modelsList.setAttribute('data-model-list', '');
+          for (const model of data.models) { const row = document.createElement('li'); row.textContent = model.id; modelsList.append(row); }
+          result.append(modelsList);
+          message(`${p.name}: models loaded.`);
+        } else {
+          result.textContent = `Connected. ${data.models.length} models available. No inference request sent.`;
+          message(`${p.name}: connection check passed.`);
+        }
+      } catch { if (!disposed) result.textContent = UNAVAILABLE; message(UNAVAILABLE); }
+      finally { if (!disposed) lock(false); }
+    }
+    // The provider editor's whole state is `editingProvider`: the row being edited, or null to add
+    // a provider. showEditor() sets it and renders every part of the editor from it.
+    function showEditor(provider) {
+      editingProvider = provider;
+      const editing = provider !== null, token = add.elements.api_key;
+      add.reset();
+      if (editing) { add.elements.display_name.value = provider.name; add.elements.base_url.value = provider.url || ''; }
+      token.required = !editing; token.setCustomValidity('');
+      token.placeholder = editing ? 'Leave blank to keep the current token' : '';
+      add.querySelector('[type="submit"]').textContent = editing ? 'Save provider' : 'Add provider';
+      root.querySelector('[data-cancel-edit]').hidden = !editing;
+      root.querySelector('[data-new-result]').textContent = editing ? 'Changes are tested before saving. A blank token keeps the current token.' : '';
+      const editor = root.querySelector('[data-provider-editor]');
+      editor.querySelector('summary').textContent = editing ? 'Edit API provider' : 'Add API provider';
+      if (editing) { editor.open = true; editor.scrollIntoView({block: 'nearest'}); }
+    }
+    root.querySelector('[data-cancel-edit]').onclick = () => { if (!busy) showEditor(null); };
     // A token of spaces only would pass "required" and then be trimmed away: in add mode the
     // test would go out without a token, and in edit mode it would quietly keep the saved one.
     function tokenProblem() {
@@ -383,7 +387,7 @@ export function activate(host) {
         }
         if (disposed) return;
         const pending = hasChanges() ? currentSelection() : null;
-        resetProviderEditor(); await load(false, pending);
+        showEditor(null); await load(false, pending);
         // a new connection's row (and so its cache key) is known only once the inventory lists it
         const added = created && providers.find(provider => provider.connection_id === created.id);
         if (added) modelCache.set(cacheKey(added), Promise.resolve({models: checked.models}));
