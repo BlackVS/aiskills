@@ -1,4 +1,4 @@
-# ai-skills one-line installer for Windows (no checkout needed).
+# aiskills one-line installer for Windows (no checkout needed).
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex"
 #
@@ -49,7 +49,7 @@ if (-not $ref -and -not $env:AI_SKILLS_ARCHIVE) {
         # /releases/latest redirects to /releases/tag/<tag> (no API rate limit),
         # or to /releases while the repository has none; anything else stops.
         $req = [Net.HttpWebRequest]::Create("https://github.com/$repo/releases/latest")
-        $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.UserAgent = 'ai-skills-boot'
+        $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.UserAgent = 'aiskills-boot'
         try { $resp = $req.GetResponse() }
         catch { throw "ERROR: could not look up the latest release of $repo ($($_.Exception.Message)); set AI_SKILLS_REF to skip the lookup" }
         try { $location = $resp.Headers['Location'] } finally { $resp.Close() }
@@ -71,16 +71,16 @@ if ($base) {
 } else {
     $url = "https://github.com/$repo/archive/$ref.tar.gz"
 }
-$dest = Join-Path ([IO.Path]::GetTempPath()) ('ai-skills-' + [Guid]::NewGuid().ToString('N'))
+$dest = Join-Path ([IO.Path]::GetTempPath()) ('aiskills-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $dest | Out-Null
 try {
     $tgz = Join-Path $dest 'src.tar.gz'
     if ($env:AI_SKILLS_ARCHIVE) {
-        Write-Host "Unpacking ai-skills from $env:AI_SKILLS_ARCHIVE ..."
+        Write-Host "Unpacking aiskills from $env:AI_SKILLS_ARCHIVE ..."
         Copy-Item $env:AI_SKILLS_ARCHIVE $tgz
     } else {
         $from = if ($base) { $base } else { 'https://github.com' }
-        Write-Host "Fetching ai-skills $ref from $from/$repo ..."
+        Write-Host "Fetching aiskills $ref from $from/$repo ..."
         Invoke-WebRequest $url -OutFile $tgz -UseBasicParsing -Headers $headers
     }
     # extract by a relative name inside the temp dir: GNU tar (Git for Windows) reads a C:\ path as a remote host

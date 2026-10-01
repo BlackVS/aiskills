@@ -26,7 +26,7 @@ GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
 @unittest.skipUnless(BASH and os.name != "nt", "needs a POSIX bash to put a fake gh on PATH")
 class ReleaseScript(unittest.TestCase):
     def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-release-"))
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-release-"))
         self.bin = self.tmp / "bin"; self.bin.mkdir()
         (self.bin / "gh").write_text(FAKE_GH); (self.bin / "gh").chmod(0o755)
         self.gh_log = self.tmp / "gh.log"

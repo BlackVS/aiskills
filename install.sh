@@ -155,14 +155,19 @@ if [ $user -eq 1 ] && [ $prompts -eq 1 ] && [ -d "$OC_DIR" ] && ! printf '%s\n' 
 fi
 
 # ---- managed "Code review gates" block in agent instruction files ----
-BLOCK_START="<!-- ai-skills:review-gates start (managed by install.sh, do not edit inside) -->"
-BLOCK_END="<!-- ai-skills:review-gates end -->"
+BLOCK_START="<!-- aiskills:review-gates start (managed by install.sh, do not edit inside) -->"
+BLOCK_END="<!-- aiskills:review-gates end -->"
+# Releases before 1.27.0 named the set ai-skills and marked the block that way: an old block is
+# replaced like a current one, so an upgrade never leaves two.
+OLD_BLOCK_START="<!-- ai-skills:review-gates start (managed by install.sh, do not edit inside) -->"
+OLD_BLOCK_END="<!-- ai-skills:review-gates end -->"
 write_block() {  # file
   local f="$1"
   if [ $dry -eq 1 ]; then echo "  [dry-run] write review-gates block into $f"; return; fi
   mkdir -p "$(dirname "$f")"; [ -f "$f" ] || : > "$f"
-  if grep -qF "$BLOCK_START" "$f"; then
-    awk -v s="$BLOCK_START" -v e="$BLOCK_END" '$0==s{skip=1} !skip{print} $0==e{skip=0}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  if grep -qF -e "$BLOCK_START" -e "$OLD_BLOCK_START" "$f"; then
+    awk -v s="$BLOCK_START" -v e="$BLOCK_END" -v os="$OLD_BLOCK_START" -v oe="$OLD_BLOCK_END" \
+      '$0==s||$0==os{skip=1} !skip{print} $0==e||$0==oe{skip=0}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi
   # trim trailing blank lines so re-runs do not grow the file (awk, not sed -i: BSD sed on macOS differs)
   awk '{l[NR]=$0} $0!=""{n=NR} END{for(i=1;i<=n;i++)print l[i]}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"

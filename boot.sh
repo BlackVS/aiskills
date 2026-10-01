@@ -1,5 +1,5 @@
 #!/bin/sh
-# ai-skills one-line installer for Linux and macOS (no checkout needed).
+# aiskills one-line installer for Linux and macOS (no checkout needed).
 #
 #   curl -fsSL https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.sh | bash
 #   curl -fsSL .../boot.sh | bash -s -- --user -s core          # your own install.sh flags
@@ -79,11 +79,11 @@ fi
 DEST=$(mktemp -d)
 trap 'rm -rf "$DEST"' EXIT
 if [ -n "${AI_SKILLS_ARCHIVE:-}" ]; then
-  echo "Unpacking ai-skills from $AI_SKILLS_ARCHIVE ..."
+  echo "Unpacking aiskills from $AI_SKILLS_ARCHIVE ..."
   # extract by a relative name inside the temp dir: GNU tar reads a C:/ path as a remote host
   cp "$AI_SKILLS_ARCHIVE" "$DEST/src.tar.gz" && (cd "$DEST" && tar -xzf src.tar.gz --strip-components=1 && rm -f src.tar.gz)
 else
-  echo "Fetching ai-skills $REF from ${BASE:-https://github.com}/$REPO ..."
+  echo "Fetching aiskills $REF from ${BASE:-https://github.com}/$REPO ..."
   if [ -n "$TOKEN" ]; then
     curl -fsSL -H "Authorization: $AUTH" "$URL" | tar -xz -C "$DEST" --strip-components=1
   else

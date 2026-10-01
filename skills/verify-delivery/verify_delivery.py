@@ -79,7 +79,7 @@ class Http:
         """(status, headers, body). At most limit + 1 bytes of a body are read, and at most
         MAX_ERROR bytes of an error response's body, so no response is read without a bound."""
         limit = MAX_JSON if limit is None else limit
-        headers = {"Accept": "application/json", "User-Agent": "ai-skills-verify-delivery"}
+        headers = {"Accept": "application/json", "User-Agent": "aiskills-verify-delivery"}
         if self._kind == "github":
             headers["Accept"] = "application/vnd.github+json"
             headers["X-GitHub-Api-Version"] = "2022-11-28"

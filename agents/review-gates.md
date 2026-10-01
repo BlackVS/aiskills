@@ -1,6 +1,6 @@
-## Code review gates (ai-skills)
+## Code review gates (aiskills)
 
-Reviews use the `oh-code-review` skill (from the `ai-skills` set) at a level
+Reviews use the `oh-code-review` skill (from the `aiskills` set) at a level
 chosen by the gate. State the level in the request, e.g. "review this at max";
 in Claude Code `/oh-code-review max` also works. The levels:
 

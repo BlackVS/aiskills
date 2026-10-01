@@ -1,6 +1,6 @@
 # Security policy
 
-ai-skills ships installers that are piped into a shell and skills that tell
+aiskills ships installers that are piped into a shell and skills that tell
 coding agents what to run, so vulnerability reports are taken seriously.
 
 ## Reporting a vulnerability

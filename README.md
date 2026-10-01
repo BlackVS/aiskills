@@ -172,7 +172,7 @@ GitHub release with that section as its notes and the tree as `.tar.gz` and
 `.zip` with `SHA256SUMS`. Pushing the tag yourself does the same:
 
 ```bash
-git fetch origin && git tag -a v1.22.1 origin/main -m "ai-skills 1.22.1" && git push origin v1.22.1
+git fetch origin && git tag -a v1.22.1 origin/main -m "aiskills 1.22.1" && git push origin v1.22.1
 ```
 
 Releases run one at a time, and only the highest version is marked latest,
@@ -187,8 +187,10 @@ The sections below explain what each tool does with the files.
 `agents/review-gates.md` says which review level each gate uses (pre-push
 medium, pre-merge max, sensitive surfaces ultra, docs-only high) and the rules
 around it. `--agents-md` / `-AgentsMd` writes it into the agent instructions as
-a managed block between `<!-- ai-skills:review-gates start -->` and `end`
+a managed block between `<!-- aiskills:review-gates start -->` and `end`
 markers; re-running replaces the block and leaves the rest of the file alone.
+A block written before 1.27.0, when the set was named `ai-skills`, carries the
+`<!-- ai-skills:review-gates start -->` marker and is replaced the same way.
 
 Where it goes, and why:
 

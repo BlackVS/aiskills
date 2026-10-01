@@ -71,7 +71,7 @@ jobs:
               test -f "$HOME/$d/$s/SKILL.md" || { echo "missing ~/$d/$s"; exit 1; }
             done
           done
-          grep -q 'ai-skills:review-gates start' "$HOME/.claude/CLAUDE.md"
+          grep -q 'aiskills:review-gates start' "$HOME/.claude/CLAUDE.md"
       # Windows PowerShell 5.1: the shell the Windows one-liner is written for.
       - name: Default install (latest release)
         if: runner.os == 'Windows'
@@ -91,4 +91,4 @@ jobs:
               if (-not (Test-Path "$HOME\$d\$s\SKILL.md")) { throw "missing ~\$d\$s" }
             }
           }
-          if (-not (Select-String -Quiet -SimpleMatch 'ai-skills:review-gates start' "$HOME\.claude\CLAUDE.md")) { throw 'review-gates block missing' }
+          if (-not (Select-String -Quiet -SimpleMatch 'aiskills:review-gates start' "$HOME\.claude\CLAUDE.md")) { throw 'review-gates block missing' }
