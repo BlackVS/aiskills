@@ -70,6 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.27.2 | Auto Reviews app 0.2.3: a provider token of spaces only is refused in the form instead of being sent as no token (add) or keeping the saved token (edit). Re-install and enable the app from the repo path (no service restart). |
 | 1.26.7 | Backend refactor, no behavior change: the connection-test request shapes are listed once in the discovery helper and the settings API imports them. Deploy `canvas_discovery.py` and `review_control.py` together (the new `review_control.py` imports `probe_shape` from the helper, so it does not start beside an older helper), then restart `review-control` while idle. |
 | 1.26.6 | Discovery helper refactor, no behavior change: the entry point is now `main(request, proc_root)`, so a test covers putting the agent server's key in place before an action and failing closed without one. Deploy `canvas_discovery.py` (re-read on every request, no restart) to keep the per-file `cmp` check clean. |
 | 1.26.5 | Discovery helper: the account agents (ACP) it starts to list models no longer inherit `OH_SECRET_KEY`, which the helper copies in from the agent server. Deploy `canvas_discovery.py` (re-read on every request, no restart). |

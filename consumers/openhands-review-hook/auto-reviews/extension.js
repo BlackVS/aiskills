@@ -241,7 +241,7 @@ export function activate(host) {
               if (busy) return;
               editingProvider = p.id;
               add.elements.display_name.value = p.name; add.elements.base_url.value = p.url || '';
-              add.elements.api_key.value = ''; add.elements.api_key.required = false;
+              add.elements.api_key.value = ''; add.elements.api_key.required = false; add.elements.api_key.setCustomValidity('');
               add.elements.api_key.placeholder = 'Leave blank to keep the current token';
               add.querySelector('[type="submit"]').textContent = 'Save provider';
               root.querySelector('[data-cancel-edit]').hidden = false;
@@ -327,15 +327,26 @@ export function activate(host) {
       finally { if (!disposed) lock(false); }
     };
     function resetProviderEditor() {
-      editingProvider = null; add.reset(); add.elements.api_key.required = true;
+      editingProvider = null; add.reset(); add.elements.api_key.required = true; add.elements.api_key.setCustomValidity('');
       add.elements.api_key.placeholder = ''; add.querySelector('[type="submit"]').textContent = 'Add provider';
       root.querySelector('[data-cancel-edit]').hidden = true;
       root.querySelector('[data-provider-editor] summary').textContent = 'Add API provider';
       root.querySelector('[data-new-result]').textContent = '';
     }
     root.querySelector('[data-cancel-edit]').onclick = () => { if (!busy) resetProviderEditor(); };
+    // A token of spaces only would pass "required" and then be trimmed away: in add mode the
+    // test would go out without a token, and in edit mode it would quietly keep the saved one.
+    function tokenProblem() {
+      const raw = add.elements.api_key.value;
+      if (!raw || raw.trim()) return '';
+      return editingProvider ? 'The token is only spaces. Clear the field to keep the current token.'
+        : 'Enter the API token. Spaces alone are not a token.';
+    }
+    add.elements.api_key.addEventListener('input', () => add.elements.api_key.setCustomValidity(''));
     async function checkNewProvider(save) {
-      if (busy || !add.reportValidity()) return;
+      if (busy) return;
+      add.elements.api_key.setCustomValidity(tokenProblem());
+      if (!add.reportValidity()) return;
       const body = {display_name: add.elements.display_name.value.trim(), base_url: add.elements.base_url.value.trim(), api_key: add.elements.api_key.value.trim(), provider: 'custom'};
       const feedback = root.querySelector('[data-new-result]');
       lock(true); message('Testing provider authentication and model discovery…'); feedback.textContent = '';

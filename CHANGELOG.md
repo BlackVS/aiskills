@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.2] - 2026-10-01
+
+### Fixed
+- Auto Reviews app 0.2.3: a provider token of spaces only is refused in the
+  form before anything is sent (issue #11, item 6). It passed the field's
+  `required` check and was then trimmed away, so adding a provider sent a
+  connection test without a token (refused by the server), and editing one
+  quietly kept the saved token. The form now says what to do: enter a token
+  when adding; clear the field to keep the current token when editing. The
+  message clears as soon as the token is changed, the edit is cancelled or
+  another edit starts. A fixture case covers both modes.
+
 ## [1.27.1] - 2026-10-01
 
 ### Added
