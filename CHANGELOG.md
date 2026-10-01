@@ -9,6 +9,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.7] - 2026-10-01
+
+### Fixed
+- Tests only, no change to what ships.
+  - `test_acp_discovery_child_never_receives_the_cipher_key` failed about
+    once in 40 runs. Its stand-in ACP agent exited without reading, so the
+    discovery helper's first write could meet a closed pipe and raise
+    `ConnectionResetError` instead of the expected `ValueError`. The stand-in
+    now reads the request before exiting (300 of 300 runs pass; before, 7 of
+    300 failed).
+  - The Auto Reviews fixture's provider edit now submits the URL without the
+    trailing slash that the fake inventory stores, so the 1.27.6 check
+    "List models after an edit reuses its test result" covers the URL drift
+    it names. Follow-up from the external review of 1.27.6.
+
 ## [1.27.6] - 2026-10-01
 
 ### Fixed

@@ -100,13 +100,15 @@ try {
   document.querySelector('[data-cancel-edit]').click();
   check(!add.elements.api_key.validity.customError && !editing(), 'Cancel edit clears the refusal with the edit');
   editButton().click();
-  add.elements.display_name.value='Renamed';
+  check(add.elements.base_url.value === 'https://example.com/v1/', 'Edit starts from the URL as Canvas stored it');
+  add.elements.display_name.value='Renamed'; add.elements.base_url.value='https://example.com/v1';  // typed without the slash
   probeOK=false; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(!lastUpdate, 'Failed edit does not update stored provider');
   check(editing() && add.elements.display_name.value === 'Renamed', 'A failed edit stays in edit mode with the typed values');
   probeOK=true; add.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastUpdate.display_name === 'Renamed' && !('api_key' in lastUpdate), 'Blank token omitted from edit');
-  // the inventory stores the URL as '.../v1/': the cache is keyed on the provider id, so the edit's test result is kept
+  check(lastUpdate.base_url === 'https://example.com/v1' && lastProbe.base_url === 'https://example.com/v1', 'The edit tested and saved the URL as typed');
+  // the inventory still lists '.../v1/': the cache is keyed on the provider id, so the edit's test result is kept
   const afterEdit = [modelRequests, probeRequests];
   [...[...document.querySelector('[data-providers]').children].find(row => row.textContent.includes('Test API')).querySelectorAll('button')].find(button => button.textContent === 'List models').click(); await settle();
   check(modelRequests === afterEdit[0] && probeRequests === afterEdit[1], 'List models after an edit reuses its test result although the stored URL differs in form');
