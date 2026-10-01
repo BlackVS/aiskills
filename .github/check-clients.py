@@ -228,7 +228,10 @@ def gemini_memory(bins, home, cwd, wanted):
 
 def expect(client, scenario, what, found, wanted):
     missing = sorted(set(wanted) - set(found))
-    check(client, scenario, what, not missing, f"missing {missing}" if missing else f"{len(wanted)} found")
+    # the installer's manifest sits beside the skills and is not one
+    stray = sorted(set(found) & {".ai-skills", ".ai-skills.json", "ai-skills"})
+    check(client, scenario, what, not missing and not stray,
+          f"missing {missing}" if missing else f"manifest listed as a skill: {stray}" if stray else f"{len(wanted)} found")
 
 
 def main():
@@ -256,7 +259,9 @@ def main():
     empty = work / "empty"; empty.mkdir(exist_ok=True)
     gemini_setup(home, empty)
     boot(home, archive)
-    every = {p.name for p in (home / ".agents/skills").iterdir()}
+    every = {p.name for p in (home / ".agents/skills").iterdir() if p.is_dir()}
+    if archive:
+        check("installer", "user", "manifest beside the skills", (home / ".agents/skills/.ai-skills.json").is_file())
     prompts = {p.stem for p in (home / ".claude/prompts").glob("*.md")}
     if archive:
         check("installer", "user", "all shipped skills installed", every == {p.name for p in (ROOT / "skills").iterdir() if p.is_dir()})

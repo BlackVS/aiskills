@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-10-01
+
+### Added
+- The installers record what they installed (issue #24). Every run of
+  `install.sh` and `install.ps1` writes `<dest>/.ai-skills.json` into each
+  skills directory it installs to, with `version`, `commit`, `skills`,
+  `archive_sha256` and `installed_at`. The file is replaced whole, holds
+  UTF-8 without a BOM and LF line endings, and the same fields come from
+  both installers. `skills` names only what this run installed there.
+  `commit` is the source checkout's HEAD, or `AI_SKILLS_COMMIT` outside a
+  checkout. `archive_sha256` comes from `AI_SKILLS_ARCHIVE_SHA256`. A field
+  that is unknown or malformed is `null`. The README documents the format
+  and that a missing manifest means "version unknown". The client check
+  (`.github/check-clients.py`) now fails if a client lists the manifest as a
+  skill.
+
 ## [1.27.7] - 2026-10-01
 
 ### Fixed

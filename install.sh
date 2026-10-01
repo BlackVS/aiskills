@@ -45,6 +45,13 @@
 # each selected skill directory is removed and copied again, supporting files
 # (references/, scripts/) included, so an upgrade is the same command again.
 # Skills not in the selected set are left untouched.
+#
+# Every destination gets a manifest, <dest>/.ai-skills.json, replaced on each run:
+#   {"version", "commit", "skills", "archive_sha256", "installed_at"}
+# version is VERSION; commit is the source checkout's HEAD, or AI_SKILLS_COMMIT
+# when the source is not a checkout (else null); skills are the skills this run
+# installed there; archive_sha256 is AI_SKILLS_ARCHIVE_SHA256, the digest of the
+# archive installed from (boot sets it; else null); installed_at is UTC.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/skills"
@@ -119,6 +126,42 @@ dest_for() {  # tool -> destination skills dir
 }
 run() { if [ $dry -eq 1 ]; then echo "  [dry-run] $*"; else "$@"; fi; }
 
+# ---- the manifest's fields, the same for every destination of this run ----
+m_version="$(tr -d '[:space:]' < "$HERE/VERSION" 2>/dev/null || true)"
+# the source's commit: its own checkout's HEAD (never an enclosing repository's), else the caller's
+m_commit=""
+if command -v git >/dev/null 2>&1 && top="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)" &&
+   [ "$(cd "$top" && pwd -P)" = "$(cd "$HERE" && pwd -P)" ]; then
+  m_commit="$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)"
+fi
+[ -n "$m_commit" ] || m_commit="${AI_SKILLS_COMMIT:-}"
+# the sentinel keeps a trailing newline, which $(...) would strip, so it is refused as in install.ps1
+m_archive="$(printf '%s.' "${AI_SKILLS_ARCHIVE_SHA256:-}" | tr 'A-F' 'a-f')"; m_archive="${m_archive%.}"
+jstr() { if [ -n "$1" ]; then printf '"%s"' "$1"; else printf 'null'; fi; }
+# only well-formed values reach the file, matched as whole strings (a newline inside fails): anything else is unknown (null)
+re_version='^[0-9]+[.][0-9]+[.][0-9]+$' re_commit='^[0-9a-f]{40}([0-9a-f]{24})?$' re_archive='^[0-9a-f]{64}$'
+[[ $m_version =~ $re_version ]] || m_version=""
+[[ $m_commit =~ $re_commit ]] || m_commit=""
+[[ $m_archive =~ $re_archive ]] || m_archive=""
+write_manifest() {  # dest: <dest>/.ai-skills.json, written whole and renamed into place
+  local dest="$1" tmp names
+  if [ $dry -eq 1 ]; then echo "  [dry-run] write $dest/.ai-skills.json"; return; fi
+  # the skills this run installed here, sorted, as JSON strings
+  names="$(printf '%s\n' ${want[@]+"${want[@]}"} | sed '/^$/d' | LC_ALL=C sort -u |
+    sed 's/[\\"]/\\&/g; s/.*/"&"/' | paste -sd, - | sed 's/","/", "/g')"
+  tmp="$dest/.ai-skills.json.tmp.$$"
+  {
+    printf '{\n'
+    printf '  "version": %s,\n' "$(jstr "$m_version")"
+    printf '  "commit": %s,\n' "$(jstr "$m_commit")"
+    printf '  "skills": [%s],\n' "$names"
+    printf '  "archive_sha256": %s,\n' "$(jstr "$m_archive")"
+    printf '  "installed_at": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '}\n'
+  } > "$tmp"
+  mv -f "$tmp" "$dest/.ai-skills.json"
+}
+
 for tool in "${tools[@]}"; do
   dest="$(dest_for "$tool")"
   echo "==> $tool: $dest"
@@ -129,6 +172,8 @@ for tool in "${tools[@]}"; do
     run cp -R "$SRC/$s" "$dest/$s"
     echo "    $verb $s"
   done
+  write_manifest "$dest"
+  echo "    manifest $dest/.ai-skills.json"
   if [ $prompts -eq 1 ]; then
     case "$tool" in opencode) pdest="$(dirname "$dest")/commands";; *) pdest="$(dirname "$dest")/prompts";; esac
     run mkdir -p "$pdest"; run cp "$HERE"/prompts/*.md "$pdest"/

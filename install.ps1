@@ -10,6 +10,13 @@ each selected skill directory is removed and copied again, supporting files
 (references\, scripts\) included, so an upgrade is the same command again.
 Skills not in the selected set are left untouched.
 
+Every destination gets a manifest, <dest>\.ai-skills.json, replaced on each run:
+  {"version", "commit", "skills", "archive_sha256", "installed_at"}
+version is VERSION; commit is the source checkout's HEAD, or AI_SKILLS_COMMIT
+when the source is not a checkout (else null); skills are the skills this run
+installed there; archive_sha256 is AI_SKILLS_ARCHIVE_SHA256, the digest of the
+archive installed from (boot sets it; else null); installed_at is UTC.
+
 .PARAMETER Repo
 Target repository directory. Required unless -User is given.
 
@@ -171,6 +178,56 @@ function Invoke-Step([string]$Description, [scriptblock]$Action) {
     if ($DryRun) { Write-Host "  [dry-run] $Description" } else { & $Action }
 }
 
+# --- the manifest's fields, the same for every destination of this run ---
+$MVersion = if (Test-Path (Join-Path $Here 'VERSION')) { (Get-Content (Join-Path $Here 'VERSION') -Raw).Trim() } else { '' }
+# the source's commit: its own checkout's HEAD (never an enclosing repository's), else the caller's
+$MCommit = ''
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    # Windows PowerShell turns a native command's stderr into an error record, fatal under Stop
+    $MCommit = & {
+        $ErrorActionPreference = 'Continue'
+        $Top = "$(git -C $Here rev-parse --show-toplevel 2>$null)".Trim()
+        if ($LASTEXITCODE -eq 0 -and $Top -and
+            [System.IO.Path]::GetFullPath($Top).TrimEnd('\', '/') -eq [System.IO.Path]::GetFullPath($Here).TrimEnd('\', '/')) {
+            "$(git -C $Here rev-parse HEAD 2>$null)".Trim()
+        }
+    }
+    $MCommit = "$MCommit"
+    # a failed probe (no checkout) is not the installer's exit status: callers such as CI's step wrapper exit with it
+    $global:LASTEXITCODE = 0
+}
+if (-not $MCommit) { $MCommit = "$env:AI_SKILLS_COMMIT" }
+$MArchive = "$env:AI_SKILLS_ARCHIVE_SHA256".ToLowerInvariant()
+# only well-formed values reach the file, matched as whole strings (\z: no final newline): anything else is unknown (null)
+if ($MVersion -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { $MVersion = '' }
+if ($MCommit -cnotmatch '\A[0-9a-f]{40}([0-9a-f]{24})?\z') { $MCommit = '' }
+if ($MArchive -cnotmatch '\A[0-9a-f]{64}\z') { $MArchive = '' }
+function ConvertTo-JsonText([string]$Value) {
+    if ($Value) { '"' + ($Value -replace '[\\"]', '\$0') + '"' } else { 'null' }
+}
+function Write-Manifest([string]$Dest) {
+    # <dest>\.ai-skills.json, written whole and renamed into place
+    $File = Join-Path $Dest '.ai-skills.json'
+    if ($DryRun) { Write-Host "  [dry-run] write $File"; return }
+    [string[]]$Names = @($Want | Where-Object { $_ } | Select-Object -Unique)
+    [System.Array]::Sort($Names, [System.StringComparer]::Ordinal)
+    $Text = "{`n" +
+        "  `"version`": $(ConvertTo-JsonText $MVersion),`n" +
+        "  `"commit`": $(ConvertTo-JsonText $MCommit),`n" +
+        "  `"skills`": [$(($Names | ForEach-Object { ConvertTo-JsonText $_ }) -join ', ')],`n" +
+        "  `"archive_sha256`": $(ConvertTo-JsonText $MArchive),`n" +
+        "  `"installed_at`": `"$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))`"`n" +
+        "}`n"
+    $Tmp = "$File.tmp.$PID"
+    try {
+        [System.IO.File]::WriteAllText($Tmp, $Text, (New-Object System.Text.UTF8Encoding($false)))
+        # PowerShell hands $null to a string parameter as ""; Replace takes no backup only from a real null
+        if (Test-Path $File) { [System.IO.File]::Replace($Tmp, $File, [NullString]::Value) } else { [System.IO.File]::Move($Tmp, $File) }
+    } finally {
+        if (Test-Path $Tmp) { Remove-Item -Force $Tmp }
+    }
+}
+
 $PDests = @()
 foreach ($t in $ToolList) {
     $Dest = Get-DestDir $t
@@ -185,6 +242,8 @@ foreach ($t in $ToolList) {
         Invoke-Step "copy $s -> $Target" { Copy-Item -Recurse (Join-Path $Src $s) $Target }
         Write-Host "    $Verb $s"
     }
+    Write-Manifest $Dest
+    Write-Host "    manifest $(Join-Path $Dest '.ai-skills.json')"
     if ($Prompts) {
         $PDest = Join-Path (Split-Path $Dest -Parent) $(if ($t -eq 'opencode') { 'commands' } else { 'prompts' })
         Invoke-Step "mkdir $PDest" { New-Item -ItemType Directory -Force -Path $PDest | Out-Null }
