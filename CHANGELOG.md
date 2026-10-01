@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.1] - 2026-10-01
+
+### Changed
+- Auto Reviews: the app no longer parses provider ids (issue #11, item 10).
+  The discovery helper's inventory rows now say `editable` (true for Canvas
+  provider connections) and carry the connection's own `connection_id`; the
+  app shows Edit by `editable`, sends the edit to `connection_id`, and finds
+  a newly added connection by `connection_id` after the reload, so the id's
+  namespace (`connection:`, `profile:`, `acp:`) is known only to the helper.
+  The unread `configured` flag is gone, and with it the decryption of every
+  connection's key on each inventory read. App 0.2.6. The fixture gives its
+  fake connection an id that is not `connection:<id>` to prove the app treats
+  ids as opaque; a unit test covers the inventory rows.
+
 ## [1.29.0] - 2026-10-01
 
 ### Added

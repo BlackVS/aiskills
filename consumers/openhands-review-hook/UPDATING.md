@@ -70,6 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.29.1 | Inventory rows carry `editable` and `connection_id`, and Auto Reviews app 0.2.6 uses them instead of parsing provider ids. Deploy `canvas_discovery.py` first (re-read on every request, no restart), then re-install and enable app 0.2.6: on an older helper the new app would show no Edit button. The old app keeps working with the new helper. |
 | 1.27.6 | Auto Reviews app 0.2.5: the model list tested when adding or editing a provider is kept, even when Canvas stores its URL in another form. Re-install and enable the app from the repo path (no service restart). |
 | 1.27.4 | Settings API logs why the discovery helper failed (one stderr line, no secrets) and no longer answers helper output that is not JSON as an invalid request. Deploy `review_control.py`, restart `review-control` while idle. |
 | 1.27.3 | Connection test answers in one shape: deploy `review_control.py` and restart `review-control` while idle; re-install and enable Auto Reviews app 0.2.4. Either order works: the new app reads both shapes, and the old app shows the new error messages where it showed nothing before. |
