@@ -544,23 +544,28 @@ def probe(request):
     except Exception:
         return {'ok': False, 'message': 'Could not discover models. Check the endpoint, token, or account login.'}
 
+def main(request, proc_root='/proc'):
+    """Run one action. The running agent server's environment (its cipher key and storage
+    paths) is put in place first, so every store opens with the server's own key; when
+    that server cannot be identified, nothing runs (fails closed)."""
+    os.environ.update(server_environment(proc_root))
+    action = request['action']
+    if action == 'inventory':
+        return inventory()
+    if action == 'models':
+        return discover(request['provider'])
+    if action == 'probe':
+        return probe(request['request'])
+    if action == 'prepare':
+        return prepare(request['selection'], switch=bool(request.get('switch', False)))
+    raise ValueError('Unknown action')
+
+
 if __name__ == '__main__':
     import sys
     os.environ['OPENHANDS_SUPPRESS_BANNER'] = '1'
     try:
-        request = json.load(sys.stdin)
-        os.environ.update(server_environment())
-        if request['action'] == 'inventory':
-            result = inventory()
-        elif request['action'] == 'models':
-            result = discover(request['provider'])
-        elif request['action'] == 'probe':
-            result = probe(request['request'])
-        elif request['action'] == 'prepare':
-            result = prepare(request['selection'], switch=bool(request.get('switch', False)))
-        else:
-            raise ValueError('Unknown action')
-        print(json.dumps(result))
+        print(json.dumps(main(json.load(sys.stdin))))
     except Exception:
         # Provider responses and SDK exceptions may contain credentials.
         print(json.dumps({'error': 'Discovery failed. Check provider credentials, URL, and account login in Canvas.'}))

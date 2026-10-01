@@ -70,6 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.26.6 | Discovery helper refactor, no behavior change: the entry point is now `main(request, proc_root)`, so a test covers putting the agent server's key in place before an action and failing closed without one. Deploy `canvas_discovery.py` (re-read on every request, no restart) to keep the per-file `cmp` check clean. |
 | 1.26.5 | Discovery helper: the account agents (ACP) it starts to list models no longer inherit `OH_SECRET_KEY`, which the helper copies in from the agent server. Deploy `canvas_discovery.py` (re-read on every request, no restart). |
 | 1.26.4 | Auto Reviews app 0.2.2: saving a provider edit no longer discards reviewer choices that were not saved yet; they stay selected and marked unsaved. Re-install and enable the app from the repo path (no service restart). |
 | 1.26.3 | Runner fixes: restart recovery re-reads the PR head after finding the review comment, and the quota fallback starts only after the previous attempt's run record is removed (otherwise the run fails with that reason, so no second fallback is possible after a restart). Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
