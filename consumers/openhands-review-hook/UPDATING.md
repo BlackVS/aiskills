@@ -70,6 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.27.4 | Settings API logs why the discovery helper failed (one stderr line, no secrets) and no longer answers helper output that is not JSON as an invalid request. Deploy `review_control.py`, restart `review-control` while idle. |
 | 1.27.3 | Connection test answers in one shape: deploy `review_control.py` and restart `review-control` while idle; re-install and enable Auto Reviews app 0.2.4. Either order works: the new app reads both shapes, and the old app shows the new error messages where it showed nothing before. |
 | 1.27.2 | Auto Reviews app 0.2.3: a provider token of spaces only is refused in the form instead of being sent as no token (add) or keeping the saved token (edit). Re-install and enable the app from the repo path (no service restart). |
 | 1.26.7 | Backend refactor, no behavior change: the connection-test request shapes are listed once in the discovery helper and the settings API imports them. Deploy `canvas_discovery.py` and `review_control.py` together (the new `review_control.py` imports `probe_shape` from the helper, so it does not start beside an older helper), then restart `review-control` while idle. |

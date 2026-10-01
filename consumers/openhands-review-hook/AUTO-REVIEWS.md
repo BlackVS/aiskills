@@ -63,6 +63,14 @@ model with a small review before using it as the default.
 
 Each provider has List models and Test connection actions independent of reviewer selections. These check discovery, not inference or tool support, and send no inference prompt. API connections can be edited; leave the token blank to retain it. A failed preflight prevents the add/update request, preserving the existing connection. Legacy inline-key profiles remain managed through Canvas profiles.
 
+When the app says "Connection test unavailable" or "Canvas discovery or settings
+unavailable", the settings API could not run the discovery helper; the provider
+was not asked. The `review-control` service logs one line per such failure on
+stderr (`journalctl -u review-control`), for example `review-control:
+connection test unavailable: helper timed out after 55 s`. The reason is fixed
+text (exit status, timeout, non-JSON output, an error reported by the helper,
+or an error type and number), never the helper's output.
+
 Add an OpenAI-compatible API provider with its base URL and key/token. The app
 tests authentication and model discovery before saving through Canvas's provider-connections API. Test requests pass through the authenticated control endpoint to the container and do not persist credentials. The discovery
 helper resolves them inside the existing Canvas container and returns model

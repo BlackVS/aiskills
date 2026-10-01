@@ -3,6 +3,7 @@ import hmac
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -13,6 +14,14 @@ from review_policy import PairMismatch, load_settings, profiles, save_settings
 REPLIED = object()  # json_body() already answered the request
 
 
+class DiscoveryFailed(OSError):
+    """The discovery helper gave no usable answer. Its text stays generic; `reason` is a fixed
+    description for the service log, never the helper's output (which may hold credentials)."""
+    def __init__(self, reason):
+        super().__init__('Canvas discovery failed')
+        self.reason = reason
+
+
 def discovery(action, **kwargs):
     source = Path(__file__).with_name('canvas_discovery.py').read_text()
     command = ['docker', 'exec', '-i', '-e', 'OPENHANDS_SUPPRESS_BANNER=1',
@@ -20,11 +29,32 @@ def discovery(action, **kwargs):
     result = subprocess.run(command, input=json.dumps(dict(action=action, **kwargs)),
         text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=55)
     if result.returncode:
-        raise OSError('Canvas discovery failed')
-    data = json.loads(result.stdout)
+        raise DiscoveryFailed(f'helper exited with status {result.returncode}')
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:  # a control-plane failure, not an invalid request
+        raise DiscoveryFailed('helper output is not JSON') from None
+    if not isinstance(data, dict):
+        raise DiscoveryFailed('helper output is not a JSON object')
     if 'error' in data:
-        raise OSError('Canvas discovery failed')
+        raise DiscoveryFailed('helper reported an error')
     return data
+
+
+def failure_reason(error):
+    """What went wrong on the control plane, safe to log: fixed text and numbers only, never an
+    exception's message (a timeout's quotes the whole command, a helper's may quote its output)."""
+    if isinstance(error, DiscoveryFailed):
+        return error.reason
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f'helper timed out after {error.timeout:g} s'
+    errno = getattr(error, 'errno', None)
+    return type(error).__name__ + (f' (errno {errno})' if errno else '')
+
+
+def log_unavailable(what, error):
+    """The user sees a fixed "unavailable" text; the operator finds the reason in the journal."""
+    print(f'review-control: {what} unavailable: {failure_reason(error)}', file=sys.stderr, flush=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -133,7 +163,8 @@ class Handler(BaseHTTPRequestHandler):
             self.fail(400, str(error))
         except (ValueError, TypeError):
             self.fail(400, 'Invalid settings. Select different, existing profiles and reload if needed.')
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired) as error:
+            log_unavailable(f'{self.command} {path.path}', error)
             self.fail(503, 'Canvas discovery or settings unavailable. Check provider URL, credentials, and account login, then reload.')
 
     def do_POST(self):
@@ -150,7 +181,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, discovery('probe', request=candidate))
         except (ValueError, TypeError):
             self.fail(400, 'Invalid connection test')
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired) as error:
+            # the control plane failed, not the provider: the user text stays, the reason goes to the log
+            log_unavailable('connection test', error)
             self.reply(200, {'ok': False, 'message': 'Connection test unavailable or timed out. Try again.'})
 
     def do_GET(self):

@@ -211,6 +211,43 @@ class PolicyTests(unittest.TestCase):
             self.assertFalse(review_policy.settings_path().exists())
         finally: server.shutdown(); server.server_close(); thread.join()
 
+    def test_control_plane_failures_keep_the_user_text_and_log_a_safe_reason(self):
+        import io
+        import subprocess
+        from types import SimpleNamespace
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        base = f'http://127.0.0.1:{server.server_port}/api/review-control'
+        headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
+        body = json.dumps({'base_url': 'https://example.com', 'api_key': 'test-only'}).encode()
+        def answer(request):
+            try:
+                with urllib.request.urlopen(request) as response: return response.status, json.load(response)
+            except urllib.error.HTTPError as error: return error.code, json.load(error)
+        secret = 'leaked-provider-token'  # what a failing helper might print: it must never reach the log
+        failures = [
+            (SimpleNamespace(returncode=1, stdout=secret), 'helper exited with status 1'),
+            (SimpleNamespace(returncode=0, stdout='Traceback ' + secret), 'helper output is not JSON'),
+            (SimpleNamespace(returncode=0, stdout=json.dumps([secret])), 'helper output is not a JSON object'),
+            (SimpleNamespace(returncode=0, stdout=json.dumps({'error': secret})), 'helper reported an error'),
+            (subprocess.TimeoutExpired(['docker', 'exec', secret], 55), 'helper timed out after 55 s'),
+            (FileNotFoundError(2, 'No such file or directory', secret), 'FileNotFoundError (errno 2)'),
+        ]
+        try:
+            for outcome, reason in failures:
+                with self.subTest(reason=reason), patch('sys.stderr', new_callable=io.StringIO) as log, \
+                     patch('review_control.subprocess.run', **({'side_effect': outcome} if isinstance(outcome, Exception) else {'return_value': outcome})):
+                    probe = answer(urllib.request.Request(base + '/test-provider', data=body, headers=headers))
+                    self.assertEqual(probe, (200, {'ok': False, 'message': 'Connection test unavailable or timed out. Try again.'}), 'the user text is unchanged')
+                    providers = answer(urllib.request.Request(base + '/providers', headers=headers))
+                    self.assertEqual(providers[0], 503, 'a helper failure is never answered as an invalid request')
+                    self.assertEqual(log.getvalue().splitlines(), [
+                        f'review-control: connection test unavailable: {reason}',
+                        f'review-control: GET /api/review-control/providers unavailable: {reason}'])
+                    self.assertNotIn(secret, log.getvalue())
+            self.assertFalse(review_policy.settings_path().exists())
+        finally: server.shutdown(); server.server_close(); thread.join()
+
     def test_settings_with_secondary_prepare_a_switch_profile(self):
         server = HTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
