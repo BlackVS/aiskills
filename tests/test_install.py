@@ -311,6 +311,15 @@ class PowerShellInstaller(InstallerContract, unittest.TestCase):
     def install(self, *args, home=None, xdg_config=None, env=None, root=ROOT):
         return ps_install(*args, home=home, xdg_config=xdg_config, env=env, root=root)
 
+    def test_commit_probe_outside_a_checkout_leaves_no_exit_status(self):
+        # CI's PowerShell steps end with `exit $LASTEXITCODE`: the failed git probe must not leak into it
+        src = copy_source(self.tmp / "src")
+        script = "& '" + str(src / "install.ps1") + "' '" + str(self.repo) + "' -Tool claude; exit $LASTEXITCODE"
+        r = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+                           capture_output=True, text=True, env=clean_env())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.repo / ".claude/skills/.ai-skills.json").is_file())
+
     def test_empty_array_tool_selection_is_refused(self):
         # native PowerShell form: an explicit empty array binds as zero items, unlike an omitted parameter
         script = "& '" + str(ROOT / 'install.ps1') + "' '" + str(self.repo) + "' -Tool @()"

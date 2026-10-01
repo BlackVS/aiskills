@@ -193,6 +193,8 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
         }
     }
     $MCommit = "$MCommit"
+    # a failed probe (no checkout) is not the installer's exit status: callers such as CI's step wrapper exit with it
+    $global:LASTEXITCODE = 0
 }
 if (-not $MCommit) { $MCommit = "$env:AI_SKILLS_COMMIT" }
 $MArchive = "$env:AI_SKILLS_ARCHIVE_SHA256".ToLowerInvariant()
