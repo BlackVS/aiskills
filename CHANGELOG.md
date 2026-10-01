@@ -9,6 +9,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.6] - 2026-10-01
+
+### Added
+- Auto Reviews: an end-to-end test of combined mode on the SDK's own stores
+  (`test_canvas_integration.py`). It saves a primary, a secondary and a
+  fallback through the settings API, so `prepare()` writes real agent and LLM
+  profiles, then runs the runner on those files and checks that the review
+  starts on the reading profile, is told to switch to the primary's LLM
+  profile, is signed with the primary's model and has the switch verified.
+  Like the existing integration case it skips without the SDK; both now run
+  outside Canvas too, in a Python 3.12 environment with the Canvas image's
+  `openhands-sdk` 1.49.1 and `openhands-agent-server` 1.27.1. The existing
+  case counts profiles relative to its start, so the two run in either order.
+  Nothing to deploy.
+
 ## [1.29.5] - 2026-10-01
 
 ### Fixed
