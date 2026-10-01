@@ -41,6 +41,19 @@ BASE=${AI_SKILLS_BASE:-}
 REPO=${AI_SKILLS_REPO:-BlackVS/aiskills}
 TOKEN=${AI_SKILLS_TOKEN:-}
 fail() { echo "ERROR: $*" >&2; exit 1; }
+# download OUT URL [curl options]: fetch URL into OUT. On failure WHY says what stopped it:
+# not found (HTTP 404), another HTTP status from the server, or no answer at all (a transport error).
+download() {
+  _out=$1; _url=$2; shift 2
+  _code=$(curl -sSL -o "$_out" -w '%{http_code}' "$@" "$_url") || _code=000
+  case "$_code" in
+    2??) return 0 ;;
+    404) WHY="not found (HTTP 404)" ;;
+    000) WHY="no answer from the server (a network or transport error)" ;;
+    *) WHY="the server answered HTTP $_code" ;;
+  esac
+  return 1
+}
 if [ -z "$REF" ] && [ -z "${AI_SKILLS_ARCHIVE:-}" ]; then
   if [ -n "$BASE" ]; then
     REF=main
@@ -103,28 +116,28 @@ elif [ $RELEASE -eq 1 ]; then
   # fetch NAME OUT: one asset of release REF
   if [ -n "$BASE" ]; then
     fetch() {
-      if [ -n "$TOKEN" ]; then curl -fsSL -H "Authorization: token $TOKEN" -o "$2" "$BASE/$REPO/releases/download/$REF/$1"
-      else curl -fsSL -o "$2" "$BASE/$REPO/releases/download/$REF/$1"; fi
+      if [ -n "$TOKEN" ]; then download "$2" "$BASE/$REPO/releases/download/$REF/$1" -H "Authorization: token $TOKEN"
+      else download "$2" "$BASE/$REPO/releases/download/$REF/$1"; fi
     }
   elif [ -n "$TOKEN" ]; then
     # a private fork: assets are downloaded through the API, by the id the release lists for the name
-    curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
-      -o "$DEST/release.json" "https://api.github.com/repos/$REPO/releases/tags/$REF" ||
-      fail "could not read release $REF of $REPO; nothing was installed"
+    download "$DEST/release.json" "https://api.github.com/repos/$REPO/releases/tags/$REF" \
+      -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" ||
+      fail "could not read release $REF of $REPO: $WHY; nothing was installed"
     fetch() {
       # each asset object lists its API url before its name
       u=$(grep -Eo '"url": *"[^"]*/releases/assets/[0-9]+"|"name": *"[^"]*"' "$DEST/release.json" | awk -v n="$1" '
         /^"url"/ {u=$0; sub(/^"url": *"/, "", u); sub(/"$/, "", u); next}
         u != "" {x=$0; sub(/^"name": *"/, "", x); sub(/"$/, "", x); if (x == n) {print u; exit} u=""}')
-      [ -n "$u" ] || return 1
-      curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o "$2" "$u"
+      [ -n "$u" ] || { WHY="not found (the release lists no such asset)"; return 1; }
+      download "$2" "$u" -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream"
     }
   else
-    fetch() { curl -fsSL -o "$2" "https://github.com/$REPO/releases/download/$REF/$1"; }
+    fetch() { download "$2" "https://github.com/$REPO/releases/download/$REF/$1"; }
   fi
   echo "Fetching aiskills $REF ($NAME and SHA256SUMS) from ${BASE:-https://github.com}/$REPO ..."
-  fetch "$NAME" "$TGZ" || fail "release $REF of $REPO has no $NAME asset; nothing was installed"
-  fetch SHA256SUMS "$DEST/SHA256SUMS" || fail "release $REF of $REPO has no SHA256SUMS; nothing was installed"
+  fetch "$NAME" "$TGZ" || fail "could not download $NAME of release $REF of $REPO: $WHY; nothing was installed"
+  fetch SHA256SUMS "$DEST/SHA256SUMS" || fail "could not download SHA256SUMS of release $REF of $REPO: $WHY; nothing was installed"
   # the line for NAME: "<digest>  NAME" (or " *NAME", binary mode); exactly one, and a digest
   WANT=$(awk -v n="$NAME" 'NF == 2 { f = $2; sub(/^\*/, "", f); if (f == n) print tolower($1) }' "$DEST/SHA256SUMS")
   [ "$(printf '%s\n' "$WANT" | grep -Exc '[0-9a-f]{64}')" = 1 ] && [ "$(printf '%s\n' "$WANT" | wc -l | tr -d ' ')" = 1 ] ||
@@ -146,9 +159,9 @@ else
   fi
   echo "WARNING: installing $REF UNVERIFIED (not a release; AI_SKILLS_UNVERIFIED=1) from ${BASE:-https://github.com}/$REPO ..."
   if [ -n "$TOKEN" ]; then
-    curl -fsSL -H "Authorization: $AUTH" -o "$TGZ" "$URL"
+    download "$TGZ" "$URL" -H "Authorization: $AUTH" || fail "could not download $REF of $REPO: $WHY; nothing was installed"
   else
-    curl -fsSL -o "$TGZ" "$URL"
+    download "$TGZ" "$URL" || fail "could not download $REF of $REPO: $WHY; nothing was installed"
   fi
 fi
 # the digest of what is installed, for the manifest (install.sh validates it)

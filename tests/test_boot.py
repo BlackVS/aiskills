@@ -85,29 +85,39 @@ class BashBoot(BootContract, unittest.TestCase):
 
 FAKE_CURL = r"""#!/bin/sh
 # Records each call. A HEAD request (-fsSI) answers with FAKE_LOCATION (none when
-# empty); an API request (-w) writes FAKE_API_BODY to its -o file and prints
-# FAKE_API_STATUS (000: a transport failure). Any other request is a download,
-# written to its -o file: SHA256SUMS (or API asset 2) is FAKE_SUMS (a 404 when
-# unset), a release by tag is FAKE_RELEASE, anything else FAKE_ARCHIVE.
+# empty); the API's latest-release lookup writes FAKE_API_BODY to its -o file and
+# prints FAKE_API_STATUS (000: a transport failure). Anything else is a download,
+# written to its -o file, its status printed for -w: SHA256SUMS (or API asset 2)
+# is FAKE_SUMS (404 when unset), a release by tag FAKE_RELEASE (404 when unset),
+# anything else FAKE_ARCHIVE, or FAKE_ARCHIVE_STATUS when set (000: no answer).
 echo "$*" >> "$FAKE_LOG"
-out=; head=0; api=0; url=
+out=; head=0; status=0; url=
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift ;; -fsSI) head=1 ;; -w) api=1; shift ;; -H) shift ;; -*) ;; *) url=$1 ;; esac
+  case "$1" in -o) out=$2; shift ;; -fsSI) head=1 ;; -w) status=1; shift ;; -H) shift ;; -*) ;; *) url=$1 ;; esac
   shift
 done
 emit() { if [ -n "$out" ]; then cat > "$out"; else cat; fi; }
+answer() {  # answer CODE: the status line -w prints; 000 is a transport failure
+  [ $status = 1 ] && printf '%s' "$1"
+  [ "$1" != 000 ] || exit 7
+  case "$1" in 2??) ;; *) [ $status = 1 ] || exit 22 ;; esac
+}
 if [ $head = 1 ]; then
   printf 'HTTP/2 302\r\n'; [ -z "$FAKE_LOCATION" ] || printf 'location: %s\r\n' "$FAKE_LOCATION"; printf '\r\n'
-elif [ $api = 1 ]; then
-  printf '%s' "$FAKE_API_BODY" > "$out"; printf '%s' "$FAKE_API_STATUS"
-  [ "$FAKE_API_STATUS" != 000 ] || exit 7
-else
-  case "$url" in
-    */SHA256SUMS|*/releases/assets/2) [ -n "$FAKE_SUMS" ] || exit 22; emit < "$FAKE_SUMS" ;;
-    */releases/tags/*) [ -n "$FAKE_RELEASE" ] || exit 22; printf '%s' "$FAKE_RELEASE" | emit ;;
-    *) emit < "$FAKE_ARCHIVE" ;;
-  esac
+  exit 0
 fi
+case "$url" in
+  */releases/latest)
+    printf '%s' "$FAKE_API_BODY" > "$out"; printf '%s' "$FAKE_API_STATUS"
+    [ "$FAKE_API_STATUS" != 000 ] || exit 7 ;;
+  */SHA256SUMS|*/releases/assets/2)
+    if [ -n "$FAKE_SUMS" ]; then emit < "$FAKE_SUMS"; answer 200; else echo 'Not Found' | emit; answer 404; fi ;;
+  */releases/tags/*)
+    if [ -n "$FAKE_RELEASE" ]; then printf '%s' "$FAKE_RELEASE" | emit; answer 200; else echo 'Not Found' | emit; answer 404; fi ;;
+  *)
+    if [ -n "$FAKE_ARCHIVE_STATUS" ]; then echo 'error page' | emit; answer "$FAKE_ARCHIVE_STATUS"
+    else emit < "$FAKE_ARCHIVE"; answer 200; fi ;;
+esac
 """
 # A release as the API lists it: each asset's API url comes before its name.
 RELEASE_JSON = ('{"url": "https://api.github.com/repos/BlackVS/aiskills/releases/7", "name": "aiskills 9.9.9", "assets": ['
@@ -181,7 +191,8 @@ class ReleaseCases(ReleaseFixture):
         self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9"), "does not match SHA256SUMS of release v9.9.9")
 
     def test_missing_sums_installs_nothing(self):
-        self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9", FAKE_SUMS=""), "has no SHA256SUMS")
+        self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9", FAKE_SUMS=""),
+                            "could not download SHA256SUMS of release v9.9.9 of BlackVS/aiskills: not found (HTTP 404)")
 
     def test_sums_without_a_single_entry_install_nothing(self):
         for lines in ((f"{self.digest}  aiskills-9.9.8.tar.gz",),
@@ -191,6 +202,16 @@ class ReleaseCases(ReleaseFixture):
             with self.subTest(lines=lines):
                 write_sums(self.tmp, *lines)
                 self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9"), "lists no single digest for aiskills-9.9.9.tar.gz")
+
+    def test_a_failed_download_names_its_cause(self):
+        # not found, a server error and no answer are told apart; nothing is installed either way
+        for status, cause in (("404", "not found (HTTP 404)"), ("504", "the server answered HTTP 504"),
+                              ("000", "no answer from the server")):
+            with self.subTest(status=status):
+                self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9", FAKE_ARCHIVE_STATUS=status),
+                                    f"could not download aiskills-9.9.9.tar.gz of release v9.9.9 of BlackVS/aiskills: {cause}")
+                self.assert_refused(self.run_boot(AI_SKILLS_REF="main", AI_SKILLS_UNVERIFIED="1", FAKE_ARCHIVE_STATUS=status),
+                                    f"could not download main of BlackVS/aiskills: {cause}")
 
     def test_non_release_ref_is_refused_without_the_opt_in(self):
         for ref in ("main", "0123abc", "v9.9.9-rc1", "9.9.9"):
@@ -273,7 +294,8 @@ class BashBootRelease(ReleaseCases, unittest.TestCase):
 
     def test_token_release_without_the_asset_installs_nothing(self):
         r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_TOKEN="t", FAKE_RELEASE='{"assets": []}')
-        self.assert_refused(r, "has no aiskills-9.9.9.tar.gz asset")
+        self.assert_refused(r, "could not download aiskills-9.9.9.tar.gz of release v9.9.9 of BlackVS/aiskills: "
+                               "not found (the release lists no such asset)")
 
     def test_token_no_release_needs_the_opt_in(self):
         r = self.run_boot(AI_SKILLS_TOKEN="t", AI_SKILLS_UNVERIFIED="1", FAKE_API_STATUS="404", FAKE_API_BODY='{"message":"Not Found"}')
@@ -292,12 +314,18 @@ class BashBootRelease(ReleaseCases, unittest.TestCase):
 # The web cmdlets boot.ps1 uses, faked: each call is recorded, and downloads are routed
 # like the fake curl's. PowerShell 7 (pwsh) builds the HTTP error the way Invoke-RestMethod raises it there.
 FAKE_PS = r"""
+class FakeHttpError : System.Exception {
+    [object]$Response
+    FakeHttpError([int]$status) : base("HTTP $status") { $this.Response = [pscustomobject]@{ StatusCode = $status } }
+}
 function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $Headers)
     $accept = if ($Headers -and $Headers['Accept']) { "Accept: $($Headers['Accept']) " } else { '' }
     Add-Content -LiteralPath $env:FAKE_LOG "download $accept$Uri"
     if ($Uri -like '*/SHA256SUMS' -or $Uri -like '*/releases/assets/2') {
-        if (-not $env:FAKE_SUMS) { throw 'HTTP 404' }
+        if (-not $env:FAKE_SUMS) { throw [FakeHttpError]::new(404) }
         Copy-Item -LiteralPath $env:FAKE_SUMS $OutFile
+    } elseif ($env:FAKE_ARCHIVE_STATUS -eq '000') { throw [System.Net.WebException]::new('connection refused')
+    } elseif ($env:FAKE_ARCHIVE_STATUS) { throw [FakeHttpError]::new([int]$env:FAKE_ARCHIVE_STATUS)
     } else { Copy-Item -LiteralPath $env:FAKE_ARCHIVE $OutFile } }
 function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing, $Headers)
     Add-Content -LiteralPath $env:FAKE_LOG "api $Uri"
@@ -338,7 +366,8 @@ class PowerShellBootVerify(ReleaseCases, unittest.TestCase):
 
     def test_token_release_without_the_asset_installs_nothing(self):
         r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_TOKEN="t", FAKE_RELEASE='{"assets": []}')
-        self.assert_refused(r, "has no aiskills-9.9.9.tar.gz asset")
+        self.assert_refused(r, "could not download aiskills-9.9.9.tar.gz of release v9.9.9 of BlackVS/aiskills: "
+                               "not found (the release lists no such asset)")
 
     def test_callers_digest_variable_is_restored(self):
         # `irm | iex` runs boot.ps1 in the caller's session

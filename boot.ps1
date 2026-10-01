@@ -72,6 +72,17 @@ if (-not $ref -and -not $env:AI_SKILLS_ARCHIVE) {
         $ref = 'main'
     }
 }
+# Why a web request failed: not found (HTTP 404), another HTTP status from the server, or no answer at all.
+function Get-FailureReason($ErrorRecord) {
+    $status = 0
+    if ($ErrorRecord.Exception.Response) { try { $status = [int]$ErrorRecord.Exception.Response.StatusCode } catch { } }
+    if ($status -eq 404) { 'not found (HTTP 404)' }
+    elseif ($status -gt 0) { "the server answered HTTP $status" }
+    else { "no answer from the server (a network or transport error: $($ErrorRecord.Exception.Message))" }
+}
+function Get-DownloadFailure($ErrorRecord) {
+    if ($ErrorRecord.Exception -is [IO.FileNotFoundException]) { $ErrorRecord.Exception.Message } else { Get-FailureReason $ErrorRecord }
+}
 # a release is exactly vMAJOR.MINOR.PATCH, as the release workflow tags it (the whole value)
 $release = [bool]$ref -and $ref -cmatch '\Av[0-9]+\.[0-9]+\.[0-9]+\z'
 $dest = Join-Path ([IO.Path]::GetTempPath()) ('aiskills-' + [Guid]::NewGuid().ToString('N'))
@@ -91,7 +102,7 @@ try {
         if (-not $base -and $env:AI_SKILLS_TOKEN) {
             # a private fork: assets are downloaded through the API, by the id the release lists for the name
             try { $assets = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/tags/$ref" -UseBasicParsing -Headers @{ Authorization = "Bearer $env:AI_SKILLS_TOKEN"; Accept = 'application/vnd.github+json' }).assets }
-            catch { throw "ERROR: could not read release $ref of $repo ($($_.Exception.Message)); nothing was installed" }
+            catch { throw "ERROR: could not read release $ref of $repo`: $(Get-FailureReason $_); nothing was installed" }
         }
         function Get-Asset([string]$Name, [string]$OutFile) {
             if ($base) {
@@ -99,15 +110,15 @@ try {
                 Invoke-WebRequest "$base/$repo/releases/download/$ref/$Name" -OutFile $OutFile -UseBasicParsing -Headers $h
             } elseif ($env:AI_SKILLS_TOKEN) {
                 $a = @($assets | Where-Object { $_.name -ceq $Name })
-                if ($a.Count -ne 1) { throw "no asset named $Name" }
+                if ($a.Count -ne 1) { throw [IO.FileNotFoundException]::new('not found (the release lists no such asset)') }
                 Invoke-WebRequest $a[0].url -OutFile $OutFile -UseBasicParsing -Headers @{ Authorization = "Bearer $env:AI_SKILLS_TOKEN"; Accept = 'application/octet-stream' }
             } else {
                 Invoke-WebRequest "https://github.com/$repo/releases/download/$ref/$Name" -OutFile $OutFile -UseBasicParsing
             }
         }
         Write-Host "Fetching aiskills $ref ($name and SHA256SUMS) from $from/$repo ..."
-        try { Get-Asset $name $tgz } catch { throw "ERROR: release $ref of $repo has no $name asset ($($_.Exception.Message)); nothing was installed" }
-        try { Get-Asset 'SHA256SUMS' $sums } catch { throw "ERROR: release $ref of $repo has no SHA256SUMS ($($_.Exception.Message)); nothing was installed" }
+        try { Get-Asset $name $tgz } catch { throw "ERROR: could not download $name of release $ref of $repo`: $(Get-DownloadFailure $_); nothing was installed" }
+        try { Get-Asset 'SHA256SUMS' $sums } catch { throw "ERROR: could not download SHA256SUMS of release $ref of $repo`: $(Get-DownloadFailure $_); nothing was installed" }
         # the line for the name: "<digest>  NAME" (or " *NAME", binary mode); exactly one, and a digest
         $want = @(Get-Content -LiteralPath $sums | ForEach-Object {
             $f = -split $_
@@ -130,7 +141,8 @@ try {
             $url = "https://github.com/$repo/archive/$ref.tar.gz"
         }
         Write-Host "WARNING: installing $ref UNVERIFIED (not a release; AI_SKILLS_UNVERIFIED=1) from $from/$repo ..."
-        Invoke-WebRequest $url -OutFile $tgz -UseBasicParsing -Headers $headers
+        try { Invoke-WebRequest $url -OutFile $tgz -UseBasicParsing -Headers $headers }
+        catch { throw "ERROR: could not download $ref of $repo`: $(Get-FailureReason $_); nothing was installed" }
     }
     # the digest of what is installed, for the manifest (install.ps1 validates it)
     $env:AI_SKILLS_ARCHIVE_SHA256 = (Get-FileHash -LiteralPath $tgz -Algorithm SHA256).Hash.ToLowerInvariant()

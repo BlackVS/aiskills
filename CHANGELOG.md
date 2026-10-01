@@ -17,7 +17,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
   the release asset `aiskills-X.Y.Z.tar.gz` and the release's `SHA256SUMS`,
   and install only when the archive's SHA-256 matches its single entry there.
   A missing asset, a missing `SHA256SUMS`, a missing or ambiguous entry, or a
-  mismatch stops with nothing installed and no fallback.
+  mismatch stops with nothing installed and no fallback. A failed download
+  says what stopped it: not found (HTTP 404), another HTTP status from the
+  server, or no answer at all.
   - A private fork (`AI_SKILLS_TOKEN`) downloads the assets through the API.
   - A Gitea base (`AI_SKILLS_BASE`) uses that release's attachments.
   - Every archive's digest, verified, local or unverified, is passed to the
