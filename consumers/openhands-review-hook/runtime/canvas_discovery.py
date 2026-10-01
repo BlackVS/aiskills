@@ -25,15 +25,13 @@ def server_environment(proc_root='/proc'):
             if not key:
                 continue
             cwd = (command.parent / 'cwd').resolve(strict=True)
+            # The SDK builds its configuration from OH_* variables only (no config file since
+            # agent-server 1.27 / SDK 1.49): the cipher key, and the store root when it is set.
             config = {'OH_SECRET_KEY': key.decode()}
-            for name, default in [('OH_PERSISTENCE_DIR', '.openhands'),
-                    ('OPENHANDS_AGENT_SERVER_CONFIG_PATH', 'workspace/openhands_agent_server_config.json')]:
-                value = raw.get(name.encode())
-                # Leave the persistence default to the SDK/config file.
-                if value is None and name == 'OH_PERSISTENCE_DIR':
-                    continue
-                path = Path(value.decode() if value else default)
-                config[name] = str(path if path.is_absolute() else cwd / path)
+            persistence = raw.get(b'OH_PERSISTENCE_DIR')
+            if persistence is not None:  # otherwise the SDK default applies
+                path = Path(persistence.decode())
+                config['OH_PERSISTENCE_DIR'] = str(path if path.is_absolute() else cwd / path)
             configs.append(config)
         except (OSError, ValueError, UnicodeError):
             continue
