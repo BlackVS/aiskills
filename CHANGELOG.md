@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.3] - 2026-10-01
+
+### Fixed
+- Auto Reviews connection test: one answer shape (issue #11, item 7). The
+  test-provider endpoint answered a failed test as `{ok: false, message}` but
+  its refusals (400, 401, 404, 413, 415) as `{error}`, while the app reads only
+  `message`. Every answer of that endpoint is now `{ok, message}` (or
+  `{ok: true, models}`), with the status codes unchanged; the settings API
+  keeps `{error}`. App 0.2.4 makes the shape question moot on its side:
+  whether Canvas's request helper resolves or throws on an error status,
+  only `ok: true` with a model list counts as success, and only a text
+  `message` is shown, never `undefined` or an object. Tests cover each
+  endpoint's shape at every refusal and both helper behaviours.
+
 ## [1.27.2] - 2026-10-01
 
 ### Fixed
