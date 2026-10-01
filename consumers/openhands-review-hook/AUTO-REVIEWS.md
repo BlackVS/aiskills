@@ -67,7 +67,7 @@ When the app says "Connection test unavailable" or "Canvas discovery or settings
 unavailable", the settings API got no usable answer from the discovery helper,
 or could not read or save the settings file. This does not mean the provider
 was never contacted: the helper may have reached it before failing (for example
-on a model list without models). The `review-control` service logs one line per
+when the provider answers without a model list). The `review-control` service logs one line per
 such failure on stderr (`journalctl -u review-control`), for example
 `review-control: connection test unavailable: helper timed out after 55 s`. The
 reason is fixed text (exit status, timeout, non-JSON output, an error reported
