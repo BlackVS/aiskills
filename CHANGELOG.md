@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.26.6] - 2026-10-01
+
+### Changed
+- Auto Reviews discovery helper: the entry point is factored into
+  `main(request, proc_root)` with no change in behavior, so a test can
+  cover the line that puts the agent server's environment (its cipher key)
+  in place before an action runs. The new test uses a fake `/proc` with the
+  agent server and a decoy process holding another key: the action sees the
+  server's key, and an empty `/proc` fails closed before any action runs
+  (issue #11, item 3). Hands sites deploy `canvas_discovery.py` (see
+  `UPDATING.md`).
+
 ## [1.26.5] - 2026-10-01
 
 ### Security

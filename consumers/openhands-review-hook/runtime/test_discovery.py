@@ -139,6 +139,38 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertEqual(os.environ['OH_SECRET_KEY'], 'test-only-value', 'only the child loses the key')
             self.assertEqual(out.read_text().split(), ['absent', 'kept'], 'the key is withheld, the rest is passed on')
 
+    @unittest.skipIf(os.name == 'nt', 'the fake /proc uses a symlinked cwd')
+    def test_main_puts_the_server_key_in_place_before_dispatch_and_fails_closed(self):
+        from canvas_discovery import main
+        def fake_proc(root, entries):
+            for pid, (executable, environ) in entries.items():
+                entry = Path(root) / str(pid); entry.mkdir()
+                (entry / 'cmdline').write_bytes(executable + b'\0--port\x008000\0')
+                (entry / 'environ').write_bytes(b'\0'.join(environ) + b'\0')
+                (entry / 'cwd').symlink_to(root)
+        seen = []
+        with tempfile.TemporaryDirectory() as temp:
+            proc = Path(temp) / 'proc'; proc.mkdir()
+            fake_proc(proc, {
+                101: (b'/usr/bin/openhands-agent-server', [b'OH_SECRET_KEY=server-key', b'PATH=/usr/bin']),
+                202: (b'/usr/bin/python3', [b'OH_SECRET_KEY=decoy-key']),  # not the agent server: ignored
+            })
+            with patch.dict(os.environ, {}, clear=False), \
+                 patch('canvas_discovery.inventory', side_effect=lambda: seen.append(os.environ.get('OH_SECRET_KEY')) or {'ok': 1}):
+                os.environ.pop('OH_SECRET_KEY', None)
+                self.assertEqual(main({'action': 'inventory'}, proc_root=str(proc)), {'ok': 1})
+            self.assertEqual(seen, ['server-key'], 'the server\'s key is in place when the action runs')
+            empty = Path(temp) / 'empty'; empty.mkdir()
+            with patch.dict(os.environ, {}, clear=False), patch('canvas_discovery.inventory') as action:
+                os.environ.pop('OH_SECRET_KEY', None)
+                with self.assertRaisesRegex(ValueError, 'unique Canvas server'):
+                    main({'action': 'inventory'}, proc_root=str(empty))
+                action.assert_not_called()
+                self.assertNotIn('OH_SECRET_KEY', os.environ, 'nothing is put in place')
+            with patch.dict(os.environ, {}, clear=False):
+                with self.assertRaisesRegex(ValueError, 'Unknown action'):
+                    main({'action': 'unknown'}, proc_root=str(proc))
+
     def test_effort_helpers(self):
         self.assertEqual(split_codex_model('gpt-6-astra/xhigh'), ('gpt-6-astra', 'xhigh'))
         self.assertEqual(split_codex_model('gpt-6-astra'), ('gpt-6-astra', None))
