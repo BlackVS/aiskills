@@ -65,7 +65,8 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          AI_SKILLS_REPO="$PR_REPO" AI_SKILLS_REF="$PR_REF" bash boot.sh
+          # a commit is not a release: installing it is the explicit, unverified opt-in
+          AI_SKILLS_REPO="$PR_REPO" AI_SKILLS_REF="$PR_REF" AI_SKILLS_UNVERIFIED=1 bash boot.sh
           for d in .claude/skills .agents/skills; do
             for s in architecture-review oh-code-review oh-technical-writing oh-qa-changes; do
               test -f "$HOME/$d/$s/SKILL.md" || { echo "missing ~/$d/$s"; exit 1; }
@@ -84,7 +85,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $env:AI_SKILLS_REPO = $env:PR_REPO; $env:AI_SKILLS_REF = $env:PR_REF
+          # a commit is not a release: installing it is the explicit, unverified opt-in
+          $env:AI_SKILLS_REPO = $env:PR_REPO; $env:AI_SKILLS_REF = $env:PR_REF; $env:AI_SKILLS_UNVERIFIED = '1'
           & .\boot.ps1
           foreach ($d in '.claude\skills', '.agents\skills') {
             foreach ($s in 'architecture-review', 'oh-code-review', 'oh-technical-writing', 'oh-qa-changes') {

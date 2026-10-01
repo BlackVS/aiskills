@@ -52,10 +52,13 @@ Windows (PowerShell):
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex"
 ```
 
-Either line fetches the archive of the latest
-[release](https://github.com/BlackVS/aiskills/releases) (`main` while there is
-none) into a temporary directory, runs the real installer from it, prints the
-installed version and cleans up. Run it again to upgrade to a newer release. With no flags it installs user-wide with `--user -s all -p
+Either line downloads the latest
+[release](https://github.com/BlackVS/aiskills/releases)'s archive
+(`aiskills-X.Y.Z.tar.gz`) and its `SHA256SUMS` into a temporary directory. It
+checks the archive's SHA-256 against `SHA256SUMS`, runs the real installer
+from it, prints the installed version and cleans up. A missing `SHA256SUMS` or
+a mismatch stops before anything is installed. The archive's digest is
+recorded in the installed manifest (`archive_sha256`). Run it again to upgrade to a newer release. With no flags it installs user-wide with `--user -s all -p
 -a`: every skill and the prompts for Claude Code (`~/.claude`) and Codex
 (`~/.agents`), plus the review-gates block in the agent instructions. Any
 other combination is the installer's own flags, passed with `bash -s --` on
@@ -83,11 +86,23 @@ $env:AI_SKILLS_ARGS = 'C:\path\to\project -Tool codex -Skills all'; irm $B | iex
 that contains spaces inside `AI_SKILLS_ARGS`.) Project-level installs are
 committed with the project, so every clone and every client on it sees the
 same skills; user-level installs follow the person across projects.
-`AI_SKILLS_REF=<tag or commit>` pins a version, and `AI_SKILLS_REF=main`
-installs unreleased work; `AI_SKILLS_REPO=<owner/name>`
-installs from a fork, with `AI_SKILLS_TOKEN` for a private one;
-`AI_SKILLS_BASE=<url>` downloads from a Gitea mirror instead of GitHub. If the
-Windows form fails with an empty-string error for `Command`, the download
+
+- **Pinning:** `AI_SKILLS_REF=vX.Y.Z` pins a release, verified the same way.
+- **Unverified refs:** any other ref (`main`, a branch, a commit) has no
+  `SHA256SUMS` to check against. It is refused unless `AI_SKILLS_UNVERIFIED=1`
+  is set as well. It is then installed from the source archive and reported as
+  unverified. The same applies while a repository has no release yet.
+- **Forks:** `AI_SKILLS_REPO=<owner/name>` installs from a fork, with
+  `AI_SKILLS_TOKEN` for a private one. Its release assets are then downloaded
+  through the API.
+- **Gitea mirror:** `AI_SKILLS_BASE=<url>` downloads from a Gitea mirror instead
+  of GitHub. A release ref fetches that release's attachments
+  (`<url>/<owner>/<name>/releases/download/<tag>/...`). Without `AI_SKILLS_REF`
+  it installs `main`, which needs `AI_SKILLS_UNVERIFIED=1`.
+- **Local archive:** `AI_SKILLS_ARCHIVE=<path>` installs from a local
+  `.tar.gz`, your own file, with no release check.
+
+If the Windows form fails with an empty-string error for `Command`, the download
 returned an empty body: retry, or install from a checkout as below.
 
 From a checkout:
@@ -144,7 +159,10 @@ Each run also writes a manifest into every skills directory it installs to,
   subset install names only its subset, and skills left there by an earlier
   run are not claimed.
 - `archive_sha256`: the SHA-256 of the archive installed from, passed in
-  `AI_SKILLS_ARCHIVE_SHA256`; otherwise `null`.
+  `AI_SKILLS_ARCHIVE_SHA256`; otherwise `null`. The one-liners always set it,
+  for unverified and local archives too. A digest says what was installed, not
+  that it was verified: compare it with the release's `SHA256SUMS` entry for
+  `aiskills-<version>.tar.gz`.
 - `installed_at`: UTC, ISO 8601.
 
 The file is UTF-8 without a BOM and has LF line endings. It is replaced

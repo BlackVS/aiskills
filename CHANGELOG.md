@@ -9,6 +9,30 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-10-01
+
+### Added
+- The one-liners verify what they install (issue #25). For a release (the
+  latest, or `AI_SKILLS_REF=vX.Y.Z`), `boot.sh` and `boot.ps1` now download
+  the release asset `aiskills-X.Y.Z.tar.gz` and the release's `SHA256SUMS`,
+  and install only when the archive's SHA-256 matches its single entry there.
+  A missing asset, a missing `SHA256SUMS`, a missing or ambiguous entry, or a
+  mismatch stops with nothing installed and no fallback.
+  - A private fork (`AI_SKILLS_TOKEN`) downloads the assets through the API.
+  - A Gitea base (`AI_SKILLS_BASE`) uses that release's attachments.
+  - Every archive's digest, verified, local or unverified, is passed to the
+    installer as `AI_SKILLS_ARCHIVE_SHA256`, so it reaches the manifest's
+    `archive_sha256` (1.28.0). boot.ps1 restores the caller's value of that
+    variable afterwards.
+
+### Changed
+- A ref that is not a release (`main`, a branch, a commit) has no
+  `SHA256SUMS` to check against. It is refused unless `AI_SKILLS_UNVERIFIED=1`
+  is set, and is then installed from the source archive with an "UNVERIFIED"
+  warning. The same applies to the fallback to `main` while a repository has
+  no release, and to `AI_SKILLS_BASE` without `AI_SKILLS_REF` (which installs
+  `main`). CI's "install this commit" steps set the opt-in.
+
 ## [1.28.0] - 2026-10-01
 
 ### Added

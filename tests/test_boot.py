@@ -3,7 +3,7 @@ offline here (AI_SKILLS_ARCHIVE points at an archive built from the checkout).
 
 Run: python3 -m unittest tests/test_boot.py
 """
-import os, pathlib, shutil, subprocess, sys, tempfile, unittest
+import hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile, unittest
 
 from tests.test_install import BASH, PWSH, ROOT, clean_env, posix
 
@@ -33,6 +33,12 @@ class BootContract:
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_archive_digest_reaches_the_manifest(self):
+        r = self.run_boot()
+        self.assert_user_install(r)
+        m = json.loads((self.home / ".claude/skills/.ai-skills.json").read_text(encoding="utf-8"))
+        self.assertEqual(m["archive_sha256"], hashlib.sha256(self.archive.read_bytes()).hexdigest())
 
     def assert_user_install(self, r):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -80,100 +86,219 @@ class BashBoot(BootContract, unittest.TestCase):
 FAKE_CURL = r"""#!/bin/sh
 # Records each call. A HEAD request (-fsSI) answers with FAKE_LOCATION (none when
 # empty); an API request (-w) writes FAKE_API_BODY to its -o file and prints
-# FAKE_API_STATUS (000: a transport failure); anything else streams FAKE_ARCHIVE.
+# FAKE_API_STATUS (000: a transport failure). Any other request is a download,
+# written to its -o file: SHA256SUMS (or API asset 2) is FAKE_SUMS (a 404 when
+# unset), a release by tag is FAKE_RELEASE, anything else FAKE_ARCHIVE.
 echo "$*" >> "$FAKE_LOG"
-out=; head=0; api=0
+out=; head=0; api=0; url=
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift ;; -fsSI) head=1 ;; -w) api=1; shift ;; esac
+  case "$1" in -o) out=$2; shift ;; -fsSI) head=1 ;; -w) api=1; shift ;; -H) shift ;; -*) ;; *) url=$1 ;; esac
   shift
 done
+emit() { if [ -n "$out" ]; then cat > "$out"; else cat; fi; }
 if [ $head = 1 ]; then
   printf 'HTTP/2 302\r\n'; [ -z "$FAKE_LOCATION" ] || printf 'location: %s\r\n' "$FAKE_LOCATION"; printf '\r\n'
 elif [ $api = 1 ]; then
   printf '%s' "$FAKE_API_BODY" > "$out"; printf '%s' "$FAKE_API_STATUS"
   [ "$FAKE_API_STATUS" != 000 ] || exit 7
 else
-  cat "$FAKE_ARCHIVE"
+  case "$url" in
+    */SHA256SUMS|*/releases/assets/2) [ -n "$FAKE_SUMS" ] || exit 22; emit < "$FAKE_SUMS" ;;
+    */releases/tags/*) [ -n "$FAKE_RELEASE" ] || exit 22; printf '%s' "$FAKE_RELEASE" | emit ;;
+    *) emit < "$FAKE_ARCHIVE" ;;
+  esac
 fi
 """
+# A release as the API lists it: each asset's API url comes before its name.
+RELEASE_JSON = ('{"url": "https://api.github.com/repos/BlackVS/aiskills/releases/7", "name": "aiskills 9.9.9", "assets": ['
+                '{"url": "https://api.github.com/repos/BlackVS/aiskills/releases/assets/1", "id": 1, "name": "aiskills-9.9.9.tar.gz",'
+                ' "uploader": {"url": "https://api.github.com/users/someone", "login": "someone"}},'
+                ' {"url": "https://api.github.com/repos/BlackVS/aiskills/releases/assets/2", "id": 2, "name": "SHA256SUMS"}]}')
 
 
-@unittest.skipUnless(BASH and os.name != "nt", "needs a POSIX bash to put a fake curl on PATH")
-class BashBootRelease(unittest.TestCase):
-    """Without AI_SKILLS_REF the one-liner installs the latest release, main only when
-    there is none, and stops when the lookup fails."""
+def sha256_of(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def write_sums(tmp, *lines):
+    p = tmp / "SHA256SUMS"
+    p.write_text("".join(l + "\n" for l in lines), encoding="utf-8", newline="\n")
+    return p
+
+
+class ReleaseFixture:
+    """A scratch home, an archive standing in for the release asset aiskills-9.9.9.tar.gz, and its SHA256SUMS."""
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-boot-rel-"))
         self.home = self.tmp / "home"; self.home.mkdir()
-        self.bin = self.tmp / "bin"; self.bin.mkdir()
-        (self.bin / "curl").write_text(FAKE_CURL); (self.bin / "curl").chmod(0o755)
-        self.archive = build_archive(self.tmp); self.log = self.tmp / "curl.log"
+        self.archive = build_archive(self.tmp); self.log = self.tmp / "calls.log"
+        self.digest = sha256_of(self.archive)
+        self.sums = write_sums(self.tmp, f"{'0' * 64}  aiskills-9.9.9.zip", f"{self.digest}  aiskills-9.9.9.tar.gz")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_boot(self, location="", ok=True, **extra):
-        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
-        env.update(HOME=str(self.home), PATH=f"{self.bin}:{env['PATH']}", FAKE_LOG=str(self.log),
-                   FAKE_ARCHIVE=str(self.archive), FAKE_LOCATION=location, **extra)
-        r = subprocess.run([BASH, str(ROOT / "boot.sh"), "--user", "-s", "core"], capture_output=True, text=True, env=env)
-        self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
-        return r, self.log.read_text().splitlines()
+    def calls(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
 
-    def assert_stopped(self, r, calls):
-        self.assertIn("could not look up the latest release", r.stderr)
-        self.assertEqual(len(calls), 1, "no archive is downloaded after a failed lookup")
-        self.assertFalse((self.home / ".claude").exists())
+    def assert_installed(self, r, digest):
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = json.loads((self.home / ".claude/skills/.ai-skills.json").read_text(encoding="utf-8"))
+        self.assertEqual(m["archive_sha256"], digest, "the archive's digest reaches the manifest")
+
+    def assert_refused(self, r, message):
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(message, r.stdout + r.stderr)
+        self.assertFalse((self.home / ".claude").exists(), "nothing is installed")
+
+
+
+class ReleaseCases(ReleaseFixture):
+    """Cases both boots share; run_boot(**env) is each boot's own."""
+
+    def test_release_is_verified_and_its_digest_recorded(self):
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9")
+        self.assert_installed(r, self.digest)
+        self.assertIn(f"Verified aiskills-9.9.9.tar.gz against SHA256SUMS: {self.digest}", r.stdout)
+        urls = " ".join(self.calls())
+        self.assertIn("https://github.com/BlackVS/aiskills/releases/download/v9.9.9/aiskills-9.9.9.tar.gz", urls)
+        self.assertIn("https://github.com/BlackVS/aiskills/releases/download/v9.9.9/SHA256SUMS", urls)
+        self.assertNotIn("/archive/", urls, "never the source archive for a release")
+
+    def test_binary_mode_and_uppercase_sums_are_accepted(self):
+        write_sums(self.tmp, f"{self.digest.upper()} *aiskills-9.9.9.tar.gz")
+        self.assert_installed(self.run_boot(AI_SKILLS_REF="v9.9.9"), self.digest)
+
+    def test_mismatch_installs_nothing(self):
+        write_sums(self.tmp, f"{'f' * 64}  aiskills-9.9.9.tar.gz")
+        self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9"), "does not match SHA256SUMS of release v9.9.9")
+
+    def test_missing_sums_installs_nothing(self):
+        self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9", FAKE_SUMS=""), "has no SHA256SUMS")
+
+    def test_sums_without_a_single_entry_install_nothing(self):
+        for lines in ((f"{self.digest}  aiskills-9.9.8.tar.gz",),
+                      (f"{self.digest}  aiskills-9.9.9.tar.gz", f"{self.digest}  aiskills-9.9.9.tar.gz"),
+                      (f"{self.digest}  aiskills-9.9.9.tar.gz", "not-a-digest  aiskills-9.9.9.tar.gz"),
+                      ("not-a-digest  aiskills-9.9.9.tar.gz",)):
+            with self.subTest(lines=lines):
+                write_sums(self.tmp, *lines)
+                self.assert_refused(self.run_boot(AI_SKILLS_REF="v9.9.9"), "lists no single digest for aiskills-9.9.9.tar.gz")
+
+    def test_non_release_ref_is_refused_without_the_opt_in(self):
+        for ref in ("main", "0123abc", "v9.9.9-rc1", "9.9.9"):
+            with self.subTest(ref=ref):
+                self.log.unlink(missing_ok=True)
+                self.assert_refused(self.run_boot(AI_SKILLS_REF=ref), f"{ref} is not a release (vX.Y.Z)")
+                self.assertEqual(self.calls(), [], "nothing is downloaded")
+
+    def test_non_release_ref_with_the_opt_in_is_unverified(self):
+        r = self.run_boot(AI_SKILLS_REF="main", AI_SKILLS_UNVERIFIED="1")
+        self.assert_installed(r, self.digest)
+        self.assertIn("WARNING: installing main UNVERIFIED", r.stdout)
+        self.assertIn("https://github.com/BlackVS/aiskills/archive/main.tar.gz", " ".join(self.calls()))
+
+    def test_gitea_base_downloads_release_assets(self):
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_BASE="https://git.example.invalid")
+        self.assert_installed(r, self.digest)
+        urls = " ".join(self.calls())
+        self.assertIn("https://git.example.invalid/BlackVS/aiskills/releases/download/v9.9.9/aiskills-9.9.9.tar.gz", urls)
+        self.assertIn("https://git.example.invalid/BlackVS/aiskills/releases/download/v9.9.9/SHA256SUMS", urls)
+
+
+@unittest.skipUnless(BASH, "no bash")
+class BashBootRelease(ReleaseCases, unittest.TestCase):
+    """boot.sh: the latest release by default, verified against SHA256SUMS; main only on request."""
+
+    def setUp(self):
+        super().setUp()
+        self.bin = self.tmp / "bin"; self.bin.mkdir()
+        (self.bin / "curl").write_text(FAKE_CURL); (self.bin / "curl").chmod(0o755)
+
+    def run_boot(self, location="", **extra):
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
+        env.update(HOME=str(self.home), PATH=self.bin_path(env), FAKE_LOG=str(self.log),
+                   FAKE_ARCHIVE=str(self.archive), FAKE_SUMS=str(self.sums), FAKE_RELEASE=RELEASE_JSON,
+                   FAKE_LOCATION=location)
+        env.update(extra)
+        return subprocess.run([BASH, str(ROOT / "boot.sh"), "--user", "-s", "core"], capture_output=True, text=True, env=env)
+
+    def bin_path(self, env):
+        return str(self.bin) + os.pathsep + env["PATH"]
+
+    def assert_stopped(self, r):
+        self.assert_refused(r, "could not look up the latest release")
+        self.assertEqual(len(self.calls()), 1, "no archive is downloaded after a failed lookup")
 
     def test_latest_release_is_installed(self):
-        r, calls = self.run_boot("https://github.com/BlackVS/aiskills/releases/tag/v9.9.9")
+        r = self.run_boot("https://github.com/BlackVS/aiskills/releases/tag/v9.9.9")
+        self.assert_installed(r, self.digest)
+        calls = self.calls()
         self.assertIn("https://github.com/BlackVS/aiskills/releases/latest", calls[0])
-        self.assertIn("https://github.com/BlackVS/aiskills/archive/v9.9.9.tar.gz", calls[1])
-        self.assertTrue((self.home / ".claude/skills/oh-code-review/SKILL.md").is_file())
+        self.assertIn("https://github.com/BlackVS/aiskills/releases/download/v9.9.9/aiskills-9.9.9.tar.gz", calls[1])
+        self.assertIn("https://github.com/BlackVS/aiskills/releases/download/v9.9.9/SHA256SUMS", calls[2])
 
-    def test_no_release_falls_back_to_main(self):
-        r, calls = self.run_boot("https://github.com/BlackVS/aiskills/releases")
-        self.assertIn("No release of BlackVS/aiskills found: installing main.", r.stdout)
-        self.assertIn("/archive/main.tar.gz", calls[1])
+    def test_no_release_needs_the_opt_in(self):
+        r = self.run_boot("https://github.com/BlackVS/aiskills/releases")
+        self.assert_refused(r, "main is not a release (vX.Y.Z)")
+        self.assertIn("No release of BlackVS/aiskills found: falling back to main.", r.stdout)
+        self.log.unlink()
+        r = self.run_boot("https://github.com/BlackVS/aiskills/releases", AI_SKILLS_UNVERIFIED="1")
+        self.assert_installed(r, self.digest)
+        self.assertIn("/archive/main.tar.gz", self.calls()[1])
 
     def test_unexpected_redirect_stops(self):
         for location in ("", "https://github.com/login"):
             with self.subTest(location=location):
                 self.log.unlink(missing_ok=True)
-                self.assert_stopped(*self.run_boot(location, ok=False))
+                self.assert_stopped(self.run_boot(location))
 
     def test_explicit_ref_skips_the_lookup(self):
-        r, calls = self.run_boot("unused", AI_SKILLS_REF="v1.0.0")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("/archive/v1.0.0.tar.gz", calls[0])
+        self.run_boot("unused", AI_SKILLS_REF="v9.9.9")
+        self.assertNotIn("releases/latest", " ".join(self.calls()))
 
-    def test_token_latest_release(self):
-        r, calls = self.run_boot(AI_SKILLS_TOKEN="t", FAKE_API_STATUS="200", FAKE_API_BODY='{"tag_name":"v9.9.9"}')
+    def test_token_latest_release_downloads_assets_through_the_api(self):
+        r = self.run_boot(AI_SKILLS_TOKEN="t", FAKE_API_STATUS="200", FAKE_API_BODY='{"tag_name":"v9.9.9"}')
+        self.assert_installed(r, self.digest)
+        calls = self.calls()
         self.assertIn("https://api.github.com/repos/BlackVS/aiskills/releases/latest", calls[0])
-        self.assertIn("https://api.github.com/repos/BlackVS/aiskills/tarball/v9.9.9", calls[1])
+        self.assertIn("https://api.github.com/repos/BlackVS/aiskills/releases/tags/v9.9.9", calls[1])
+        for call, asset in ((calls[2], 1), (calls[3], 2)):
+            self.assertIn(f"https://api.github.com/repos/BlackVS/aiskills/releases/assets/{asset}", call)
+            self.assertIn("Accept: application/octet-stream", call)
 
-    def test_token_no_release_falls_back_to_main(self):
-        r, calls = self.run_boot(AI_SKILLS_TOKEN="t", FAKE_API_STATUS="404", FAKE_API_BODY='{"message":"Not Found"}')
-        self.assertIn("No release of BlackVS/aiskills found: installing main.", r.stdout)
-        self.assertIn("/tarball/main", calls[1])
+    def test_token_release_without_the_asset_installs_nothing(self):
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_TOKEN="t", FAKE_RELEASE='{"assets": []}')
+        self.assert_refused(r, "has no aiskills-9.9.9.tar.gz asset")
+
+    def test_token_no_release_needs_the_opt_in(self):
+        r = self.run_boot(AI_SKILLS_TOKEN="t", AI_SKILLS_UNVERIFIED="1", FAKE_API_STATUS="404", FAKE_API_BODY='{"message":"Not Found"}')
+        self.assert_installed(r, self.digest)
+        self.assertIn("/tarball/main", self.calls()[1])
 
     def test_token_lookup_error_stops(self):
         for status in ("000", "401", "403", "500"):
             with self.subTest(status=status):
                 self.log.unlink(missing_ok=True)
-                self.assert_stopped(*self.run_boot(ok=False, AI_SKILLS_TOKEN="t", FAKE_API_STATUS=status, FAKE_API_BODY="{}"))
+                self.assert_stopped(self.run_boot(AI_SKILLS_TOKEN="t", FAKE_API_STATUS=status, FAKE_API_BODY="{}"))
         self.log.unlink(missing_ok=True)
-        self.assert_stopped(*self.run_boot(ok=False, AI_SKILLS_TOKEN="t", FAKE_API_STATUS="200", FAKE_API_BODY="{}"))
+        self.assert_stopped(self.run_boot(AI_SKILLS_TOKEN="t", FAKE_API_STATUS="200", FAKE_API_BODY="{}"))
 
 
-# PowerShell 7 (pwsh) builds the HTTP error the way Invoke-RestMethod raises it there.
-PWSH7 = shutil.which("pwsh")
+# The web cmdlets boot.ps1 uses, faked: each call is recorded, and downloads are routed
+# like the fake curl's. PowerShell 7 (pwsh) builds the HTTP error the way Invoke-RestMethod raises it there.
 FAKE_PS = r"""
 function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $Headers)
-    Add-Content -LiteralPath $env:FAKE_LOG "download $Uri"; Copy-Item -LiteralPath $env:FAKE_ARCHIVE $OutFile }
+    $accept = if ($Headers -and $Headers['Accept']) { "Accept: $($Headers['Accept']) " } else { '' }
+    Add-Content -LiteralPath $env:FAKE_LOG "download $accept$Uri"
+    if ($Uri -like '*/SHA256SUMS' -or $Uri -like '*/releases/assets/2') {
+        if (-not $env:FAKE_SUMS) { throw 'HTTP 404' }
+        Copy-Item -LiteralPath $env:FAKE_SUMS $OutFile
+    } else { Copy-Item -LiteralPath $env:FAKE_ARCHIVE $OutFile } }
 function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing, $Headers)
     Add-Content -LiteralPath $env:FAKE_LOG "api $Uri"
+    if ($Uri -like '*/releases/tags/*') { return ($env:FAKE_RELEASE | ConvertFrom-Json) }
     $status = [int]$env:FAKE_API_STATUS
     if ($status -eq 0) { throw [System.Net.Http.HttpRequestException]::new('connection refused') }
     if ($status -ne 200) { throw [Microsoft.PowerShell.Commands.HttpResponseException]::new("HTTP $status", [System.Net.Http.HttpResponseMessage]::new($status)) }
@@ -181,46 +306,91 @@ function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing, $Headers)
 """
 
 
+def ps_boot(home, env):
+    script = f"Set-Variable -Name HOME -Value '{home}' -Force; " + FAKE_PS + "; & '" + str(ROOT / "boot.ps1") + "'"
+    return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+                          capture_output=True, text=True, env=env)
+
+
+@unittest.skipUnless(PWSH, "no PowerShell found")
+class PowerShellBootVerify(ReleaseCases, unittest.TestCase):
+    """boot.ps1 with an explicit ref: the release check, under Windows PowerShell 5.1 or PowerShell 7."""
+
+    def run_boot(self, **extra):
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
+        env.update(AI_SKILLS_ARGS="-User -Skills core", FAKE_LOG=str(self.log), FAKE_ARCHIVE=str(self.archive),
+                   FAKE_SUMS=str(self.sums), FAKE_RELEASE=RELEASE_JSON, FAKE_API_STATUS="200", FAKE_API_BODY="{}")
+        env.update(extra)
+        return ps_boot(self.home, env)
+
+    def calls(self):
+        return [c.split(" ", 1)[1] for c in super().calls()]
+
+    def test_token_release_downloads_assets_through_the_api(self):
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_TOKEN="t")
+        self.assert_installed(r, self.digest)
+        self.assertEqual(self.calls(), ["https://api.github.com/repos/BlackVS/aiskills/releases/tags/v9.9.9",
+                                        "Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/1",
+                                        "Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/2"])
+
+    def test_token_release_without_the_asset_installs_nothing(self):
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_TOKEN="t", FAKE_RELEASE='{"assets": []}')
+        self.assert_refused(r, "has no aiskills-9.9.9.tar.gz asset")
+
+    def test_callers_digest_variable_is_restored(self):
+        # `irm | iex` runs boot.ps1 in the caller's session
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
+        env.update(AI_SKILLS_ARGS="-User -Skills core", AI_SKILLS_REF="v9.9.9", FAKE_LOG=str(self.log),
+                   FAKE_ARCHIVE=str(self.archive), FAKE_SUMS=str(self.sums), AI_SKILLS_ARCHIVE_SHA256="from-the-caller")
+        script = (f"Set-Variable -Name HOME -Value '{self.home}' -Force; " + FAKE_PS + "; & '" + str(ROOT / "boot.ps1") + "'; "
+                  "'after: ' + $env:AI_SKILLS_ARCHIVE_SHA256")
+        r = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+                           capture_output=True, text=True, env=env)
+        self.assert_installed(r, self.digest)
+        self.assertIn("after: from-the-caller", r.stdout)
+
+
+PWSH7 = shutil.which("pwsh")
+
+
 @unittest.skipUnless(PWSH7, "no pwsh found")
-class PowerShellBootRelease(unittest.TestCase):
+class PowerShellBootRelease(ReleaseFixture, unittest.TestCase):
     """The authenticated lookup of boot.ps1: 404 means no release, any other failure stops."""
 
-    def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-boot-rel-"))
-        self.home = self.tmp / "home"; self.home.mkdir()
-        self.archive = build_archive(self.tmp); self.log = self.tmp / "calls.log"
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def run_boot(self, status, body="{}", ok=True):
+    def run_boot(self, status, body="{}", **extra):
         env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
         env.update(AI_SKILLS_TOKEN="t", AI_SKILLS_ARGS="-User -Skills core", FAKE_LOG=str(self.log),
-                   FAKE_ARCHIVE=str(self.archive), FAKE_API_STATUS=status, FAKE_API_BODY=body)
+                   FAKE_ARCHIVE=str(self.archive), FAKE_SUMS=str(self.sums), FAKE_RELEASE=RELEASE_JSON,
+                   FAKE_API_STATUS=status, FAKE_API_BODY=body)
+        env.update(extra)
         script = f"Set-Variable -Name HOME -Value '{self.home}' -Force; " + FAKE_PS + "; & '" + str(ROOT / "boot.ps1") + "'"
-        r = subprocess.run([PWSH7, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-                           capture_output=True, text=True, env=env)
-        self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
-        return r, self.log.read_text().splitlines()
+        return subprocess.run([PWSH7, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+                              capture_output=True, text=True, env=env)
 
     def test_latest_release(self):
-        r, calls = self.run_boot("200", '{"tag_name":"v9.9.9"}')
-        self.assertEqual(calls, ["api https://api.github.com/repos/BlackVS/aiskills/releases/latest",
-                                 "download https://api.github.com/repos/BlackVS/aiskills/tarball/v9.9.9"])
+        r = self.run_boot("200", '{"tag_name":"v9.9.9"}')
+        self.assert_installed(r, self.digest)
+        self.assertEqual(self.calls(), ["api https://api.github.com/repos/BlackVS/aiskills/releases/latest",
+                                        "api https://api.github.com/repos/BlackVS/aiskills/releases/tags/v9.9.9",
+                                        "download Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/1",
+                                        "download Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/2"])
 
-    def test_no_release_falls_back_to_main(self):
-        r, calls = self.run_boot("404")
-        self.assertIn("No release of BlackVS/aiskills found: installing main.", r.stdout)
-        self.assertEqual(calls[1], "download https://api.github.com/repos/BlackVS/aiskills/tarball/main")
+    def test_no_release_needs_the_opt_in(self):
+        r = self.run_boot("404")
+        self.assert_refused(r, "main is not a release (vX.Y.Z)")
+        self.assertIn("No release of BlackVS/aiskills found: falling back to main.", r.stdout)
+        self.log.unlink()
+        r = self.run_boot("404", AI_SKILLS_UNVERIFIED="1")
+        self.assert_installed(r, self.digest)
+        self.assertEqual(self.calls()[1], "download https://api.github.com/repos/BlackVS/aiskills/tarball/main")
 
     def test_lookup_error_stops(self):
         for status, body in (("0", "{}"), ("401", "{}"), ("500", "{}"), ("200", "{}")):
             with self.subTest(status=status):
                 self.log.unlink(missing_ok=True)
-                r, calls = self.run_boot(status, body, ok=False)
-                self.assertIn("could not look up the latest release", r.stdout + r.stderr)
-                self.assertEqual(len(calls), 1, "no archive is downloaded after a failed lookup")
-                self.assertFalse((self.home / ".claude").exists())
+                r = self.run_boot(status, body)
+                self.assert_refused(r, "could not look up the latest release")
+                self.assertEqual(len(self.calls()), 1, "no archive is downloaded after a failed lookup")
 
 
 @unittest.skipUnless(PWSH, "no PowerShell found")
