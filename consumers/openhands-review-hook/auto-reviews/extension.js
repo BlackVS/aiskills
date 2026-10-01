@@ -288,7 +288,10 @@ export function activate(host) {
         const data = await request('/api/review-control/settings', 'PUT', {revision, primary, secondary, fallback});
         if (!disposed) { revision = data.settings.revision; rememberSaved(); for (const slot of [...roles, 'settings']) root.querySelector(`[data-warning="${slot}"]`).textContent = ''; }
         message('Saved. New reviews will use these settings.');
-      } catch { message('Could not save. Settings may have changed, or provider discovery failed. Reload before trying again.'); }
+      } catch (error) {  // the settings API's own text (a full profile store, a changed revision) says what to do
+        const text = error?.response?.error;
+        message(typeof text === 'string' && text ? text : 'Could not save. Settings may have changed, or provider discovery failed. Reload before trying again.');
+      }
       finally { if (!disposed) lock(false); }
     };
     // One provider row. Each button carries an explicit action key; the handler dispatches on the

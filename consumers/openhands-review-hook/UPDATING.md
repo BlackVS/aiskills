@@ -70,6 +70,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.29.5 | A save that needs a new generated profile in a full Canvas profile store (50 agent or 50 LLM profiles) is refused before anything is written, with the counts; app 0.2.9 shows that text. Deploy `canvas_discovery.py` and `review_control.py`, restart `review-control` while idle, re-install and enable app 0.2.9; either order works (an older part shows the generic failure). If saves are refused, delete unselected `review-...` profiles in Canvas. |
 | 1.29.4 | Discovery helper drops the unused config-path variable; Auto Reviews app 0.2.8 shows the server's own message when a connection test is refused. Deploy `canvas_discovery.py` (re-read on every request, no restart) and re-install and enable app 0.2.8; either order works. |
 | 1.29.2 | Auto Reviews app 0.2.7: a refactor of the provider list and editor with no change in behavior. Re-install and enable the app from the repo path (no service restart) to keep the installed copy equal to the repository. |
 | 1.29.1 | Inventory rows carry `editable` and `connection_id`, and Auto Reviews app 0.2.6 uses them instead of parsing provider ids. Deploy `canvas_discovery.py` first (re-read on every request, no restart), then re-install and enable app 0.2.6: on an older helper the new app would show no Edit button. The old app keeps working with the new helper. |
