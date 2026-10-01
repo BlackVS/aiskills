@@ -499,12 +499,28 @@ def discover(provider):
     return {'models': api_models(url, key)}
 
 
+# The request shapes a connection test accepts: a saved provider, a saved connection with
+# an edited URL (and optionally a new token), or an unsaved endpoint with its token.
+PROBE_SHAPES = (frozenset({'provider'}), frozenset({'provider', 'base_url'}),
+                frozenset({'provider', 'base_url', 'api_key'}), frozenset({'base_url', 'api_key'}))
+
+
+def probe_shape(request):
+    """The shape of a valid connection-test request; ValueError for anything else."""
+    if not isinstance(request, dict) or frozenset(request) not in PROBE_SHAPES:
+        raise ValueError('Invalid probe')
+    if not all(isinstance(v, str) and v for v in request.values()):
+        raise ValueError('Invalid probe')
+    return frozenset(request)
+
+
 def probe(request):
     """Read-only connection check; never return provider error bodies or secrets."""
     try:
-        if set(request) == {'provider'} and isinstance(request['provider'], str):
+        shape = probe_shape(request)
+        if shape == {'provider'}:
             models = discover(request['provider'])['models']
-        elif set(request) in ({'provider', 'base_url'}, {'provider', 'base_url', 'api_key'}) and all(isinstance(v, str) and v for v in request.values()):
+        elif 'provider' in shape:
             if not request['provider'].startswith('connection:'):
                 raise ValueError('Only provider connections can be edited')
             cipher, connections, _ = stores()
@@ -517,10 +533,8 @@ def probe(request):
             if 'api_key' not in request and (saved is None or origin(request['base_url']) != saved):
                 raise TokenRequired()
             models = api_models(request['base_url'], request.get('api_key') or connection.api_key_value())
-        elif set(request) == {'base_url', 'api_key'} and all(isinstance(v, str) and v for v in request.values()):
-            models = api_models(request['base_url'], request['api_key'])
         else:
-            raise ValueError('Invalid probe')
+            models = api_models(request['base_url'], request['api_key'])
         if not models:
             return {'ok': False, 'message': 'Connected, but the provider returned no models.'}
         return {'ok': True, 'models': models}

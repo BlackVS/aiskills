@@ -7,8 +7,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from canvas_discovery import normalize_effort
+from canvas_discovery import normalize_effort, probe_shape
 from review_policy import PairMismatch, load_settings, profiles, save_settings
+
+REPLIED = object()  # json_body() already answered the request
 
 
 def discovery(action, **kwargs):
@@ -42,6 +44,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def json_body(self):
+        """The request's JSON body (at most 4 KiB), or REPLIED after a 415 or 413 answer.
+        Unparseable JSON raises ValueError, which each caller answers with its own 400."""
+        if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+            self.reply(415, {'error': 'Use application/json'})
+            return REPLIED
+        length = int(self.headers.get('Content-Length', '0'))
+        if not 0 < length <= 4096 or self.headers.get('Transfer-Encoding'):
+            self.reply(413, {'error': 'Invalid request size'})
+            return REPLIED
+        return json.loads(self.rfile.read(length))
+
     def authorized(self):
         expected = os.environ.get('LOCAL_BACKEND_API_KEY', '')
         supplied = self.headers.get('X-Session-API-Key', '')
@@ -74,14 +88,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(405, {'error': 'Method not allowed'})
                 return
             if write:
-                if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
-                    self.reply(415, {'error': 'Use application/json'})
+                candidate = self.json_body()
+                if candidate is REPLIED:
                     return
-                length = int(self.headers.get('Content-Length', '0'))
-                if not 0 < length <= 4096 or self.headers.get('Transfer-Encoding'):
-                    self.reply(413, {'error': 'Invalid request size'})
-                    return
-                candidate = json.loads(self.rfile.read(length))
                 roles = ('primary', 'secondary', 'fallback')
                 if isinstance(candidate, dict) and any(isinstance(candidate.get(k), dict) for k in roles):
                     candidate = {'secondary': None, **candidate}
@@ -124,18 +133,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(404, {'error': 'Not found'})
             return
         try:
-            if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
-                self.reply(415, {'error': 'Use application/json'})
+            candidate = self.json_body()
+            if candidate is REPLIED:
                 return
-            length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 4096 or self.headers.get('Transfer-Encoding'):
-                self.reply(413, {'error': 'Invalid request size'})
-                return
-            candidate = json.loads(self.rfile.read(length))
-            if not isinstance(candidate, dict) or set(candidate) not in ({'provider'}, {'base_url', 'api_key'}, {'provider', 'base_url'}, {'provider', 'base_url', 'api_key'}):
-                raise ValueError('Invalid probe')
-            if not all(isinstance(v, str) and v for v in candidate.values()):
-                raise ValueError('Invalid probe')
+            probe_shape(candidate)
             self.reply(200, discovery('probe', request=candidate))
         except (ValueError, TypeError):
             self.reply(400, {'error': 'Invalid connection test'})

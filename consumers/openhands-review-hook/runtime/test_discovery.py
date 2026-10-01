@@ -86,13 +86,36 @@ class DiscoveryTests(unittest.TestCase):
             query.assert_called_with('https://example.com', 'new-key')
             connection = SimpleNamespace(api_key_value=lambda: 'saved-key', base_url='https://provider.example/v1',
                                          provider='custom')
+            cipher, opened = object(), []
+            def get(name, cipher=None):
+                opened.append((name, cipher))
+                return connection
             with patch('canvas_discovery.stores') as stores:
-                stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
+                stores.return_value = (cipher, SimpleNamespace(get=get), None)
                 # The same origin, another path: the saved key may be reused.
                 self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://Provider.example:443/v2'})['ok'])
                 query.assert_called_with('https://Provider.example:443/v2', 'saved-key')
                 self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://other.example', 'api_key': 'replacement'})['ok'])
                 query.assert_called_with('https://other.example', 'replacement')
+            self.assertEqual(opened, [('one', cipher)] * 2, 'the connection is opened by name with the server cipher')
+
+    def test_probe_refuses_other_shapes_and_reports_timeouts_and_failures_safely(self):
+        import asyncio
+        with patch('canvas_discovery.api_models') as query, patch('canvas_discovery.discover') as discover:
+            for request in [None, [], {}, {'provider': ''}, {'provider': 7}, {'base_url': 'https://example.com'},
+                            {'base_url': 'https://example.com', 'api_key': ''}, {'api_key': 'key'},
+                            {'provider': 'connection:one', 'api_key': 'key'},
+                            {'base_url': 'https://example.com', 'api_key': 'key', 'extra': 'x'}]:
+                with self.subTest(request=request):
+                    self.assertEqual(probe(request), {'ok': False, 'message': 'Could not discover models. Check the endpoint, token, or account login.'})
+            query.assert_not_called(); discover.assert_not_called()
+        for error in [TimeoutError(), asyncio.TimeoutError()]:
+            with self.subTest(error=type(error)), patch('canvas_discovery.api_models', side_effect=error):
+                self.assertEqual(probe({'base_url': 'https://example.com', 'api_key': 'key'}),
+                                 {'ok': False, 'message': 'Connection timed out. Try again or check the endpoint.'})
+        with patch('canvas_discovery.api_models', side_effect=RuntimeError('private-token in a provider body')):
+            result = probe({'base_url': 'https://example.com', 'api_key': 'private-token'})
+        self.assertEqual(result, {'ok': False, 'message': 'Could not discover models. Check the endpoint, token, or account login.'})
 
     def test_probe_never_sends_a_saved_key_to_another_origin(self):
         from types import SimpleNamespace
