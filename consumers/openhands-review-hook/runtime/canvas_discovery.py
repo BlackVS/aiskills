@@ -266,19 +266,22 @@ def generated_origins():
 
 
 def inventory():
+    """Provider rows for the app. The app treats `id` as opaque: a row it may edit says so with
+    `editable` and carries the Canvas connection's own id in `connection_id`, so the id's
+    namespace (`connection:`, `profile:`, `acp:`) is parsed only on this side."""
     cipher, connections, profiles = stores()
     generated = generated_origins()
     providers = [{'id': 'connection:' + c.id, 'name': c.display_name,
-        'kind': 'api', 'url': c.base_url, 'configured': bool(c.api_key_value())}
+        'kind': 'api', 'url': c.base_url, 'editable': True, 'connection_id': c.id}
         for c in connections.list(cipher=cipher)]
     for summary in profiles.list_summaries():
         if not summary.get('provider_connection_id') and summary.get('api_key_set') and summary['name'] not in generated:
             providers.append({'id': 'profile:' + summary['name'], 'name': summary['name'],
-                'kind': 'api', 'url': summary.get('base_url'), 'configured': True})
+                'kind': 'api', 'url': summary.get('base_url'), 'editable': False})
     for provider, binary, label in [('claude-code', 'claude-agent-acp', 'Claude'), ('codex', 'codex-acp', 'Codex')]:
         if shutil.which(binary):
             providers.append({'id': 'acp:' + provider, 'name': label,
-                'kind': 'subscription', 'configured': True})
+                'kind': 'subscription', 'editable': False})
     for row in providers:
         row['efforts'] = effort_options(row['id'])
         row['switchable'] = row['kind'] == 'api'  # switch_llm exists only for LLM-profile agents

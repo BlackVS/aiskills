@@ -52,6 +52,7 @@ class CanvasIntegrationTests(unittest.TestCase):
             rows = {p['id']: p for p in inventory()['providers']}  # the seam the UI's effort controls key on
             self.assertEqual(rows['connection:test-connection']['efforts'], effort_options('connection:test-connection'))
             self.assertTrue(rows['connection:test-connection']['switchable'])
+            self.assertEqual((rows['connection:test-connection']['editable'], rows['connection:test-connection']['connection_id']), (True, 'test-connection'))
             low = prepare(dict(selected, effort='low'))  # a different effort is a different profile, switch aside
             self.assertNotEqual(low, first); self.assertEqual(prepare(dict(selected, effort='low')), low)
             fast = prepare(dict(selected, effort='low'), switch=True)

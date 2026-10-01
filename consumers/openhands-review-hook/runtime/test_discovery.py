@@ -147,6 +147,26 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://api.openai.com/v1'})['ok'])
             query.assert_called_with('https://api.openai.com/v1', 'saved-key')
 
+    def test_inventory_rows_say_which_are_editable_and_carry_the_connection_id(self):
+        from types import SimpleNamespace
+        from canvas_discovery import inventory
+        decrypted = []
+        def key():  # the inventory has no use for a connection's key
+            decrypted.append(1); return 'secret'
+        connections = SimpleNamespace(list=lambda cipher=None: [SimpleNamespace(id='c-1', display_name='Mine', base_url='https://provider.example/v1', api_key_value=key)])
+        profiles = SimpleNamespace(list_summaries=lambda: [{'name': 'legacy', 'api_key_set': True, 'base_url': 'https://legacy.example'}])
+        with patch('canvas_discovery.stores', return_value=(object(), connections, profiles)), \
+             patch('canvas_discovery.generated_origins', return_value={}), patch('canvas_discovery.selections', return_value={}), \
+             patch('canvas_discovery.shutil.which', side_effect=lambda binary: '/usr/bin/' + binary if binary == 'codex-acp' else None):
+            rows = {row['id']: row for row in inventory()['providers']}
+        self.assertEqual(set(rows), {'connection:c-1', 'profile:legacy', 'acp:codex'})
+        self.assertEqual((rows['connection:c-1']['editable'], rows['connection:c-1']['connection_id']), (True, 'c-1'))
+        for other in ('profile:legacy', 'acp:codex'):
+            self.assertIs(rows[other]['editable'], False)
+            self.assertNotIn('connection_id', rows[other])
+        self.assertFalse(any('configured' in row for row in rows.values()), 'the unread flag is gone')
+        self.assertEqual(decrypted, [], 'listing providers decrypts no key')
+
     @unittest.skipIf(os.name == 'nt', 'the stand-in ACP binary is a POSIX shell script')
     def test_acp_discovery_child_never_receives_the_cipher_key(self):
         import asyncio

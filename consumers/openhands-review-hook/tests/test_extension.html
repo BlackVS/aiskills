@@ -13,7 +13,7 @@ agentServer:{async request({path,method,body}) {
     if(probeFailure) { if(probeFailure.throws) throw Error('HTTP ' + probeFailure.status); return probeFailure.body; }  // an error status, as the host helper may report it
     return probeOK ? {ok:true,models:probeModels} : {ok:false,message:'Authentication rejected.'}; }
   if(method === 'PATCH') { lastUpdate = {...body}; lastUpdatePath = path; writes++; return {}; }
-  if(path === '/api/llm/provider-connections') { writes++; lastProvider = {...body}; providers.push({id:'connection:test',name:body.display_name,kind:'api',url:body.base_url + '/',efforts:['none','low','medium','high','xhigh','max'],switchable:true}); return {id:'test'}; }
+  if(path === '/api/llm/provider-connections') { writes++; lastProvider = {...body}; providers.push({id:'api-7f3c',editable:true,connection_id:'test',name:body.display_name,kind:'api',url:body.base_url + '/',efforts:['none','low','medium','high','xhigh','max'],switchable:true}); return {id:'test'}; }
   if(path.endsWith('/providers')) return {providers: legacy ? providers.map(({efforts, switchable, ...p}) => p) : providers, selections};
   if(path.includes('/models?')) { modelRequests++; if(failModels && path.includes('codex')) throw Error('temporary discovery failure'); if(!providers.some(p => path.includes(encodeURIComponent(p.id)) || path.includes(p.id))) throw Error('Unknown provider'); return {models: path.includes('codex') ? [{id:'astra',label:'Astra'},{id:'sol',label:'Sol'}] : path.includes('claude') ? [{id:'opus',label:'Opus 5'},{id:'fable',label:'Fable 5.1'}] : [{id:'qwen',label:'Qwen'}]}; }
   if(method === 'PUT') { puts++; if(conflict) throw Error('409'); lastSaved = body; settings.revision++;
@@ -64,7 +64,7 @@ try {
   check(modelRequests === beforeList && probeRequests === beforeProbe, 'List models reuses successful add preflight');
   probeModels = [{id:'qwen-fresh',label:'Qwen fresh'}];  // the provider's list changed since the add
   [...apiRow.querySelectorAll('button')].find(button => button.textContent === 'Test connection').click(); await settle();
-  check(probeRequests === beforeProbe + 1 && lastProbe.provider === 'connection:test', 'Test connection always requests fresh discovery');
+  check(probeRequests === beforeProbe + 1 && lastProbe.provider === 'api-7f3c', 'Test connection always requests fresh discovery');
   [...apiRow.querySelectorAll('button')].find(button => button.textContent === 'List models').click(); await settle();
   check(modelRequests === beforeList && probeRequests === beforeProbe + 1, 'List models after Test connection makes no request');
   check(apiRow.querySelector('[data-model-list]').textContent === 'qwen-fresh', 'Test connection refreshed the listed models');
@@ -119,7 +119,7 @@ try {
   check(document.querySelector('[data-new-result]').textContent.includes('unsaved reviewer changes are kept'), 'The edit says the pending change was kept');
   document.querySelector('[data-revert]').click(); await settle();
   check(form.elements.primaryModel.value === 'astra' && document.querySelector('[data-unsaved]').textContent === '', 'Revert still restores the persisted selection');
-  check(lastProbe.provider === 'connection:test' && !('api_key' in lastProbe), 'Edit checks existing credential');
+  check(lastProbe.provider === 'api-7f3c' && !('api_key' in lastProbe), 'Edit checks existing credential');
   // reasoning effort and the secondary (reading) profile of combined mode
   check(form.elements.primaryEffort.value === '' && form.elements.primaryEffort.options.length === 5 && form.elements.primaryEffort.options[0].text === 'Adapter default' && !form.elements.primaryEffort.disabled, 'Codex account: adapter default plus four selectable efforts');
   check(form.elements.secondaryProvider.disabled && document.querySelector('[data-secondary-hint]').textContent.includes('API provider'), 'Account primary: secondary unavailable with a hint');
@@ -127,22 +127,22 @@ try {
   check(form.elements.fallbackEffort.disabled && form.elements.fallbackEffort.options.length === 1 && form.elements.fallbackEffort.options[0].text.includes('not selectable') && form.elements.fallbackEffort.value === '', 'Claude account: effort not selectable');
   form.elements.primaryEffort.value='xhigh'; form.elements.primaryEffort.dispatchEvent(new Event('change')); form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.primary.effort === 'xhigh' && lastSaved.primary.model === 'astra' && lastSaved.secondary === null, 'Effort saved with the selection');
-  form.elements.primaryProvider.value='connection:test'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
+  form.elements.primaryProvider.value='api-7f3c'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.primaryEffort.value === 'high' && !form.elements.secondaryProvider.disabled, 'API primary: default effort high, secondary available');
   check([...form.elements.secondaryProvider.options].every(option => !option.value.startsWith('acp:')), 'Secondary lists API providers only');
-  form.elements.secondaryProvider.value='connection:test'; form.elements.secondaryProvider.dispatchEvent(new Event('change')); await settle();
+  form.elements.secondaryProvider.value='api-7f3c'; form.elements.secondaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.querySelector('[type=submit]').disabled, 'Identical primary and secondary cannot be saved');
   form.elements.secondaryEffort.value='low'; form.elements.secondaryEffort.dispatchEvent(new Event('change')); form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
-  check(JSON.stringify(lastSaved.secondary) === JSON.stringify({provider:'connection:test',model:'qwen',effort:'low'}) && lastSaved.primary.effort === 'high', 'Combined mode saved: secondary with its own effort');
+  check(JSON.stringify(lastSaved.secondary) === JSON.stringify({provider:'api-7f3c',model:'qwen',effort:'low'}) && lastSaved.primary.effort === 'high', 'Combined mode saved: secondary with its own effort');
   document.querySelector('[data-reload]').click(); await settle();
-  check(form.elements.primaryEffort.value === 'high' && form.elements.secondaryProvider.value === 'connection:test' && form.elements.secondaryEffort.value === 'low' && document.querySelector('[data-secondary-hint]').textContent === '', 'Saved effort and secondary restored after reload; hint cleared');
+  check(form.elements.primaryEffort.value === 'high' && form.elements.secondaryProvider.value === 'api-7f3c' && form.elements.secondaryEffort.value === 'low' && document.querySelector('[data-secondary-hint]').textContent === '', 'Saved effort and secondary restored after reload; hint cleared');
   selections['saved-primary'].effort = 'turbo'; document.querySelector('[data-reload]').click(); await settle();
   check(form.elements.primaryEffort.value === 'high', 'A saved effort the provider no longer offers falls back to the default');
   form.elements.primaryProvider.value='acp:codex'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.secondaryProvider.value === '' && form.elements.secondaryProvider.disabled && form.elements.primaryModel.value === 'astra', 'Switching primary to an account agent clears and disables the secondary');
   check(document.querySelector('[data-unsaved]').textContent === 'Unsaved changes' && !form.querySelector('[type=submit]').disabled, 'Clearing the secondary is an unsaved change');
   document.querySelector('[data-revert]').click(); await settle();
-  check(form.elements.primaryProvider.value === 'connection:test' && form.elements.secondaryProvider.value === 'connection:test' && form.elements.secondaryEffort.value === 'low' && !form.elements.secondaryProvider.disabled && document.querySelector('[data-unsaved]').textContent === '', 'Revert restores the saved combined-mode pairing');
+  check(form.elements.primaryProvider.value === 'api-7f3c' && form.elements.secondaryProvider.value === 'api-7f3c' && form.elements.secondaryEffort.value === 'low' && !form.elements.secondaryProvider.disabled && document.querySelector('[data-unsaved]').textContent === '', 'Revert restores the saved combined-mode pairing');
   form.elements.primaryProvider.value='acp:codex'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === settings.revision - 1 && lastSaved.primary.effort === null && lastSaved.secondary === null && lastSaved.fallback.provider === 'acp:claude-code' && lastSaved.fallback.effort === null, 'Save carries the revision and the fallback with its effort');

@@ -248,11 +248,11 @@ export function activate(host) {
             return button;
           });
           item.append(title, ...buttons, result);
-          if (p.kind === 'api' && p.id.startsWith('connection:')) {
+          if (p.editable) {  // the server says which rows are Canvas connections; ids are opaque here
             const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Edit';
             edit.onclick = () => {
               if (busy) return;
-              editingProvider = p.id;
+              editingProvider = p;
               add.elements.display_name.value = p.name; add.elements.base_url.value = p.url || '';
               add.elements.api_key.value = ''; add.elements.api_key.required = false; add.elements.api_key.setCustomValidity('');
               add.elements.api_key.placeholder = 'Leave blank to keep the current token';
@@ -365,25 +365,28 @@ export function activate(host) {
       lock(true); message('Testing provider authentication and model discovery…'); feedback.textContent = '';
       try {
         const probe = {base_url: body.base_url};
-        if (editingProvider) probe.provider = editingProvider;
+        if (editingProvider) probe.provider = editingProvider.id;
         if (body.api_key) probe.api_key = body.api_key;
         const checked = await testProvider(probe);
         if (disposed) return;
         if (!checked.ok) { feedback.textContent = checked.message + ' Provider was not saved.'; message(feedback.textContent); return; }
         if (!save) { feedback.textContent = `Connection check passed: ${checked.models.length} models. Nothing saved; no inference request sent.`; message(feedback.textContent); return; }
         message('Connection check passed. Saving provider…');
+        let created = null;
         if (editingProvider) {
           const update = {display_name: body.display_name, base_url: body.base_url};
           if (body.api_key) update.api_key = body.api_key;
-          await request('/api/llm/provider-connections/' + encodeURIComponent(editingProvider.slice('connection:'.length)), 'PATCH', update);
-          modelCache.set(cacheKey({id: editingProvider}), Promise.resolve({models: checked.models}));
+          await request('/api/llm/provider-connections/' + encodeURIComponent(editingProvider.connection_id), 'PATCH', update);
+          modelCache.set(cacheKey(editingProvider), Promise.resolve({models: checked.models}));
         } else {
-          const created = await request('/api/llm/provider-connections', 'POST', body);
-          modelCache.set(cacheKey({id: 'connection:' + created.id}), Promise.resolve({models: checked.models}));
+          created = await request('/api/llm/provider-connections', 'POST', body);
         }
         if (disposed) return;
         const pending = hasChanges() ? currentSelection() : null;
         resetProviderEditor(); await load(false, pending);
+        // a new connection's row (and so its cache key) is known only once the inventory lists it
+        const added = created && providers.find(provider => provider.connection_id === created.id);
+        if (added) modelCache.set(cacheKey(added), Promise.resolve({models: checked.models}));
         feedback.textContent = 'Provider tested and saved in Canvas.' + (pending ? ' Your unsaved reviewer changes are kept; save them when ready.' : '');
         message(feedback.textContent);
       } catch { if (!disposed) { feedback.textContent = 'Could not complete the provider check or save. Reload to check saved connections before retrying.'; message(feedback.textContent); } }
