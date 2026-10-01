@@ -154,7 +154,9 @@ class DiscoveryTests(unittest.TestCase):
             out, binary = Path(temp) / 'seen', Path(temp) / 'fake-acp'
             binary.write_text('#!/bin/sh\n'
                               'if [ -n "${OH_SECRET_KEY+x}" ]; then echo inherited; else echo absent; fi > "$FAKE_ACP_OUT"\n'
-                              'echo "$KEEP_ME" >> "$FAKE_ACP_OUT"\n')
+                              'echo "$KEEP_ME" >> "$FAKE_ACP_OUT"\n'
+                              'read -r request\n')  # take the initialize request before exiting: otherwise the
+            # write can meet an already closed pipe and fail with ConnectionResetError instead
             binary.chmod(0o755)
             with patch.dict(os.environ, {'OH_SECRET_KEY': 'test-only-value', 'FAKE_ACP_OUT': str(out), 'KEEP_ME': 'kept'}):
                 with self.assertRaises(ValueError):  # the stand-in answers nothing, so discovery fails
