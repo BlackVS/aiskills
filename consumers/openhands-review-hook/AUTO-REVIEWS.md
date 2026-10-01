@@ -1,6 +1,6 @@
 # Auto Reviews Canvas App
 
-The app and portable runtime live in ai-skills. Site configuration, credentials,
+The app and portable runtime live in aiskills. Site configuration, credentials,
 and saved selections remain on each hands host. Requires Canvas host API 1 and
 the Canvas Extensions backend API (verified on Agent Canvas 1.17.0).
 
@@ -257,7 +257,7 @@ host integration.
 
 ## Upgrade and rollback
 
-Update app and runtime together from a pinned ai-skills revision. Code changes
+Update app and runtime together from a pinned aiskills revision. Code changes
 need a service restart; prompt and selection changes do not with this runtime.
 The app uses the current beta Canvas API, so check it after Canvas upgrades.
 

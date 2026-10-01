@@ -35,7 +35,7 @@ CLIENTS = {  # key: (npm package, executable inside the prefix)
     "gemini": ("@google/gemini-cli@0.61.0", "bin/gemini"),
 }
 CORE = {"architecture-review", "oh-code-review", "oh-technical-writing"}
-MARKER = "ai-skills:review-gates start"
+MARKER = "aiskills:review-gates start"
 NOWHERE = "http://127.0.0.1:9"  # nothing listens there: a model request fails instead of being sent
 results = []
 
@@ -237,14 +237,14 @@ def main():
     ap.add_argument("--latest-clients", action="store_true", help="install each client's latest version instead of the pinned one")
     ap.add_argument("--workdir", type=pathlib.Path, help="where clients and scratch homes go (kept afterwards)")
     a = ap.parse_args()
-    work = a.workdir or pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-clients-"))
+    work = a.workdir or pathlib.Path(tempfile.mkdtemp(prefix="aiskills-clients-"))
     work.mkdir(parents=True, exist_ok=True)
     archive = None
     if not a.release:
-        archive = work / "ai-skills.tar.gz"
+        archive = work / "aiskills.tar.gz"
         # the working tree's tracked files, uncommitted edits included (stash create leaves the tree alone)
         tree = subprocess.run(["git", "stash", "create"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip() or "HEAD"
-        subprocess.run(["git", "archive", "--format=tar.gz", "--prefix=ai-skills/", "-o", str(archive), tree], cwd=ROOT, check=True)
+        subprocess.run(["git", "archive", "--format=tar.gz", "--prefix=aiskills/", "-o", str(archive), tree], cwd=ROOT, check=True)
     print(f"work directory: {work}\ninstalling clients ...", flush=True)
     bins = install_clients(work, a.latest_clients)
     for key, exe in bins.items():

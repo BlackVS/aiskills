@@ -78,7 +78,7 @@ publish)
   if ! has_tag; then
     [ "$create" = --create ] || fail "tag $TAG does not exist"
     git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-      tag -a "$TAG" HEAD -m "ai-skills $ver"
+      tag -a "$TAG" HEAD -m "aiskills $ver"
     git push -q origin "refs/tags/$TAG"
     echo "created tag $TAG at $(git rev-parse --short HEAD)"
   fi
@@ -94,7 +94,7 @@ publish)
   latest=false; [ "$newest" = "$TAG" ] && latest=true
   echo "newest tag on origin: $newest; $TAG latest: $latest"
   gh release create "$TAG" dist/* --verify-tag --latest="$latest" \
-    --title "ai-skills $ver" --notes-file release_notes.md
+    --title "aiskills $ver" --notes-file release_notes.md
   ;;
 *)
   fail "usage: release.sh resolve | prepare|publish vX.Y.Z [--create]"

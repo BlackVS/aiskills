@@ -1,4 +1,4 @@
-# Updating a hands site after an ai-skills release
+# Updating a hands site after an aiskills release
 
 Operator checklist for whoever runs a `hands` review deployment (site A,
 site B, or a new site). The receiver code never changes for a skill release;

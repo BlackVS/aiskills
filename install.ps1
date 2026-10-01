@@ -220,8 +220,12 @@ if ($User -and $Prompts -and (Test-Path $OpenCodeDir -PathType Container) -and (
 }
 
 # --- managed "Code review gates" block in agent instruction files ---
-$BlockStart = '<!-- ai-skills:review-gates start (managed by install.sh, do not edit inside) -->'
-$BlockEnd = '<!-- ai-skills:review-gates end -->'
+$BlockStart = '<!-- aiskills:review-gates start (managed by install.sh, do not edit inside) -->'
+$BlockEnd = '<!-- aiskills:review-gates end -->'
+# Releases before 1.27.0 named the set ai-skills and marked the block that way: an old block is
+# replaced like a current one, so an upgrade never leaves two.
+$OldBlockStart = '<!-- ai-skills:review-gates start (managed by install.sh, do not edit inside) -->'
+$OldBlockEnd = '<!-- ai-skills:review-gates end -->'
 function Write-Block([string]$File) {
     if ($DryRun) { Write-Host "  [dry-run] write review-gates block into $File"; return }
     $dir = Split-Path $File -Parent
@@ -233,9 +237,9 @@ function Write-Block([string]$File) {
     $kept = New-Object System.Collections.Generic.List[string]
     $skip = $false
     foreach ($l in $lines) {
-        if ($l -eq $BlockStart) { $skip = $true }
+        if ($l -eq $BlockStart -or $l -eq $OldBlockStart) { $skip = $true }
         if (-not $skip) { $kept.Add($l) }
-        if ($l -eq $BlockEnd) { $skip = $false }
+        if ($l -eq $BlockEnd -or $l -eq $OldBlockEnd) { $skip = $false }
     }
     while ($kept.Count -gt 0 -and $kept[$kept.Count - 1].Trim() -eq '') { $kept.RemoveAt($kept.Count - 1) }
     if ($kept.Count -gt 0) { $kept.Add('') }

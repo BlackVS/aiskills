@@ -1,10 +1,10 @@
 ---
 name: custom-codereview-guide
-description: Repository-specific review context for ai-skills, including runtime contracts observed on the reference hands site, so reviews do not re-derive or re-open them.
+description: Repository-specific review context for aiskills, including runtime contracts observed on the reference hands site, so reviews do not re-derive or re-open them.
 triggers: [/oh-codereview]
 ---
 
-# Review guide for ai-skills
+# Review guide for aiskills
 
 Read this on top of the `oh-code-review` rules. It records facts a review cannot
 see in the source, with the date and the way they were observed, and the

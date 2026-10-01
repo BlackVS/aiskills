@@ -5,7 +5,7 @@ name: Release
 #   - Actions -> Release -> Run workflow on main with the version (1.22.1):
 #     tags the tip of main and publishes. Given an existing tag, it publishes
 #     that tag instead (for example after a run that failed or was cancelled).
-#   - Push a tag on main: git tag -a v1.22.1 origin/main -m "ai-skills 1.22.1" && git push origin v1.22.1
+#   - Push a tag on main: git tag -a v1.22.1 origin/main -m "aiskills 1.22.1" && git push origin v1.22.1
 # The one-line installers install the latest release, so a release is what
 # users get by default.
 on:

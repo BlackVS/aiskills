@@ -12,22 +12,22 @@ CORE = ("architecture-review", "oh-code-review", "oh-technical-writing")
 
 def build_archive(tmp):
     """A tar.gz of the working tree's tracked files with the top-level prefix the forge uses."""
-    out = tmp / "ai-skills.tar.gz"
-    subprocess.run(["git", "archive", "--format=tar.gz", "--prefix=ai-skills/", "-o", str(out), "HEAD"], cwd=ROOT, check=True)
+    out = tmp / "aiskills.tar.gz"
+    subprocess.run(["git", "archive", "--format=tar.gz", "--prefix=aiskills/", "-o", str(out), "HEAD"], cwd=ROOT, check=True)
     # the working tree may be ahead of HEAD while developing: overlay the current installers and skills
-    stage = tmp / "stage"; shutil.rmtree(stage, ignore_errors=True); (stage / "ai-skills").mkdir(parents=True)
+    stage = tmp / "stage"; shutil.rmtree(stage, ignore_errors=True); (stage / "aiskills").mkdir(parents=True)
     for name in ("install.sh", "install.ps1", "VERSION", "boot.sh", "boot.ps1"):
-        shutil.copy(ROOT / name, stage / "ai-skills" / name)
-    shutil.copytree(ROOT / "skills", stage / "ai-skills" / "skills")
-    shutil.copytree(ROOT / "prompts", stage / "ai-skills" / "prompts")
-    shutil.copytree(ROOT / "agents", stage / "ai-skills" / "agents")
-    subprocess.run(["tar", "-czf", str(out), "-C", str(stage), "ai-skills"], check=True)
+        shutil.copy(ROOT / name, stage / "aiskills" / name)
+    shutil.copytree(ROOT / "skills", stage / "aiskills" / "skills")
+    shutil.copytree(ROOT / "prompts", stage / "aiskills" / "prompts")
+    shutil.copytree(ROOT / "agents", stage / "aiskills" / "agents")
+    subprocess.run(["tar", "-czf", str(out), "-C", str(stage), "aiskills"], check=True)
     return out
 
 
 class BootContract:
     def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-boot-"))
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-boot-"))
         self.home = self.tmp / "home"; self.home.mkdir()
         self.archive = build_archive(self.tmp)
 
@@ -41,7 +41,7 @@ class BootContract:
                 self.assertTrue((self.home / client_dir / s / "SKILL.md").is_file(), f"~/{client_dir}/{s} missing")
         self.assertTrue((self.home / ".claude/prompts").is_dir(), "prompts copied by the default flags")
         self.assertIn("Prompts installed to:", r.stdout); self.assertNotIn("Prompts to start from", r.stdout)  # never the deleted download
-        self.assertIn("ai-skills:review-gates start", (self.home / ".claude/CLAUDE.md").read_text(encoding="utf-8"))
+        self.assertIn("aiskills:review-gates start", (self.home / ".claude/CLAUDE.md").read_text(encoding="utf-8"))
 
 
 @unittest.skipUnless(BASH, "no bash found")
@@ -67,7 +67,7 @@ class BashBoot(BootContract, unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         for client_dir in (".claude/skills", ".agents/skills"):
             self.assertTrue((repo / client_dir / "oh-code-review/SKILL.md").is_file(), f"{client_dir} missing")
-        self.assertIn("ai-skills:review-gates start", (repo / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertIn("aiskills:review-gates start", (repo / "AGENTS.md").read_text(encoding="utf-8"))
         self.assertFalse((self.home / ".claude").exists(), "project level touches no user directory")
 
     def test_bad_archive_is_reported(self):
@@ -104,7 +104,7 @@ class BashBootRelease(unittest.TestCase):
     there is none, and stops when the lookup fails."""
 
     def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-boot-rel-"))
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-boot-rel-"))
         self.home = self.tmp / "home"; self.home.mkdir()
         self.bin = self.tmp / "bin"; self.bin.mkdir()
         (self.bin / "curl").write_text(FAKE_CURL); (self.bin / "curl").chmod(0o755)
@@ -186,7 +186,7 @@ class PowerShellBootRelease(unittest.TestCase):
     """The authenticated lookup of boot.ps1: 404 means no release, any other failure stops."""
 
     def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ai-skills-boot-rel-"))
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-boot-rel-"))
         self.home = self.tmp / "home"; self.home.mkdir()
         self.archive = build_archive(self.tmp); self.log = self.tmp / "calls.log"
 
@@ -249,7 +249,7 @@ class PowerShellBoot(BootContract, unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         for client_dir in (".claude/skills", ".agents/skills"):
             self.assertTrue((repo / client_dir / "oh-code-review/SKILL.md").is_file(), f"{client_dir} missing")
-        self.assertIn("ai-skills:review-gates start", (repo / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertIn("aiskills:review-gates start", (repo / "AGENTS.md").read_text(encoding="utf-8"))
         self.assertFalse((self.home / ".claude").exists(), "project level touches no user directory")
 
     def test_bad_archive_is_reported(self):

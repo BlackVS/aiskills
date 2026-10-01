@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-10-01
+
+### Changed
+- The set is named `aiskills` everywhere, like its repository; `ai-skills`
+  remained in the docs, the gates block, release titles and tag messages,
+  user agents and temporary-file prefixes. The `AI_SKILLS_*` environment
+  variables of the one-line installers keep their names.
+- The review-gates block the installers write is now marked
+  `<!-- aiskills:review-gates start ... -->` / `<!-- aiskills:review-gates end -->`.
+  Both installers also recognize the old `ai-skills:` markers and replace a
+  block written by an earlier release, so an upgrade leaves one block, never
+  two; text outside the block is kept. Anything that searched an instruction
+  file for the old marker should search for the new one.
+
 ## [1.26.7] - 2026-10-01
 
 ### Changed
