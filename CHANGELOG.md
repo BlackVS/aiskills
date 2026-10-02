@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.7] - 2026-10-02
+
+### Fixed
+- Auto Reviews app 0.2.10: when a saved secondary reading profile was deleted
+  or broken and the primary was then switched to an account agent, the app
+  cleared and disabled the secondary but kept its warning, and the open
+  warning kept Save disabled. Clearing the secondary now clears its warning
+  too, so Save is enabled for the new choice. A fixture case covers it.
+
 ## [1.29.6] - 2026-10-01
 
 ### Added
