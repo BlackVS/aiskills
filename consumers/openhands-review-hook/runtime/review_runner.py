@@ -137,12 +137,19 @@ class RunStore:
     def key(repo, num):
         return f'{repo}#{num}'
 
-    def _read(self):
+    def _read(self, strict=False):
+        """The runs on disk. An unreadable file reads as empty, except under `strict`, where a
+        read error (the file may be intact and readable again later) gives None. Content that
+        is not JSON reads as empty either way: writes replace the file atomically, so it stays
+        unparseable, and a record in it can never be resumed."""
         try:
             runs = json.loads(self.path.read_text())
         except FileNotFoundError:
             return {}
-        except (OSError, ValueError) as error:
+        except OSError as error:
+            self.log(f'run state unreadable{"" if strict else ", starting empty"}: {self.path.name}: {type(error).__name__}')
+            return None if strict else {}
+        except ValueError as error:
             self.log(f'run state unreadable, starting empty: {self.path.name}: {type(error).__name__}')
             return {}
         return runs if isinstance(runs, dict) else {}
@@ -177,9 +184,12 @@ class RunStore:
             return self._write(runs)
 
     def clear(self, repo, num):
-        """True when no record of the run is left to resume."""
+        """True when no record of the run is left to resume. A file that cannot be read is
+        not proof of that: the record may still be there after a restart."""
         with self.lock:
-            runs = self._read()
+            runs = self._read(strict=True)
+            if runs is None:
+                return False
             if runs.pop(self.key(repo, num), None) is None:
                 return True
             return self._write(runs)

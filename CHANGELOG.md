@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.8] - 2026-10-02
+
+### Fixed
+- Auto Reviews runner: a run-state file that cannot be read no longer counts
+  as "no record". `RunStore.clear()` turned a read error into an empty state
+  and reported the previous attempt's record as removed, so after a transient
+  read failure, a failed fallback save and a restart, the old record could
+  resume and start a second fallback. A read error now makes `clear()` report
+  failure, and the runner then does not start the fallback (as it already did
+  when the record could not be written away). Content that is not JSON still
+  reads as empty: writes replace the file atomically, so it stays unparseable
+  and holds nothing that could resume. A fault-injection test covers the
+  failed read before the fallback and the resume that follows.
+
 ## [1.29.7] - 2026-10-02
 
 ### Fixed
