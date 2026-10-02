@@ -17,7 +17,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
   not reviewed again. A base-only update is the typical case. The poller posts
   "patch unchanged since <old head>; previous verdict stands", naming both
   heads and both identities, labels the request done and starts no
-  conversation. The identity is `verify-delivery`'s digest of GitHub's
+  conversation. The PR is read again after the comparison: one that moved to
+  another head or closed meanwhile fails as stale and is never completed. The
+  identity is `verify-delivery`'s digest of GitHub's
   three-dot compare diff, so the runtime and the delivery check agree; a test
   keeps the two functions identical. The note is not a review, so it never
   satisfies `verify-delivery`. A request for the same head, an explicit

@@ -495,12 +495,16 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(failures)
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
-    def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra'):
+    def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None):
         """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
         to its change's patch identity, or is an exception the identity lookup raises."""
         starts, labels, failures, notes, logs, asked = [], [], [], [], [], []
+        reads = []
         def api(path):
-            if path.endswith('/pulls/1'):
+            if path.endswith('/pulls/1'):  # `later`: the PR as it reads from the third read on
+                reads.append(path)
+                if later and len(reads) > 2:
+                    return later
                 return {'state': 'open', 'head': {'sha': head}, 'base': {'ref': 'main'}}
             if path == '/repos/owner/repo/issues/1/comments':
                 return comments
@@ -564,6 +568,18 @@ class RunnerTests(unittest.TestCase):
         starts, _, _, notes, _, asked = self.unchanged([self.review_comment(old)], {old: 'same', HEAD: 'same'},
                                                        label='review-this:codex-astra')
         self.assertEqual((len(starts), notes, asked), (1, [], []), 'an explicit profile request always runs a review')
+
+    def test_a_pr_that_moves_or_closes_during_the_check_is_never_completed(self):
+        # read 1 fixes the head (_start), read 2 gives the base, read 3 confirms the head after
+        # the comparison: a PR that moved to another patch or closed fails as stale, unlabelled done
+        old = 'b' * 40
+        for name, later in [('moved', {'state': 'open', 'head': {'sha': 'd' * 40}, 'base': {'ref': 'main'}}),
+                            ('closed', {'state': 'closed', 'head': {'sha': HEAD}, 'base': {'ref': 'main'}})]:
+            with self.subTest(name):
+                starts, labels, failures, notes, logs, asked = self.unchanged([self.review_comment(old)], {old: 'same', HEAD: 'same'}, later=later)
+                self.assertEqual((starts, notes), ([], []), 'no note and no conversation for a superseded head')
+                self.assertEqual([f[-1] for f in failures], ['the pull request changed or closed; request a fresh review'])
+                self.assertNotIn(('owner/repo', 1, 'hands-reviewed', True), labels)
 
     def test_patch_identity_is_verify_deliverys(self):
         import importlib.util

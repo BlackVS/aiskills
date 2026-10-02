@@ -315,8 +315,10 @@ class Runner:
         identity of the change at `head`: the review would be repeated on the same patch.
         Says so on the PR, names both heads and both identities, and labels the request done
         without starting a conversation. The note is not a review: it never starts with the
-        review marker line, so a delivery check cannot count it. Anything unexpected (no
-        diff, a binary change, a forge error) gives False, and the request is reviewed."""
+        review marker line, so a delivery check cannot count it. A PR that moved off `head` or
+        closed while the identities were compared fails the request as stale (True: handled),
+        never completes it. Anything unexpected (no diff, a binary change, a forge error)
+        gives False, and the request is reviewed."""
         if not self.change_identity or not self.note:
             return False
         try:
@@ -329,6 +331,10 @@ class Runner:
             was, now = self.change_identity(repo, base, old), self.change_identity(repo, base, head)
             if was != now:
                 return False
+            current = self.api(f'/repos/{repo}/pulls/{num}')  # the comparison was for `head`: it must still be the PR's
+            if current.get('state') != 'open' or current['head']['sha'] != head:
+                self.fail(repo, num, 'the pull request changed or closed; request a fresh review')
+                return True
             self.note(repo, num, f'patch unchanged since {old}; previous verdict stands ({verdict}). The change at head '
                                  f'{head} has patch identity {now}, the same as at the reviewed head {old} ({was}), so no '
                                  'new review was run. A fresh review on this head: add `review-this:<profile>`.')
