@@ -106,7 +106,8 @@ starting with `review-` (and `auto-review-`) are reserved for the app; several
 hand-made inline-key profiles sharing one endpoint and key count as one source.
 A generated API-provider agent profile sets only its LLM profile and the switch
 tool, so it runs on the SDK's agent defaults: on SDK 1.49.1 that is the
-summarizing condenser at 240 events with no token trigger, and no tools or
+summarizing condenser at 240 events with no token cap of its own (the SDK still
+condenses when a conversation reaches the model's input limit), and no tools or
 condenser tuning are taken from a hand-made agent profile of the same source.
 This keeps every generated primary and reading profile identical outside the
 fields combined mode allows to differ. A generated account-agent profile copies

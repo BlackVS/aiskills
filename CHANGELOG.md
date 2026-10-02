@@ -14,7 +14,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 ### Changed
 - Auto Reviews docs: AUTO-REVIEWS states that generated API-provider agent
   profiles run on the SDK's agent defaults, including the condenser (240
-  events, no token trigger, on SDK 1.49.1). They take no tools or condenser
+  events and no token cap of its own on SDK 1.49.1; the SDK still condenses at
+  the model's input limit). They take no tools or condenser
   tuning from a hand-made source profile, which keeps generated primary and
   reading profiles matching for combined mode. A duplicated word in the same
   paragraph is fixed. Nothing to deploy.
