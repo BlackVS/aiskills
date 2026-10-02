@@ -130,7 +130,10 @@ export function activate(host) {
       const primary = select('primary', 'Provider').value, unknown = !!primary && !providerOf(primary);
       const allowed = switchable(primary) || unknown;  // an unavailable primary keeps the saved secondary until a person decides
       const picker = select('secondary', 'Provider');
-      if (!allowed && picker.value) { picker.value = ''; select('secondary', 'Model').replaceChildren(); select('secondary', 'Effort').replaceChildren(); }
+      if (!allowed && picker.value) {  // the cleared choice takes its warning with it: nothing is left to replace
+        picker.value = ''; select('secondary', 'Model').replaceChildren(); select('secondary', 'Effort').replaceChildren();
+        root.querySelector('[data-warning="secondary"]').textContent = '';
+      }
       picker.disabled = busy || !allowed;
       select('secondary', 'Model').disabled = busy || !allowed || !picker.value;
       select('secondary', 'Effort').disabled = busy || !allowed || !picker.value || !effortSelectable('secondary');

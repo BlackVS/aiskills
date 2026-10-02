@@ -193,6 +193,15 @@ try {
   check(brokenForm.elements.primaryProvider.value === 'unavailable' && brokenForm.querySelector('[type=submit]').disabled, 'Revert returns to the broken saved profile, which still cannot be saved');
   brokenForm.elements.primaryProvider.value='acp:codex'; brokenForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   brokenForm.elements.fallbackProvider.value=''; brokenForm.elements.fallbackProvider.dispatchEvent(new Event('change')); await settle();
+  // a deleted secondary under an API primary: switching the primary to an account agent clears the secondary, and its warning with it
+  selections.apideep = {provider:'api-7f3c', model:'qwen', effort:'high', switch:false};
+  settings.primary = 'apideep'; settings.secondary = 'ghost-reading'; settings.fallback = null; problems = {secondary: "agent profile 'ghost-reading' no longer exists"};
+  document.querySelector('[data-reload]').click(); await settle();
+  const ghostForm = document.querySelector('[data-review]');
+  check(warn('secondary').includes('"ghost-reading"') && ghostForm.elements.secondaryProvider.value === 'unavailable' && ghostForm.querySelector('[type=submit]').disabled, 'A deleted secondary is warned about and blocks Save');
+  ghostForm.elements.primaryProvider.value='acp:codex'; ghostForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
+  check(ghostForm.elements.secondaryProvider.value === '' && ghostForm.elements.secondaryProvider.disabled && warn('secondary') === '' && !ghostForm.querySelector('[type=submit]').disabled, 'An account primary clears the deleted secondary and its warning, and Save is enabled');
+  delete selections.apideep;
   problems = {};
   // an unreadable settings file: the tab still loads with nothing selected and says so; an explicit Save replaces it
   settings.primary = null; settings.fallback = null; settings.revision = 0; problems = {settings: 'the saved settings file cannot be read (Expecting value); choose profiles and save to replace it'};
@@ -202,6 +211,6 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person, effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>

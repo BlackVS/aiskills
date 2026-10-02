@@ -71,6 +71,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.29.7 | Auto Reviews app 0.2.10: switching the primary to an account agent clears a deleted secondary's warning along with the secondary, so Save is no longer stuck. Re-install and enable app 0.2.10; no runtime file changes, no restart. |
 | 1.29.5 | A save that needs a new generated profile in a full Canvas profile store (50 agent or 50 LLM profiles) is refused before anything is written, with the counts; app 0.2.9 shows that text. Deploy `canvas_discovery.py` and `review_control.py`, restart `review-control` while idle, re-install and enable app 0.2.9; either order works (an older part shows the generic failure). If saves are refused, delete unselected `review-...` profiles in Canvas. |
 | 1.29.4 | Discovery helper drops the unused config-path variable; Auto Reviews app 0.2.8 shows the server's own message when a connection test is refused. Deploy `canvas_discovery.py` (re-read on every request, no restart) and re-install and enable app 0.2.8; either order works. |
 | 1.29.2 | Auto Reviews app 0.2.7: a refactor of the provider list and editor with no change in behavior. Re-install and enable the app from the repo path (no service restart) to keep the installed copy equal to the repository. |
