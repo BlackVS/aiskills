@@ -1,4 +1,5 @@
 """One review, optionally one quota/rate-limit fallback, with a fixed source head."""
+import hashlib
 import json
 import os
 import re
@@ -89,6 +90,51 @@ def valid_review(comment, marker, head, bot=None):
     match = re.match(re.escape(marker) + r' reviewed at head ([0-9a-f]{7,40})\b', body)
     return bool(match and head.startswith(match[1]) and
                 re.search(r'^VERDICT\s*\n(?:READY_FOR_HUMAN_MERGE|RETURN_TO_IMPLEMENTATION)\b', body, re.M))
+
+
+def review_verdict(comment, marker, bot=None):
+    """(reviewed head as written, verdict) of a review comment, else None."""
+    if bot and comment.get('user', {}).get('login') != bot:
+        return None
+    body = comment.get('body', '')
+    match = re.match(re.escape(marker) + r' reviewed at head ([0-9a-f]{7,40})\b', body)
+    verdict = re.search(r'^VERDICT\s*\n(READY_FOR_HUMAN_MERGE|RETURN_TO_IMPLEMENTATION)\b', body, re.M)
+    return (match[1], verdict[1]) if match and verdict else None
+
+
+def patch_identity(diff):
+    """(digest, number of files) of a unified git diff. The same function as
+    verify-delivery's (skills/verify-delivery/verify_delivery.py; a test keeps the two
+    identical), so a change keeps its identity across a base-only update exactly when the
+    delivery check would accept the earlier review for it.
+
+    Kept, in order: each "diff --git" line, the mode, new/deleted file and rename/copy lines,
+    and every hunk line: context, added, removed and "\\ No newline". Dropped: index lines,
+    the ---/+++ lines, hunk headers with their line numbers, similarity scores and blank
+    separator lines. Only CRLF line endings are normalised; the bytes are hashed as they are.
+    A binary or empty change has no identity (ValueError)."""
+    if isinstance(diff, str):
+        diff = diff.encode('utf-8')
+    kept, files, in_hunk = [], 0, False
+    for line in diff.replace(b'\r\n', b'\n').split(b'\n'):
+        if line.startswith(b'diff --git '):
+            files, in_hunk = files + 1, False
+            kept.append(line)
+        elif not files or not line:
+            continue
+        elif line.startswith(b'@@'):
+            in_hunk = True
+        elif in_hunk and line[:1] in (b' ', b'+', b'-', b'\\'):
+            kept.append(line)
+        elif not line.strip():
+            continue
+        elif line.startswith((b'Binary files ', b'GIT binary patch')):
+            raise ValueError('the change includes a binary file')
+        elif not line.startswith((b'index ', b'--- ', b'+++ ', b'similarity index ', b'dissimilarity index ')):
+            kept.append(line)
+    if not files:
+        raise ValueError('the change is empty')
+    return hashlib.sha256(b'\n'.join(kept)).hexdigest(), files
 
 
 def recovered_head(api, repo, num, marker, bot=None, window=2700):
@@ -199,11 +245,16 @@ class Runner:
     def __init__(self, api, app_api, set_label, profile_info, fail, log=print,
                  marker='[hands-bot review]', bot=None, working='hands-reviewing',
                  done='hands-reviewed', timeout=2700, poll=30, sleep=time.sleep,
-                 llm_ref=profile_llm_ref, problems=settings_problems, runs=None, note=None):
+                 llm_ref=profile_llm_ref, problems=settings_problems, runs=None, note=None,
+                 change_identity=None):
         self.api, self.app_api, self.set_label = api, app_api, set_label
         self.profile_info, self.fail, self.log = profile_info, fail, log
         self.runs = runs  # a RunStore, or None to keep nothing across restarts
         self.note = note  # note(repo, num, text): a PR comment that is not a review, or None
+        # change_identity(repo, base, head): the patch identity of the PR's change at `head`
+        # against `base` (three-dot, from the merge base), or None where the forge has no diff
+        # of an older head; then a repeated request is always reviewed afresh
+        self.change_identity = change_identity
         self.llm_ref = llm_ref
         self.problems = problems
         self.marker, self.bot = marker, bot
@@ -259,6 +310,36 @@ class Runner:
         except Exception as error:
             self.log(f'switch check incomplete: {repo}#{num} conversation={conv_id}: {type(error).__name__}')
 
+    def _verdict_stands(self, repo, num, head):
+        """True when the newest review is of an earlier head whose change has the patch
+        identity of the change at `head`: the review would be repeated on the same patch.
+        Says so on the PR, names both heads and both identities, and labels the request done
+        without starting a conversation. The note is not a review: it never starts with the
+        review marker line, so a delivery check cannot count it. Anything unexpected (no
+        diff, a binary change, a forge error) gives False, and the request is reviewed."""
+        if not self.change_identity or not self.note:
+            return False
+        try:
+            reviews = [r for r in (review_verdict(c, self.marker, self.bot)
+                                   for c in self.api(f'/repos/{repo}/issues/{num}/comments') or []) if r]
+            if not reviews or head.startswith(reviews[-1][0]):
+                return False  # nothing reviewed yet, or a request to review the same head again
+            old, verdict = reviews[-1]
+            base = self.api(f'/repos/{repo}/pulls/{num}')['base']['ref']
+            was, now = self.change_identity(repo, base, old), self.change_identity(repo, base, head)
+            if was != now:
+                return False
+            self.note(repo, num, f'patch unchanged since {old}; previous verdict stands ({verdict}). The change at head '
+                                 f'{head} has patch identity {now}, the same as at the reviewed head {old} ({was}), so no '
+                                 'new review was run. A fresh review on this head: add `review-this:<profile>`.')
+            self.set_label(repo, num, self.working, False)
+            self.set_label(repo, num, self.done, True)
+            self.log(f'review not repeated: {repo}#{num} head={head} patch unchanged since {old}')
+            return True
+        except Exception as error:  # forge answers may carry details: the type only
+            self.log(f'patch check skipped: {repo}#{num}: {type(error).__name__}')
+            return False
+
     def _start(self, repo, num, label, selected):
         """Settings snapshot and PR state for a fresh run: (profile choices,
         reading profile, head, comment window start), or Nones after a failure
@@ -308,6 +389,8 @@ class Runner:
         else:
             choices, reading, head, since = self._start(repo, num, label, selected)
             if not choices:
+                return
+            if label == os.environ.get('LABEL_REQUEST', 'review-this') and self._verdict_stands(repo, num, head):
                 return
         template = Path(prompt_file).read_text()  # Changes apply without restart.
         initial_model = None

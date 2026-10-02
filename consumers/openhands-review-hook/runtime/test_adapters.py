@@ -112,6 +112,71 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(labels,{'hands-reviewed'})
             self.assertIn(head,starts[1]['initial_message']['content'][0]['text'])
 
+    def test_github_adapter_keeps_the_verdict_of_an_unchanged_patch(self):
+        # the newest review is of an older head; GitHub's compare diff of both heads has the same
+        # patch identity, so the poller notes it, labels the request done and starts no conversation
+        head, old = 'a' * 40, 'b' * 40
+        labels, posted, compares, starts, errors = {'review-this'}, [], [], [], []
+        done = threading.Event()
+        diff = b'diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n'
+        class Fake(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self): self.handle_request()
+            def do_POST(self): self.handle_request()
+            def do_DELETE(self): self.handle_request()
+            def handle_request(self):
+                path = urllib.parse.unquote(self.path.split('?')[0])
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length']))) if self.headers.get('Content-Length') else None
+                result, raw = None, None
+                if path == '/forge/search/issues':
+                    query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)['q'][0]
+                    result = {'items': [] if 'label:' in query else [{'repository_url': 'https://example.test/repos/owner/repo', 'number': 1, 'title': 'test', 'labels': [{'name': n} for n in labels]}]}
+                elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}, 'base': {'ref': 'release/1'}}
+                elif path.startswith('/forge/repos/owner/repo/compare/'):
+                    compares.append((path, self.headers.get('Accept'))); raw = diff.replace(b'\n', b'\r\n') if head in path else diff
+                elif path == '/forge/repos/owner/repo/issues/1/labels':
+                    if self.command == 'POST':
+                        labels.update(body['labels'])
+                        if 'hands-reviewed' in labels: done.set()
+                    result = [{'name': n} for n in labels]
+                elif path.startswith('/forge/repos/owner/repo/issues/1/labels/'): labels.discard(path.split('/')[-1])
+                elif path.startswith('/forge/repos/owner/repo/labels'): result = {'name': path.split('/')[-1]}
+                elif path == '/forge/repos/owner/repo/issues/1/comments':
+                    if self.command == 'POST': posted.append(body['body'])
+                    result = [{'user': {'login': 'test-bot'}, 'body': f'[test-bot review] reviewed at head {old}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
+                elif path.startswith('/api/conversations'): starts.append(path); result = {'id': '1'}
+                else: errors.append((self.command, path))
+                payload = raw if raw is not None else json.dumps(result).encode()
+                self.send_response(200); self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Fake)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); profiles = root/'profiles'; profiles.mkdir()
+            (profiles/'codex-astra.json').write_text(json.dumps({'id': 'codex-astra', 'agent_kind': 'acp', 'acp_model': 'codex-astra'}))
+            (root/'token').write_text('test-only')
+            (root/'settings').write_text(json.dumps({'revision': 1, 'primary': 'codex-astra', 'fallback': None}))
+            (root/'prompt').write_text('Review {repo} #{num}, model {model}, marker {marker}, label {label}')
+            base = f'http://127.0.0.1:{server.server_port}'
+            env = dict(os.environ, GITHUB_API=base+'/forge', GITHUB_TOKEN_FILE=str(root/'token'), OPENHANDS_API=base,
+                LOCAL_BACKEND_API_KEY='test-only', PROFILES_DIR=str(profiles), REVIEW_SETTINGS_FILE=str(root/'settings'),
+                PROMPT_FILE=str(root/'prompt'), WORKSPACES_DIR='/tmp/reviews', REVIEW_POLL_SECONDS='1',
+                GITHUB_OWNER='owner', GITHUB_REPOS='owner/repo', MARKER='[test-bot review]', POLL_SECONDS='1',
+                REVIEW_RUNS_DIR=str(root), PYTHONUNBUFFERED='1')
+            proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name('github_review_poller.py'))], env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            try:
+                success = done.wait(12)
+            finally:
+                proc.terminate(); output = proc.communicate(timeout=5)[0]
+                server.shutdown(); server.server_close(); thread.join()
+        self.assertTrue(success, output)
+        self.assertEqual((starts, errors), ([], []))
+        self.assertEqual(compares, [(f'/forge/repos/owner/repo/compare/release/1...{old}', 'application/vnd.github.diff'),
+                                    (f'/forge/repos/owner/repo/compare/release/1...{head}', 'application/vnd.github.diff')])
+        [note] = posted
+        self.assertTrue(note.startswith(f'⚠️ [test-bot review] note: patch unchanged since {old}; previous verdict stands'), note)
+        self.assertEqual(labels, {'hands-reviewed'})
+
     def test_github_adapter_quota_fallback(self): self.run_adapter(True)
     def test_gitea_adapter_quota_fallback(self): self.run_adapter(False)
 

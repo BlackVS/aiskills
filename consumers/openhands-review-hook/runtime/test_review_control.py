@@ -495,6 +495,94 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(failures)
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
+    def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra'):
+        """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
+        to its change's patch identity, or is an exception the identity lookup raises."""
+        starts, labels, failures, notes, logs, asked = [], [], [], [], [], []
+        def api(path):
+            if path.endswith('/pulls/1'):
+                return {'state': 'open', 'head': {'sha': head}, 'base': {'ref': 'main'}}
+            if path == '/repos/owner/repo/issues/1/comments':
+                return comments
+            return [{'body': f'[hands-bot review] reviewed at head {head}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
+        def app(path, data=None):
+            if data:
+                starts.append(data); return {'id': str(len(starts))}
+            return {'execution_status': 'running'}
+        def identity(repo, base, sha):
+            asked.append((repo, base, sha))
+            if isinstance(identities, Exception):
+                raise identities
+            return next(v for k, v in identities.items() if sha.startswith(k))
+        with tempfile.TemporaryDirectory() as temp:
+            prompt = Path(temp) / 'prompt'; prompt.write_text('model={model} label={label}')
+            runner = Runner(api, app, lambda *args: labels.append(args), lambda p: (p, p), lambda *args: failures.append(args),
+                            log=logs.append, timeout=10, sleep=lambda _: None, llm_ref=lambda name: None,
+                            problems=lambda s: {}, note=lambda *args: notes.append(args), change_identity=identity)
+            with patch('review_runner.read_settings', return_value={'primary': 'codex-astra', 'secondary': None, 'fallback': None}):
+                runner.run('owner/repo', 1, 'title', label, selected, str(prompt), '/tmp/reviews')
+        return starts, labels, failures, notes, logs, asked
+
+    @staticmethod
+    def review_comment(sha, verdict='READY_FOR_HUMAN_MERGE'):
+        return {'body': f'[hands-bot review] reviewed at head {sha}\n\nRISK\nLOW\n\nVERDICT\n{verdict}\n'}
+
+    def test_a_request_on_an_unchanged_patch_keeps_the_previous_verdict(self):
+        old = 'b' * 40
+        comments = [{'body': 'discussion'}, self.review_comment(old[:12], 'RETURN_TO_IMPLEMENTATION'), {'body': 'after it'}]
+        starts, labels, failures, notes, logs, asked = self.unchanged(comments, {old[:12]: 'same', HEAD: 'same'})
+        self.assertEqual(starts, [], 'no conversation is started')
+        self.assertEqual(failures, [])
+        self.assertEqual(asked, [('owner/repo', 'main', old[:12]), ('owner/repo', 'main', HEAD)])
+        [(repo, num, text)] = notes
+        self.assertTrue(text.startswith(f'patch unchanged since {old[:12]}; previous verdict stands (RETURN_TO_IMPLEMENTATION)'))
+        for named in (HEAD, old[:12], 'patch identity same', '(same)', 'review-this:<profile>'):
+            self.assertIn(named, text)
+        self.assertNotIn('[hands-bot review] reviewed at head', text, 'the note is never a review')
+        self.assertEqual(labels[-2:], [('owner/repo', 1, 'hands-reviewing', False), ('owner/repo', 1, 'hands-reviewed', True)])
+        self.assertIn(f'review not repeated: owner/repo#1 head={HEAD} patch unchanged since {old[:12]}', logs)
+
+    def test_a_request_is_reviewed_afresh_unless_the_newest_verdict_covers_the_same_patch(self):
+        old, older = 'b' * 40, 'c' * 40
+        cases = {
+            'patch changed': ([self.review_comment(old)], {old: 'one', HEAD: 'two'}),
+            'same head asked again': ([self.review_comment(HEAD)], {HEAD: 'same'}),
+            'no review yet': ([{'body': 'discussion'}], {HEAD: 'same'}),
+            'only an older review matches': ([self.review_comment(older), self.review_comment(old)], {older: 'same', old: 'other', HEAD: 'same'}),
+            'identity unavailable': ([self.review_comment(old)], ValueError('the change includes a binary file')),
+            'a note is not a review': ([{'body': f'⚠️ [hands-bot review] note: patch unchanged since {old}'}], {old: 'same', HEAD: 'same'}),
+            'no verdict line': ([{'body': f'[hands-bot review] reviewed at head {old}\n\nnothing else'}], {old: 'same', HEAD: 'same'}),
+        }
+        for name, (comments, identities) in cases.items():
+            with self.subTest(name):
+                starts, labels, failures, notes, logs, asked = self.unchanged(comments, identities)
+                self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra'], 'a full review runs')
+                self.assertEqual((notes, failures), ([], []))
+        starts, _, _, notes, logs, _ = self.unchanged([self.review_comment(old)], ValueError('secret detail'))
+        self.assertIn('patch check skipped: owner/repo#1: ValueError', logs)
+        self.assertFalse(any('secret detail' in line for line in logs))
+        starts, _, _, notes, _, asked = self.unchanged([self.review_comment(old)], {old: 'same', HEAD: 'same'},
+                                                       label='review-this:codex-astra')
+        self.assertEqual((len(starts), notes, asked), (1, [], []), 'an explicit profile request always runs a review')
+
+    def test_patch_identity_is_verify_deliverys(self):
+        import importlib.util
+        from review_runner import patch_identity
+        source = Path(__file__).resolve().parents[3] / 'skills' / 'verify-delivery' / 'verify_delivery.py'
+        spec = importlib.util.spec_from_file_location('verify_delivery_for_drift', source)
+        delivery = importlib.util.module_from_spec(spec); spec.loader.exec_module(delivery)
+        diff = (b'diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n'
+                b'diff --git a/y b/y\nnew file mode 100644\n--- /dev/null\n+++ b/y\n@@ -0,0 +1 @@\n+\xff raw\n\\ No newline at end of file\n')
+        moved = diff.replace(b'@@ -1,2 +1,2 @@', b'@@ -10,2 +10,2 @@').replace(b'index 1..2', b'index 3..4')
+        for sample in (diff, diff.replace(b'\n', b'\r\n'), moved, diff.replace(b' ctx', b' other'), diff.decode('latin-1')):
+            self.assertEqual(patch_identity(sample), delivery.patch_identity(sample))
+        self.assertEqual(patch_identity(diff), patch_identity(moved), 'a base-only move keeps the identity')
+        self.assertNotEqual(patch_identity(diff), patch_identity(diff.replace(b' ctx', b' other')), 'changed context does not')
+        for bad in (b'', b'diff --git a/z b/z\nBinary files a/z and b/z differ\n'):
+            for implementation in (patch_identity, delivery.patch_identity):
+                with self.assertRaises(ValueError):
+                    implementation(bad)
+
     def test_clear_and_save_report_whether_the_state_is_on_disk(self):
         with tempfile.TemporaryDirectory() as temp:
             store = RunStore(Path(temp) / 'runs.json', log=lambda _: None)

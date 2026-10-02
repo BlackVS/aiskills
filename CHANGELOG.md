@@ -9,6 +9,23 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-10-02
+
+### Added
+- Auto Reviews runner: a plain `review-this` on a GitHub PR whose newest
+  review is of an earlier head, with the same patch identity at both heads, is
+  not reviewed again. A base-only update is the typical case. The poller posts
+  "patch unchanged since <old head>; previous verdict stands", naming both
+  heads and both identities, labels the request done and starts no
+  conversation. The identity is `verify-delivery`'s digest of GitHub's
+  three-dot compare diff, so the runtime and the delivery check agree; a test
+  keeps the two functions identical. The note is not a review, so it never
+  satisfies `verify-delivery`. A request for the same head, an explicit
+  `review-this:<profile>` label, a changed patch and an unreadable or binary
+  diff still get a full review. Gitea's API has no diff of an older head, so
+  the Gitea receiver always reviews. Runner tests cover each case; an adapter
+  test runs the GitHub poller against a fake compare endpoint.
+
 ## [1.29.10] - 2026-10-02
 
 ### Changed

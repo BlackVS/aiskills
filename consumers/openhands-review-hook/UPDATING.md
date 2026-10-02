@@ -71,6 +71,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.30.0 | GitHub poller: a plain `review-this` on an unchanged patch (same patch identity as the newest review's head) gets a "previous verdict stands" note instead of a new review. Deploy `review_runner.py` and `github_review_poller.py`, restart `github-review-poller` and `review-hook` (both load the runner; safe mid-run since 1.18.0). The Gitea receiver's behaviour is unchanged. |
 | 1.29.8 | Runner: an unreadable run-state file is no longer read as "no record" when the previous attempt's record is cleared, so a transient read failure cannot lead to a second fallback; the fallback is not started and the review fails with the existing run-state message. Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.29.7 | Auto Reviews app 0.2.10: switching the primary to an account agent clears a deleted secondary's warning along with the secondary, so Save is no longer stuck. Re-install and enable app 0.2.10; no runtime file changes, no restart. |
 | 1.29.5 | A save that needs a new generated profile in a full Canvas profile store (50 agent or 50 LLM profiles) is refused before anything is written, with the counts; app 0.2.9 shows that text. Deploy `canvas_discovery.py` and `review_control.py`, restart `review-control` while idle, re-install and enable app 0.2.9; either order works (an older part shows the generic failure). If saves are refused, delete unselected `review-...` profiles in Canvas. |
