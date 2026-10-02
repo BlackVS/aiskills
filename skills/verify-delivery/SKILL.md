@@ -25,9 +25,10 @@ All four must pass for the verdict `confirmed`:
    the merge does not. With no review of the final head, the latest one of an
    older head counts instead, but only as far as check 3 finds the merged
    change to be that head's change (a base-only update after the review keeps
-   it valid; any other later change does not). On Gitea that link cannot be
-   read through the API, so there a review of an older head fails: re-review
-   at the final head. `reviewed_heads` lists the heads the READY reviews name.
+   it valid; any other later change does not). On Gitea the link is read
+   from the compare API with `?output=diff`, which Gitea serves from 1.27; an
+   older Gitea answers JSON (or, before 1.22, has no compare endpoint), and
+   there a review of an older head fails: re-review at the final head. `reviewed_heads` lists the heads the READY reviews name.
    Reviews are recognised by their text **and by an author the repository
    trusts**; the author is checked first, so an untrusted comment never
    counts and never displaces a trusted one, even when it is newer. By default
@@ -67,7 +68,9 @@ All four must pass for the verdict `confirmed`:
      reviewed patch on a newer base is the same change. The diffs are read
      on GitHub from the compare API with the diff media type
      (`<first parent>...<head>` and `<first parent>...<merge commit>`), and
-     on Gitea from `pulls/{index}.diff` and `git/commits/{merge}.diff`.
+     on Gitea from `pulls/{index}.diff` and `git/commits/{merge}.diff` for the
+     final head, and from the same two compares with `?output=diff` for an
+     older head (Gitea 1.27 or later).
 
    The patch identity is a SHA-256 over a canonical form of the diff, the
    same function for both forges (not byte-compatible with `git patch-id`):
