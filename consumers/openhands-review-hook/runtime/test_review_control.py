@@ -465,6 +465,32 @@ class RunnerTests(unittest.TestCase):
             starts, labels, failures = self.execute(resume=left[0], comment_after_calls=2)
             self.assertEqual([s['agent_profile_id'] for s in starts], ['claude-opus'], 'the restart starts the one fallback')
 
+    def test_no_fallback_when_the_run_state_cannot_be_read_before_it(self):
+        # the read before the fallback fails while the file stays intact (read 2: the clear of the
+        # primary's record): that is no proof the record is gone, so no fallback starts in this run;
+        # whatever is left on disk resumes into at most one fallback conversation overall
+        real = Path.read_text
+        reads = {'n': 0}
+        def flaky(path, *args, **kwargs):
+            if path.name == 'runs.json':
+                reads['n'] += 1
+                if reads['n'] == 2:
+                    raise OSError(5, 'Input/output error')
+            return real(path, *args, **kwargs)
+        logs = []
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp) / 'runs.json', log=logs.append)
+            with patch.object(Path, 'read_text', flaky):
+                starts, labels, failures = self.execute(runs=store)
+            self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra'], 'no fallback conversation')
+            self.assertIn('the fallback was not started because the run state could not be updated', failures[-1][-1])
+            self.assertIn('run state unreadable: runs.json: OSError', logs)
+            fallbacks = 0
+            for record in store.load():
+                resumed, _, _ = self.execute(resume=record, comment_after_calls=2)
+                fallbacks += len(resumed)
+            self.assertLessEqual(fallbacks, 1)
+
     def test_clear_and_save_report_whether_the_state_is_on_disk(self):
         with tempfile.TemporaryDirectory() as temp:
             store = RunStore(Path(temp) / 'runs.json', log=lambda _: None)
@@ -475,6 +501,12 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(missing.save(self.record()))
             with patch.object(RunStore, '_read', return_value={'owner/repo#1': self.record()}):
                 self.assertFalse(missing.clear('owner/repo', 1), 'a record that cannot be removed is reported')
+            self.assertTrue(store.save(self.record()))
+            with patch.object(Path, 'read_text', side_effect=OSError(5, 'Input/output error')):
+                self.assertFalse(store.clear('owner/repo', 1), 'an unreadable file is not proof the record is gone')
+            self.assertEqual(len(store.load()), 1, 'and the record is still there')
+            (Path(temp) / 'runs.json').write_text('{not json')
+            self.assertTrue(store.clear('owner/repo', 1), 'unparseable content holds no record that could resume')
 
     def test_resumed_run_watches_the_recorded_conversation(self):
         starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record())
