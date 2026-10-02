@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.29.10] - 2026-10-02
+
+### Changed
+- Auto Reviews runner test: the read-failure case of 1.29.8 now reaches its
+  restart branch. Reads fail both before the fallback and at the end of the
+  run, so the primary's record survives. The test asserts that exactly that
+  record is left, that the resumed run starts exactly one fallback, and that
+  nothing is left to resume after it. Before, the end-of-run clear removed the
+  record and the resume check passed without running. Test only; nothing to
+  deploy.
+
 ## [1.29.9] - 2026-10-02
 
 ### Changed
