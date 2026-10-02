@@ -95,7 +95,7 @@ also written into litellm's extra body, because the proxy provider drops the
 arrived without one. A variant saved earlier under the other prefix, or without
 the effort body, is never reused or rewritten; the next save builds a fresh one
 with a numeric suffix, and the old one can be deleted in Canvas. The profile is
-named named `review-<model>[-<effort>][-reading]`
+named `review-<model>[-<effort>][-reading]`
 (for example `review-gpt-5-6-sol-max` and `review-gpt-5-6-sol-low-reading`; a
 numeric suffix resolves a clash with an existing profile, which is never
 overwritten). Profiles generated before 1.14.0 keep their `auto-review-<hash>`
@@ -104,6 +104,14 @@ profiles are launch choices, not sources: while their source profile exists the
 provider list never offers them, even when they carry a copied inline key. Names
 starting with `review-` (and `auto-review-`) are reserved for the app; several
 hand-made inline-key profiles sharing one endpoint and key count as one source.
+A generated API-provider agent profile sets only its LLM profile and the switch
+tool, so it runs on the SDK's agent defaults: on SDK 1.49.1 that is the
+summarizing condenser at 240 events with no token trigger, and no tools or
+condenser tuning are taken from a hand-made agent profile of the same source.
+This keeps every generated primary and reading profile identical outside the
+fields combined mode allows to differ. A generated account-agent profile copies
+an existing profile for that agent when there is one, changing only the model,
+and otherwise starts from the SDK defaults too.
 
 Deleting a profile in Canvas that the settings still name changes nothing on
 disk: the app shows that role with a warning naming what is missing (the agent
