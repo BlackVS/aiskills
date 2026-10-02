@@ -54,7 +54,7 @@ reviewer without creating labels themselves.
 import json
 import re
 from review_policy import requested_profiles
-from review_runner import recovered_head, next_page
+from review_runner import recovered_head, next_page, patch_identity
 from review_runner import Runner, RunStore
 import os
 import threading
@@ -123,6 +123,21 @@ def api(path, method="GET", data=None):
         if not url:
             return result
     return result
+
+
+def change_identity(repo, base, head):
+    """The patch identity of the change at `head`: GitHub's three-dot compare from the merge
+    base with `base`, as a raw diff (the same diff verify-delivery hashes)."""
+    req = urllib.request.Request(
+        f"{GITHUB}/repos/{repo}/compare/{urllib.parse.quote(base, safe='/')}...{head}",
+        headers={
+            "Authorization": "Bearer " + TOKEN,
+            "Accept": "application/vnd.github.diff",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return patch_identity(r.read())[0]
 
 
 def ensure_label(repo, name):
@@ -225,7 +240,8 @@ def run_review(repo, num, title, label, profile, resume=None):
         runner = Runner(api, app_api, set_label, profile_info, fail_review,
                         marker=MARKER, bot=None, working=L_WORKING,
                         done=L_DONE, timeout=WATCH_SECONDS,
-                        poll=int(os.environ.get('REVIEW_POLL_SECONDS', '30')), runs=RUNS, note=note_review)
+                        poll=int(os.environ.get('REVIEW_POLL_SECONDS', '30')), runs=RUNS, note=note_review,
+                        change_identity=change_identity)
         runner.run(repo, num, title, label, profile, PROMPT_FILE, WORKSPACES_DIR, resume=resume)
     finally:
         with lock:
