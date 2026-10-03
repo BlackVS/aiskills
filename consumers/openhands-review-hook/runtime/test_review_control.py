@@ -1,3 +1,5 @@
+import http.client
+import io
 import json
 import os
 import tempfile
@@ -332,7 +334,7 @@ class RunnerTests(unittest.TestCase):
                 finished=False, comment_after_calls=None, clock=None,
                 primary='codex-astra', fallback='claude-opus', secondary=None, llm_refs=None, explicit=False,
                 profile_info=None, prompt_text='model={model} label={label}', runs=None, resume=None, on_comments=None, usage_id=None,
-                break_after_completion=None):
+                break_after_completion=None, fail=None, on_app=None, on_events=None):
         starts, labels, failures, calls = [], [], [], {'comments': 0}
         self.notes = notes = []
         def note(*args):
@@ -354,9 +356,13 @@ class RunnerTests(unittest.TestCase):
             if data:
                 starts.append(data); return {'id': str(len(starts))}
             if 'events/search' in path:
+                if on_events:
+                    on_events()
                 return error_events if error_events is not None else QUOTA if quota else {'items': []}
             if break_after_completion == 'read' and labels:  # the labels are swapped before the check reads the conversation
                 raise OSError('canvas down')
+            if on_app:
+                on_app()
             info = {'execution_status': 'finished' if finished else 'error'}
             if usage_id:
                 info['agent'] = {'llm': {'usage_id': usage_id}}
@@ -365,7 +371,7 @@ class RunnerTests(unittest.TestCase):
             prompt = Path(temp)/'prompt'; prompt.write_text(prompt_text)
             self.logs = logs = []
             runner = Runner(api, app, lambda *args: labels.append(args), profile_info or (lambda p: (p,p)),
-                            lambda *args: failures.append(args), log=logs.append,
+                            fail or (lambda *args: failures.append(args)), log=logs.append,
                             timeout=0 if timeout else 10, sleep=lambda _: None,
                             llm_ref=lambda name: (llm_refs or {}).get(name), problems=lambda s: dict(problems or {}), runs=runs,
                             note=note)
@@ -377,6 +383,88 @@ class RunnerTests(unittest.TestCase):
                 else:
                     runner.run('owner/repo', 1, 'title', label, selected, str(prompt), '/tmp/reviews')
         return starts, labels, failures
+
+    @staticmethod
+    def raising_once(error):
+        """A hook that raises ERROR the first time it is called, then does nothing."""
+        raised = []
+        def hook():
+            if not raised:
+                raised.append(1); raise error
+        return hook
+
+    @staticmethod
+    def http_error(code):
+        return urllib.error.HTTPError('https://forge.example/x', code, 'status', {}, io.BytesIO(b'{}'))
+
+    def test_a_transient_read_during_the_watch_is_tried_again_at_the_next_poll(self):
+        # one forge or Canvas blip while the conversation runs must not fail a review that then posts
+        for name, error in {'timeout': TimeoutError('The read operation timed out'),
+                            'connection refused': urllib.error.URLError(ConnectionRefusedError()),
+                            'dropped connection': http.client.RemoteDisconnected('closed'),
+                            'server error': self.http_error(502), 'rate limited': self.http_error(429)}.items():
+            for where in ('forge comments', 'canvas conversation', 'canvas events'):
+                with self.subTest(name=name, where=where):
+                    hooks = {'forge comments': {'on_comments': self.raising_once(error), 'comment_after_calls': 2},
+                             'canvas conversation': {'on_app': self.raising_once(error), 'comment_after_calls': 2},
+                             'canvas events': {'on_events': self.raising_once(error), 'comment_after_calls': 2}}[where]
+                    starts, labels, failures = self.execute(quota=False, **hooks)
+                    self.assertEqual((len(starts), failures), (1, []), 'the review completes')
+                    self.assertIn(('owner/repo', 1, 'hands-reviewed', True), labels)
+                    self.assertIn(f'watch read failed, retrying at the next poll: owner/repo#1: {type(error).__name__}', self.logs)
+
+    def test_a_failed_second_look_after_the_conversation_finished_is_taken_again(self):
+        # the agent posts, then finishes; the fresh look at the comments fails once: look again at
+        # the next poll instead of reporting "finished without posting"
+        reads = []
+        def second_read_times_out():
+            reads.append(1)
+            if len(reads) == 2:
+                raise TimeoutError('The read operation timed out')
+        starts, labels, failures = self.execute(quota=False, finished=True, on_comments=second_read_times_out,
+                                                comment_after_calls=3)
+        self.assertEqual((len(starts), failures), (1, []))
+        self.assertIn(('owner/repo', 1, 'hands-reviewed', True), labels)
+
+    def test_a_read_that_is_an_answer_still_fails_the_review(self):
+        for error in (self.http_error(404), self.http_error(401), ValueError('not json')):
+            with self.subTest(error=type(error).__name__):
+                starts, labels, failures = self.execute(quota=False, on_comments=self.raising_once(error), comment_after_calls=2)
+                self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
+                self.assertNotIn(('owner/repo', 1, 'hands-reviewed', True), labels)
+
+    def test_a_failure_report_that_fails_never_escapes_the_review_thread(self):
+        def fail(*args):
+            raise TimeoutError('The read operation timed out')  # the forge that failed is still down
+        starts, labels, failures = self.execute(quota=False, on_comments=self.raising_once(self.http_error(404)),
+                                                comment_after_calls=2, fail=fail)  # returns: nothing raised
+        self.assertEqual(self.logs[-2:], ['review failed: owner/repo#1: HTTPError', 'failure not reported: owner/repo#1: TimeoutError'])
+
+    def test_only_reads_are_retried_and_only_after_transient_errors(self):
+        from review_runner import retried, transient
+        self.assertTrue(all(transient(e) for e in (TimeoutError(), ConnectionResetError(), urllib.error.URLError('x'),
+                                                   http.client.IncompleteRead(b''), self.http_error(500), self.http_error(429))))
+        self.assertFalse(any(transient(e) for e in (self.http_error(404), self.http_error(403), ValueError(), KeyError())))
+        sleeps, calls = [], []
+        def flaky():
+            calls.append(1)
+            if len(calls) < 3:
+                raise TimeoutError()
+            return 'answer'
+        self.assertEqual(retried(flaky, sleep=sleeps.append), 'answer')
+        self.assertEqual(sleeps, [1.0, 2.0])
+        calls.clear(); sleeps.clear()
+        def down():
+            calls.append(1); raise TimeoutError()
+        with self.assertRaises(TimeoutError):
+            retried(down, sleep=sleeps.append)
+        self.assertEqual((len(calls), sleeps), (3, [1.0, 2.0]), 'three attempts, then the error')
+        calls.clear()
+        def missing():
+            calls.append(1); raise self.http_error(404)
+        with self.assertRaises(urllib.error.HTTPError):
+            retried(missing, sleep=sleeps.append)
+        self.assertEqual(len(calls), 1, 'an answer is never asked again')
 
     @staticmethod
     def record(**overrides):

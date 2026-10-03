@@ -1,16 +1,41 @@
 """One review, optionally one quota/rate-limit fallback, with a fixed source head."""
 import hashlib
+import http.client
 import json
 import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import uuid
 from pathlib import Path
 
 from review_policy import read_settings, profile_llm_ref, settings_problems
 from reasoning_profiles import block as reasoning_block
+
+
+MISSED = object()  # a watch read that failed transiently: try again at the next poll
+
+
+def transient(error):
+    """A forge or Canvas error worth trying again: a timeout, a refused or dropped connection,
+    a broken response, or an HTTP 5xx or 429. Any other HTTP status is an answer."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500 or error.code == 429
+    return isinstance(error, (OSError, http.client.HTTPException))
+
+
+def retried(call, attempts=3, delay=1.0, sleep=time.sleep):
+    """CALL's result, trying again after a transient error (1 s, then 2 s by default): for
+    reads only, since a write that timed out may still have happened."""
+    for attempt in range(attempts):
+        try:
+            return call()
+        except Exception as error:
+            if attempt + 1 == attempts or not transient(error):
+                raise
+            sleep(delay * 2 ** attempt)
 
 
 def next_page(link_header, base=None):
@@ -274,7 +299,10 @@ class Runner:
         except Exception as error:
             # Provider/API errors may contain credentials or operator details.
             self.log(f'review failed: {repo}#{num}: {type(error).__name__}')
-            self.fail(repo, num, 'review service could not complete the request; inspect the service locally')
+            try:
+                self.fail(repo, num, 'review service could not complete the request; inspect the service locally')
+            except Exception as failed:  # the forge that failed may fail the report too: never kill the thread
+                self.log(f'failure not reported: {repo}#{num}: {type(failed).__name__}')
         finally:
             if self.runs:
                 self.runs.clear(repo, num)
@@ -359,6 +387,18 @@ class Runner:
         except Exception as error:  # forge answers may carry details: the type only
             self.log(f'patch check skipped: {repo}#{num}: {type(error).__name__}')
             return False
+
+    def _watched(self, repo, num, read):
+        """READ's answer, or MISSED after a transient error (logged). The conversation runs on
+        whether or not one read reaches the forge or Canvas, so the watch tries again at the
+        next poll; only its deadline ends it. Any other error is raised."""
+        try:
+            return read()
+        except Exception as error:
+            if not transient(error):
+                raise
+            self.log(f'watch read failed, retrying at the next poll: {repo}#{num}: {type(error).__name__}')
+            return MISSED
 
     def _start(self, repo, num, label, selected):
         """Settings snapshot and PR state for a fresh run: (profile choices,
@@ -481,16 +521,22 @@ class Runner:
             deadline = time.monotonic() + max(0.0, ends - time.time())
             while time.monotonic() < deadline:
                 self.sleep(self.poll)
-                comments = self.api(f'/repos/{repo}/issues/{num}/comments?since={since}')
+                comments = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}'))
+                if comments is MISSED:
+                    continue
                 if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
                     self._complete(repo, num, head, profile, conv_id, switch)
                     return
-                info = self.app_api(f'/api/conversations/{conv_id}')
+                info = self._watched(repo, num, lambda: self.app_api(f'/api/conversations/{conv_id}'))
+                if info is MISSED:
+                    continue
                 state = info.get('execution_status')
                 if state == 'finished':
                     # The agent posts, then finishes: one fresh look at the comments before
                     # calling it a miss, so the next iteration can complete normally.
-                    comments = self.api(f'/repos/{repo}/issues/{num}/comments?since={since}')
+                    comments = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}'))
+                    if comments is MISSED:
+                        continue  # still finished at the next poll: looked at again then
                     if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
                         self._complete(repo, num, head, profile, conv_id, switch)  # not another iteration: the deadline may have passed
                         return
@@ -502,7 +548,10 @@ class Runner:
                     continue
                 # No server-side kind filter: agent-canvas 1.20.0 answers `kind=` with nothing and
                 # ignores `kind__eq=`; limit_error/config_error pick the error events themselves.
-                events = self.app_api(f'/api/conversations/{conv_id}/events/search?sort_order=TIMESTAMP_DESC&limit=100')
+                events = self._watched(repo, num, lambda: self.app_api(
+                    f'/api/conversations/{conv_id}/events/search?sort_order=TIMESTAMP_DESC&limit=100'))
+                if events is MISSED:
+                    continue
                 limited = limit_error(events)
                 if limited and attempt + 1 < len(choices):
                     if switch and not switched(info, switch[1]):

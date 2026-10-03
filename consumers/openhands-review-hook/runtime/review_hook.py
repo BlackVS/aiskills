@@ -52,7 +52,7 @@ import hmac
 import json
 import re
 from review_policy import requested_profiles
-from review_runner import recovered_head, next_page, patch_identity
+from review_runner import recovered_head, next_page, patch_identity, retried
 from review_runner import Runner, RunStore
 import os
 import threading
@@ -103,10 +103,14 @@ def api(path, method="GET", data=None):
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=20) as r:
-            b = r.read()
-            page = json.loads(b) if b else None
-            url = next_page(r.headers.get("Link"), GITEA) if method == "GET" and isinstance(page, list) else None
+        def fetch(req=req):
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.read(), r.headers.get("Link")
+        # A read is tried again after a transient error (a brief forge outage); a write is
+        # not, since one that timed out may still have happened.
+        b, link = retried(fetch) if method == "GET" else fetch()
+        page = json.loads(b) if b else None
+        url = next_page(link, GITEA) if method == "GET" and isinstance(page, list) else None
         result = page if result is None else result + page
         if not url:
             return result
