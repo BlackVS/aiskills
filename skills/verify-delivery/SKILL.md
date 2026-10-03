@@ -74,6 +74,18 @@ All four must pass for the verdict `confirmed`:
      final head, and from the same two compares with `?output=diff` for an
      older head (Gitea 1.27 or later).
 
+   A rebase merge of several commits reports its last rebased commit as the
+   merge commit, so that commit's change alone never matches. When it does
+   not, and the merge is a rebase merge of the pull request, the merged
+   change is read from the base the rebase landed on instead
+   (`<base>...<merge commit>`; on Gitea a compare with `?output=diff`, so
+   1.27 or later), and the check reports that base as `base_parent_sha` and
+   the number of commits as `rebased_commits`. It counts as a rebase merge
+   when the pull request's commits form one line of 2 to 100 commits from its
+   head, and as many commits ending at the merge commit each have one parent
+   and carry the same commit messages in the same order; anything else is
+   compared by its first parent only.
+
    The patch identity is a SHA-256 over a canonical form of the diff, the
    same function for both forges (not byte-compatible with `git patch-id`):
    each `diff --git` line, the mode, new/deleted file and rename/copy lines,
@@ -88,9 +100,7 @@ All four must pass for the verdict `confirmed`:
    larger than 8 MiB, leaves the check `pending`, never passed. Every
    response is read with a bound (32 MiB for JSON, 64 KiB of an error
    body). A binary or empty change, or a merge
-   commit without a parent, has no identity and fails. A rebase merge of
-   several commits is compared by its last commit only, so it matches only
-   through tree equality.
+   commit without a parent, has no identity and fails.
 4. **Post-merge CI.** Every check run (GitHub) or commit status (Gitea) on
    the merge commit completed successfully (`skipped` and `neutral` pass on
    GitHub; on Gitea only `success` passes, `pending` is pending, and `error`,

@@ -20,6 +20,8 @@ HEAD = "3f2a9c1e5b7d4a6f8e0c2b4d6f8a0c2e4b6d8f0a"
 OLD = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
 MERGE = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
 PARENT = "5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d"  # the merge commit's first parent: the base it landed on
+BASE = "1a3c5e7f9b2d4f6a8c0e2b4d6f8a1c3e5b7d9f0b"  # in a rebase merge, the base under the first rebased commit
+C1 = "2d4f6a8c0e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f"  # the pull request's first commit; HEAD is its second
 TOKEN = "fixture-placeholder-not-a-real-token"  # a fake value; the tests check it is never printed
 FORGES = {
     "github": {"api": "https://api.github.com", "pr": "https://github.com/acme/widgets/pull/42", "args": [],
@@ -66,7 +68,11 @@ class FakeForge:
                 # the two diffs of the patch identity rule
                 f"{repo}/compare/{PARENT}...{HEAD}": "head_change", f"{repo}/compare/{PARENT}...{MERGE}": "merge_change",
                 f"{repo}/compare/{PARENT}...{OLD}": "old_change",
-                f"{repo}/pulls/42.diff": "head_change", f"{repo}/git/commits/{MERGE}.diff": "merge_change"}.get(path)
+                f"{repo}/pulls/42.diff": "head_change", f"{repo}/git/commits/{MERGE}.diff": "merge_change",
+                # a rebase merge of the pull request's two commits: PARENT is the first rebased commit
+                f"{repo}/pulls/42/commits": "pull_commits", f"{repo}/git/commits/{PARENT}": "git_commit_rebased",
+                f"{repo}/compare/{BASE}...{HEAD}": "head_change", f"{repo}/compare/{BASE}...{OLD}": "old_change",
+                f"{repo}/compare/{BASE}...{MERGE}": "rebase_change"}.get(path)
 
     def __call__(self, req, timeout=None):
         self.requests.append({"method": req.get_method(), "url": req.full_url, "headers": dict(req.header_items()),
@@ -602,6 +608,116 @@ class Verify:
         self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (3, "failed"))
         self.assertEqual(self.diff_requests(), [])
 
+    # ---- a rebase merge of several commits onto a moved base
+    def rebase_merge(self):
+        """The pull request's two commits were rebased onto a moved base: the merge commit is the
+        last rebased commit, so its change against its first parent is that commit's change only."""
+        self.base_only_update()
+        merge = self.fake.data["git_commit_merge"]
+        (merge.get("commit") or merge)["message"] = "Add a render test\n"
+        self.fake.diffs["merge_change"] = self.fake.diffs["rebase_last_commit"]
+
+    def rebase_requests(self):
+        return [urllib.parse.urlsplit(r["url"]) for r in self.fake.requests
+                if f"/git/commits/{PARENT}" in r["url"] or f"/compare/{BASE}..." in r["url"]]
+
+    def test_rebase_merge_of_two_commits_onto_a_moved_base(self):
+        self.rebase_merge()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["rule"], same["base_parent_sha"], same["rebased_commits"]),
+                         ("passed", "patch_identity", BASE, 2))
+        self.assertEqual(same["patch_identity"]["reviewed_change"], same["patch_identity"]["merge_change"])
+        compared = [u for u in self.rebase_requests() if "/compare/" in u.path]
+        self.assertEqual([u.path.rsplit("/compare/")[1] for u in compared],
+                         [f"{BASE}...{HEAD}", f"{BASE}...{MERGE}"] if self.forge == "github" else [f"{BASE}...{MERGE}"])
+        if self.forge == "gitea":
+            self.assertEqual({u.query for u in compared}, {"output=diff"})
+
+    def test_last_commit_of_a_rebase_alone_is_not_the_reviewed_change(self):
+        """Seeded fault: without reading from the rebase's base, the last commit's change never matches."""
+        self.rebase_merge()
+        with mock.patch.object(vd, "rebase_base", lambda *a: (None, 0)):
+            code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (3, "failed"))
+
+    def test_a_changed_line_in_a_rebase_merge_fails(self):
+        self.rebase_merge()
+        self.fake.diffs["rebase_change"] = self.fake.diffs["rebase_change"].replace("name.strip()", "name.lstrip()")
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["base_parent_sha"], same["rebased_commits"]), ("failed", BASE, 2))
+        self.assertIn("is not the reviewed change", same["detail"])
+
+    def pr_commit(self, sha):
+        return next(c for c in self.fake.data["pull_commits"] if c["sha"] == sha)
+
+    def test_a_rebase_merge_is_read_whatever_order_the_commits_are_listed_in(self):
+        """GitHub lists a pull request's commits oldest first, Gitea newest first (the fixtures)."""
+        for order in ("as recorded", "reversed"):
+            with self.subTest(order):
+                self.fake = FakeForge(self.forge)
+                self.rebase_merge()
+                if order == "reversed":
+                    self.fake.data["pull_commits"].reverse()
+                code, doc = self.run_vd()
+                self.assertEqual((code, self.check(doc, "tree_equality")["rebased_commits"]), (0, 2))
+
+    def test_a_merge_that_is_not_the_rebased_pull_request_is_not_read_as_one(self):
+        merge = lambda: self.fake.data["git_commit_merge"].get("commit") or self.fake.data["git_commit_merge"]
+        extra = {"sha": "6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c", "commit": {"message": "Start the label"},
+                 "parents": [{"sha": "8e0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a"}]}
+        cases = {
+            "the merge commit's message is not the head's": lambda: merge().update(message="Squashed change\n"),
+            "an earlier message differs": lambda: self.pr_commit(C1)["commit"].update(message="Another change"),
+            "an earlier rebased commit has two parents": lambda: self.fake.data["git_commit_rebased"]["parents"].append(
+                {"sha": OLD}),
+            "the pull request has one commit": lambda: self.fake.data["pull_commits"].remove(self.pr_commit(C1)),
+            "the pull request has more commits than the merge": lambda: (
+                self.fake.data["pull_commits"].append(extra), self.pr_commit(C1).update(parents=[{"sha": extra["sha"]}])),
+            "the commits are not one line from the head": lambda: self.fake.data["pull_commits"].append(extra),
+            "the head is not among the commits": lambda: self.pr_commit(HEAD).update(sha=OLD),
+            "the commits are not listed": lambda: self.fake.data.pop("pull_commits"),
+        }
+        for name, edit in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.rebase_merge()
+                edit()
+                code, doc = self.run_vd()
+                self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((same["status"], same["base_parent_sha"]), ("failed", PARENT))
+                self.assertNotIn("rebased_commits", same)
+                self.assertEqual([u for u in self.rebase_requests() if "/compare/" in u.path], [])
+
+    def test_a_rebase_longer_than_the_bound_is_not_walked(self):
+        self.rebase_merge()
+        with mock.patch.object(vd, "MAX_REBASED", 1):
+            code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (3, "failed"))
+        self.assertEqual(self.rebase_requests(), [])
+
+    def test_an_unreadable_rebase_is_pending(self):
+        self.rebase_merge()
+        self.fake.overrides = {"/repos/acme/widgets/pulls/42/commits": lambda req: (_ for _ in ()).throw(
+            urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, io.BytesIO(b"{}")))}
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (4, "pending"))
+        self.assertIn("rebase merge could not be read", self.check(doc, "tree_equality")["detail"])
+
+    def test_a_rebase_merge_reviewed_at_an_older_head(self):
+        self.rebase_merge()
+        self.reviewed_only_at_older_head()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        rebased = {r["reviewed_head"]: (r["rule"], r.get("rebased_commits")) for r in self.check(doc, "tree_equality")["reviewed"]}
+        self.assertEqual(rebased, {HEAD: ("patch_identity", 2), OLD: ("patch_identity", 2)})
+        self.assertEqual(sum(f"/git/commits/{PARENT}" in u.path for u in self.rebase_requests()), 1,
+                         "the rebase is walked once for every reviewed head")
+
     def reviewed_only_at_older_head(self):
         """The external review READY at OLD, none at the final head: the branch was only updated
         from its base after that review, so the review still stands for the merged change."""
@@ -808,6 +924,22 @@ class Gitea(Verify, unittest.TestCase):
                 self.assertIn("needs Gitea 1.27 or later", same["detail"])
                 self.assertIn("re-review at the final head", same["detail"])
                 self.assertNotIn("evidence", doc)
+
+    def test_rebase_merge_on_a_gitea_without_the_compare_diff(self):
+        """The combined change of a rebase merge is read only from the compare diff (Gitea 1.27+)."""
+        older = {"json": lambda req: Response(200, b'{"total_commits":2,"commits":[]}'),
+                 "missing": lambda req: (_ for _ in ()).throw(urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))}
+        for name, answer in older.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.rebase_merge()
+                self.fake.overrides = {f"/repos/acme/widgets/compare/{BASE}...{MERGE}": answer}
+                code, doc = self.run_vd()
+                self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((same["status"], same["rebased_commits"]), ("failed", 2))
+                self.assertIn("rebase merge of several commits", same["detail"])
+                self.assertIn("needs Gitea 1.27 or later", same["detail"])
 
     def test_without_an_allowlist_the_reviews_cannot_be_satisfied(self):
         code, doc = self.run_vd(authors=[])

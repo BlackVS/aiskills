@@ -1,0 +1,14 @@
+{
+  "sha": "5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d",
+  "html_url": "https://github.com/acme/widgets/commit/5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d",
+  "message": "Use a stripped label in render\n",
+  "tree": {
+    "sha": "4c6e8a0b2d4f6a8c0e1b3d5f7a9c1e3b5d7f9a2c"
+  },
+  "parents": [
+    {
+      "sha": "1a3c5e7f9b2d4f6a8c0e2b4d6f8a1c3e5b7d9f0b",
+      "url": "https://api.github.com/repos/acme/widgets/git/commits/1a3c5e7f9b2d4f6a8c0e2b4d6f8a1c3e5b7d9f0b"
+    }
+  ]
+}

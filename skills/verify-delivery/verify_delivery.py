@@ -13,7 +13,7 @@ pushes. Standard library only.
 Prints one JSON document on stdout. Exit codes: 0 confirmed, 3 not confirmed,
 4 pending or retryable (the API was unavailable), 2 usage error. See SKILL.md.
 """
-import argparse, datetime, hashlib, json, os, re, socket, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, functools, hashlib, json, os, re, socket, sys, time, urllib.error, urllib.parse, urllib.request
 
 EXIT_CONFIRMED, EXIT_USAGE, EXIT_NOT_CONFIRMED, EXIT_PENDING = 0, 2, 3, 4
 TIMEOUT = 20        # seconds per request
@@ -23,6 +23,7 @@ MAX_EVIDENCE = 16   # evidence entries
 MAX_DIFF = 8 << 20  # bytes per diff read for the patch identity; a larger one is not read (pending)
 MAX_JSON = 32 << 20  # bytes per JSON response; a larger one is not read (pending)
 MAX_ERROR = 64 << 10  # bytes read from an HTTP error response's body; the rest is never read
+MAX_REBASED = 100   # commits of a rebase merge walked back to find its base; a longer one is not read
 SHA = r"(?P<sha>[0-9a-fA-F]{7,40})"
 
 # The review comment format of the oh-code-review skill (references/dispositions.md):
@@ -414,7 +415,8 @@ def verify(args, forge, kind, number):
     t_head, t_merge = tree_of(head_commit), tree_of(merge_commit)
     same = {"name": "tree_equality", "head_sha": head, "head_tree": t_head, "merge_commit_sha": merge_sha,
             "merge_commit_url": merge_url, "merge_tree": t_merge}
-    results = [merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge)
+    rebase = functools.lru_cache(maxsize=None)(lambda: rebase_base(forge, number, head, merge_commit))
+    results = [merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge, rebase)
                for reviewed in (reviewed_heads or [head])]
     worst = next((r for status in ("failed", "pending") for r in results if r["status"] == status), None)
     shown = worst or next((r for r in results if r["rule"] == "patch_identity"), results[0])
@@ -442,11 +444,14 @@ def verify(args, forge, kind, number):
     return checks, pr_url, head_url, merge_url, runs
 
 
-def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge):
+def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge, rebase=None):
     """Is the merged content the content reviewed at head REVIEWED? Rule tree_equality: the merge
     commit's tree is the reviewed (final) head's tree. Rule patch_identity, when the trees differ
     because the base moved after the review: the merge commit's change against its first parent
-    has the same patch identity as the reviewed head's change against its merge base."""
+    has the same patch identity as the reviewed head's change against its merge base. A rebase
+    merge of several commits reports its last rebased commit as the merge commit, so when that
+    commit's change does not match, the change from the base the rebase landed on (REBASE(),
+    see rebase_base) is compared instead."""
     result = {"reviewed_head": reviewed, "rule": None}
     final = bool(head) and head.startswith(reviewed)
     if final and t_head and t_head == t_merge:
@@ -455,42 +460,111 @@ def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge
     if not head or not parent:
         return {**result, "status": "failed",
                 "detail": "the trees differ, and the merge commit has no parent to compare its change against"}
-    # Three-dot compare diffs from the merge base: of the first parent and the reviewed head, the
-    # reviewed change; of the first parent and the merge commit, the merge commit's change. Gitea
-    # serves them as raw diffs with ?output=diff since 1.27; an older Gitea ignores the parameter
-    # and answers JSON, or (before 1.22) has no compare endpoint at all.
+    matched = change_matches(kind, forge, number, reviewed, final, parent, merge_sha, result)
+    if rebase is None or matched["status"] != "failed" or "patch_identity" not in matched:
+        return matched
+    try:
+        base, count = rebase()
+    except Unavailable as e:
+        return {**matched, "status": "pending",
+                "detail": f"the merge commit's change is not the reviewed change, and whether it is the last "
+                          f"commit of a rebase merge could not be read ({e})"}
+    if not base:
+        return matched
+    rebased = change_matches(kind, forge, number, reviewed, final, base, merge_sha, result, rebased=True)
+    return {**rebased, "rebased_commits": count}
+
+
+def change_matches(kind, forge, number, reviewed, final, parent, merge_sha, result, rebased=False):
+    """Compare the patch identity of the reviewed change with that of the merged change: the
+    merge commit's change since PARENT (its first parent, or the base a rebase merge landed on)."""
+    # Three-dot compare diffs from the merge base: of PARENT and the reviewed head, the reviewed
+    # change; of PARENT and the merge commit, the merged change. Gitea serves them as raw diffs
+    # with ?output=diff since 1.27; an older Gitea ignores the parameter and answers JSON, or
+    # (before 1.22) has no compare endpoint at all.
     compare = (f"/compare/{parent}...{reviewed}", f"/compare/{parent}...{merge_sha}")
+    gitea_compare = kind == "gitea" and (rebased or not final)
     if kind == "github":
         paths = compare
-    elif final:
-        paths = (f"/pulls/{number}.diff", f"/git/commits/{merge_sha}.diff")
-    else:
+    elif not final:
         paths = tuple(path + "?output=diff" for path in compare)
-    no_older_diff = {**result, "status": "failed",
-                     "detail": "the review names an older head, and this Gitea's API returns no diff of an older "
-                               "head's change (compare with ?output=diff needs Gitea 1.27 or later): "
-                               "re-review at the final head"}
+    elif rebased:
+        paths = (f"/pulls/{number}.diff", compare[1] + "?output=diff")
+    else:
+        paths = (f"/pulls/{number}.diff", f"/git/commits/{merge_sha}.diff")
+    if final:
+        no_compare_diff = {**result, "status": "failed",
+                           "detail": "the merge is a rebase merge of several commits, and this Gitea's API returns "
+                                     "no diff of their combined change (compare with ?output=diff needs Gitea 1.27 "
+                                     "or later): the trees differ, so the merged content cannot be confirmed"}
+    else:
+        no_compare_diff = {**result, "status": "failed",
+                           "detail": "the review names an older head, and this Gitea's API returns no diff of an "
+                                     "older head's change (compare with ?output=diff needs Gitea 1.27 or later): "
+                                     "re-review at the final head"}
     try:
         texts = [forge.diff(path) for path in paths]
     except (Unavailable, NotFound) as e:
-        if kind == "gitea" and not final and isinstance(e, NotFound):
-            return no_older_diff
+        if gitea_compare and isinstance(e, NotFound):
+            return no_compare_diff
         why = str(e) if isinstance(e, Unavailable) else "the forge did not find it"
         return {**result, "status": "pending",
                 "detail": f"the trees differ, and a diff for the patch identity could not be read ({why})"}
-    if kind == "gitea" and not final and any(t.lstrip().startswith(b"{") for t in texts):
-        return no_older_diff
+    if gitea_compare and any(t.lstrip().startswith(b"{") for t in texts):
+        return no_compare_diff
     try:
         (was_reviewed, files), (merged, _) = (patch_identity(t) for t in texts)
     except ValueError as e:
         return {**result, "status": "failed", "detail": f"the trees differ, and the patch identity cannot be established: {e}"}
-    result.update(base_parent_sha=parent,
-                  patch_identity={"reviewed_change": was_reviewed, "merge_change": merged, "files": files})
+    result = {**result, "base_parent_sha": parent,
+              "patch_identity": {"reviewed_change": was_reviewed, "merge_change": merged, "files": files}}
     if was_reviewed == merged:
         result.update(status="passed", rule="patch_identity")
     else:
         result.update(status="failed", detail="the trees differ, and the merge commit's change is not the reviewed change")
     return result
+
+
+def rebase_base(forge, number, head, merge_commit):
+    """(base, count) for a rebase merge of COUNT commits: the commit it landed on, the parent of
+    its first rebased commit. (None, 0) when the merge is not one. The forge reports the last
+    rebased commit as the merge commit; it counts as a rebase merge when the pull request's
+    commits form one line of 2 to MAX_REBASED commits from its head, and that many commits
+    ending at the merge commit each have one parent and carry the same commit messages in the
+    same order."""
+    try:
+        listed = forge.pages(f"/pulls/{number}/commits")
+    except NotFound:
+        return None, 0
+    if not 2 <= len(listed) <= MAX_REBASED:
+        return None, 0
+    # Ordered by the parent chain from the head, newest first: GitHub lists the commits oldest
+    # first and Gitea newest first. A pull request whose commits are not one line is not read.
+    by_sha = {(c.get("sha") or "").lower(): c for c in listed}
+    commits, sha = [], head
+    while sha in by_sha and len(commits) < len(listed):
+        commits.append(by_sha[sha])
+        sha = (((by_sha[sha].get("parents") or [{}])[0] or {}).get("sha") or "").lower()
+    if len(commits) != len(listed):
+        return None, 0
+    commit = merge_commit
+    for i, pr_commit in enumerate(commits):
+        parents = commit.get("parents") or []
+        message = message_of(commit)
+        if len(parents) != 1 or not message or message != message_of(pr_commit):
+            return None, 0
+        sha = ((parents[0] or {}).get("sha") or "").lower()
+        if not sha:
+            return None, 0
+        if i == len(commits) - 1:
+            return sha, len(commits)
+        commit = forge.get_or_none(f"/git/commits/{sha}") or {}
+    return None, 0
+
+
+def message_of(commit):
+    """A commit's message: top level on GitHub's git/commits, under "commit" elsewhere."""
+    return (commit.get("message") or (commit.get("commit") or {}).get("message") or "").strip()
 
 
 def patch_identity(diff):

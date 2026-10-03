@@ -9,6 +9,24 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.30.4] - 2026-10-03
+
+### Fixed
+- verify-delivery: a rebase merge of several commits onto a moved base is
+  confirmed through the patch identity. The forge reports the last rebased
+  commit as the merge commit, so its change against its first parent covered
+  that commit only and never matched the reviewed change: such a delivery was
+  `not_confirmed` (a false negative, never a false pass). When that change
+  does not match and the merge is a rebase merge of the pull request (its
+  commits form one line of 2 to 100 commits from its head, and as many commits
+  ending at the merge commit each have one parent and the same commit message,
+  in order), the merged change is read from the base the rebase landed on; the
+  check reports it as `base_parent_sha`, with `rebased_commits`. The commits
+  are ordered by their parents, since GitHub lists them oldest first and Gitea
+  newest first. On Gitea this needs the compare diff of 1.27 or later; an
+  older Gitea fails with the reason. Fixtures of a two-commit rebase merge
+  cover both forges.
+
 ## [1.30.3] - 2026-10-03
 
 ### Fixed
