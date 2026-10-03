@@ -9,6 +9,19 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.30.3] - 2026-10-03
+
+### Fixed
+- verify-delivery: a formal pull-request review no longer counts as a review.
+  Its body can be edited after the merge, and GitHub's REST API gives it no
+  edit time (GraphQL's `lastEditedAt` exists, but needs a token and has no
+  counterpart elsewhere), so an edit could turn it READY unseen. Only comments
+  on the pull request count, the record every forge keeps with both a creation
+  and an edit time; the review gates and the hands receivers already post
+  reviews that way. A formal review that matches a review pattern is listed
+  under `ignored` with the reason. A test on each forge covers a READY formal
+  review.
+
 ## [1.30.2] - 2026-10-03
 
 ### Fixed

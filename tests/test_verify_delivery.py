@@ -257,6 +257,22 @@ class Verify:
         code, _ = self.run_vd("--merger", "maintainer")
         self.assertEqual(code, 0)
 
+    def test_formal_review_never_counts(self):
+        # A formal review can be edited after the merge without a recorded edit time (GitHub's REST
+        # API has none), so only comments count: a READY one is listed as ignored, with the reason.
+        external = next(c for c in self.comments() if c["body"].startswith("[example-bot") and HEAD in c["body"])
+        self.drop_external_at_head()
+        self.fake.data["reviews"] = [{"id": 99, "user": dict(external["user"]), "state": "APPROVED", "body": external["body"],
+                                      "submitted_at": external["created_at"], "html_url": "https://example.org/review/99",
+                                      "author_association": "OWNER"}]
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        reviewed = self.check(doc, "reviewed_head")
+        self.assertNotEqual({r["review"]: r["status"] for r in reviewed["reviews"]}["external"], "ready")
+        [formal] = [i for i in reviewed["ignored"] if i["url"] == "https://example.org/review/99"]
+        self.assertIn("a formal pull-request review, not a comment", formal["reason"])
+        self.assertNotIn("evidence", doc)
+
     def test_merger_and_bot_account_logins_ignore_case(self):
         # logins are case-insensitive on both forges, as --review-author already treats them
         code, _ = self.run_vd("--merger", "MAINTAINER")

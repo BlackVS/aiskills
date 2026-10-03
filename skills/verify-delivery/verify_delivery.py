@@ -230,6 +230,14 @@ def author_verdict(c, name, kind, authors, trust_any):
     return "no author allowlist for this review (required on Gitea)"
 
 
+# A review counts only as a comment on the pull request: the one record every forge keeps with both
+# a creation and an edit time (GitHub and Gitea issue comments, GitLab merge request notes). A formal
+# review's body can be edited after the merge, and GitHub's REST API gives it no edit time, so an
+# edit could turn it READY unseen; GitLab's approvals carry no text at all.
+FORMAL_REVIEW = ("a formal pull-request review, not a comment: only comments count, because a formal review "
+                 "can be edited without a recorded edit time; post the review as a comment on the pull request")
+
+
 def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", authors=None, trust_any=False):
     """Each configured review must be READY_FOR_HUMAN_MERGE in the latest comment by an author the
     repository trusts, posted before the merge. The latest one naming the final head counts; with
@@ -251,6 +259,8 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
             untrusted = author_verdict(c, name, kind, authors, trust_any)
             if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
                 ignored.append({"review": name, "reason": "does not name a commit SHA (7 to 40 hex digits)", "url": c["url"]})
+            elif c.get("formal"):
+                ignored.append({"review": name, "reason": FORMAL_REVIEW, "author": c["author"], "sha": sha, "url": c["url"]})
             elif untrusted:
                 ignored.append({"review": name, "reason": untrusted, "author": c["author"], "sha": sha, "url": c["url"]})
             elif when(merged_at) and when(c["created_at"]) and when(c["created_at"]) > when(merged_at):
@@ -350,8 +360,10 @@ def verify(args, forge, kind, number):
               "url": c.get("html_url"), "author": (c.get("user") or {}).get("login"),
               "association": c.get("author_association")}
              for c in forge.pages(f"/issues/{number}/comments")]
+    # Formal reviews are read only to say why they do not count (see FORMAL_REVIEW).
     items += [{"body": r.get("body"), "created_at": r.get("submitted_at"), "url": r.get("html_url"),
-               "author": (r.get("user") or {}).get("login"), "association": r.get("author_association")}
+               "author": (r.get("user") or {}).get("login"), "association": r.get("author_association"),
+               "formal": True}
               for r in forge.pages(f"/pulls/{number}/reviews")]
     head_commit = (forge.get_or_none(f"/git/commits/{head}") if head else None) or {}
     head_url = head_commit.get("html_url") or ""
