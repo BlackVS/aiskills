@@ -470,10 +470,21 @@ class RunnerTests(unittest.TestCase):
         def always_down():
             raise TimeoutError()
         starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
-        [(_, _, reason)] = failures
-        self.assertTrue(reason.startswith('the review is posted, but the forge could not be reached to label it done'), reason)
-        self.assertIn('replace `hands-reviewing` with `hands-reviewed` by hand', reason)
-        self.assertNotIn('no review posted', reason)
+        self.assertEqual(failures, [], 'not a failure: no "could not run", no advice to request another review')
+        self.assertIn('review posted, not labelled done: owner/repo#1 the forge was unreachable until the deadline', self.logs)
+        self.assertIn('posted review not marked: owner/repo#1: TimeoutError', self.logs)  # the forge is still down
+        # the forge is back for the last word: hands-reviewing removed, a note (never a review) says what to do
+        calls = []
+        def down_for_the_watch():
+            calls.append(1)
+            if len(calls) <= 2:  # the swap in the one iteration and the last try at the deadline
+                raise TimeoutError()
+        starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=down_for_the_watch)
+        self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewing', False)))
+        [(_, _, note)] = self.notes
+        self.assertTrue(note.startswith('the review above is posted, but the forge could not be reached to label it done'), note)
+        self.assertIn('add `hands-reviewed` by hand; no new review is needed', note)
+        self.assertNotIn('re-add', note.lower())
         starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(),
                                                 on_label=self.raising_at(1, TimeoutError()))
         self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)), 'the last try at the deadline completes it')

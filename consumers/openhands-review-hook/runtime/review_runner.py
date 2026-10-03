@@ -589,9 +589,16 @@ class Runner:
                 if posted:  # the forge kept failing the label swap: one last try, then say what happened
                     if self._complete(repo, num, head, profile, conv_id, switch):
                         return
-                    self.fail(repo, num, f'the review is posted, but the forge could not be reached to label it done within '
-                                         f'{self.timeout // 60} minutes; the review stands: replace `{self.working}` with '
-                                         f'`{self.done}` by hand instead of requesting another review')
+                    # Not a failure: the review stands. A note (no retry advice, never a review), not fail().
+                    self.log(f'review posted, not labelled done: {repo}#{num} the forge was unreachable until the deadline')
+                    try:
+                        self.set_label(repo, num, self.working, False)
+                        if self.note:
+                            self.note(repo, num, f'the review above is posted, but the forge could not be reached to label '
+                                                 f'it done within {self.timeout // 60} minutes. It stands: add `{self.done}` by '
+                                                 'hand; no new review is needed.')
+                    except Exception as error:  # still unreachable: the log line above says what to do
+                        self.log(f'posted review not marked: {repo}#{num}: {type(error).__name__}')
                     return
                 self.fail(repo, num, f'no review posted within {self.timeout // 60} minutes; no automatic retry')
                 return

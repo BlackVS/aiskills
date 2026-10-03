@@ -20,9 +20,11 @@ content fixes inside existing skills. The current version is in `VERSION`.
   failed label write, reported "could not complete" and removed
   `hands-reviewing` from a reviewed PR. Both label writes are idempotent, so
   trying again is safe. If the forge stays unreachable until the watch
-  deadline, the deadline tries once more and then reports that the review is
-  posted but could not be labelled done, with the labels to swap by hand,
-  rather than "no review posted" (which invited a duplicate review). A new
+  deadline, the deadline tries once more. If that fails too, it removes
+  `hands-reviewing` and posts a note (never a review, and no retry advice)
+  saying the review stands and `hands-reviewed` is to be added by hand. Before,
+  it failed the request as "no review posted", which invited a duplicate
+  review. A new
   adapter test shows that a forge write is never sent twice (first items of
   #64).
 
