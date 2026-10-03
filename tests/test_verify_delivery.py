@@ -257,6 +257,20 @@ class Verify:
         code, _ = self.run_vd("--merger", "maintainer")
         self.assertEqual(code, 0)
 
+    def test_merger_and_bot_account_logins_ignore_case(self):
+        # logins are case-insensitive on both forges, as --review-author already treats them
+        code, _ = self.run_vd("--merger", "MAINTAINER")
+        self.assertEqual(code, 0, "an allowlisted merger in other case is accepted")
+        code, doc = self.run_vd("--bot-account", "Maintainer")
+        self.assertEqual((code, self.check(doc, "merge")["account_type"]), (3, "Bot"))
+        self.fake.data["pull"]["merged_by"]["login"] = "MainTainer"  # the forge reports another case
+        code, _ = self.run_vd("--merger", "maintainer")
+        self.assertEqual(code, 0, "the forge's case does not matter either")
+        code, doc = self.run_vd("--bot-account", "maintainer")
+        self.assertEqual((code, self.check(doc, "merge")["account_type"]), (3, "Bot"))
+        code, doc = self.run_vd("--merger", "someone-else")
+        self.assertIn("allowlist", self.check(doc, "merge")["detail"])
+
     def test_tree_mismatch(self):
         merge = self.fake.data["git_commit_merge"]
         (merge.get("tree") or merge["commit"]["tree"])["sha"] = "1" * 40

@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.30.2] - 2026-10-03
+
+### Fixed
+- verify-delivery: `--merger` and `--bot-account` compare logins
+  case-insensitively, as `--review-author` already did. Logins are
+  case-insensitive on GitHub and Gitea, so `--merger blackvs` used to reject a
+  merge by `BlackVS`. Both sides are lowercased; a test on each forge covers
+  the listed name and the forge's reported login in a different case.
+
 ## [1.30.1] - 2026-10-02
 
 ### Fixed

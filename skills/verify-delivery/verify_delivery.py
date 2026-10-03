@@ -287,7 +287,7 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
 def account_type(user, kind, bots):
     """"User" or "Bot", and the basis for saying so."""
     login = user.get("login") or ""
-    if login in bots:
+    if login.lower() in bots:  # logins are case-insensitive on both forges
         return "Bot", "listed with --bot-account"
     if login.endswith("[bot]"):
         return "Bot", "login ends with [bot]"
@@ -383,7 +383,7 @@ def verify(args, forge, kind, number):
             problems.append("the forge does not say who merged")
         if acct != "User" and not args.allow_bot_merge:
             problems.append(f"merged by a {acct} account; a person is required")
-        if args.mergers and user.get("login") not in args.mergers:
+        if args.mergers and (user.get("login") or "").lower() not in args.mergers:
             problems.append("the merging account is not in the --merger allowlist")
         merge["status"] = "failed" if problems else "passed"
         if problems:
@@ -600,8 +600,9 @@ def resolve(args, env):
         args.verdict = re.compile(args.verdict_pattern)
     except re.error:
         raise UsageError("--verdict-pattern is not a valid regular expression")
-    args.bot_accounts = set(args.bot_account)
-    args.mergers = set(args.merger)
+    # Logins are case-insensitive on GitHub and Gitea: compared lowercased, as --review-author is.
+    args.bot_accounts = {login.strip().lower() for login in args.bot_account}
+    args.mergers = {login.strip().lower() for login in args.merger}
     kind, api_base, owner, repo, number = parse_ref(args.pr, args.number, args.forge, args.api_base)
     if not api_base:
         raise UsageError("--api-base is required for Gitea (for example https://git.example.org/api/v1)")
