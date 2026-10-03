@@ -113,11 +113,15 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(labels,{'hands-reviewed'})
             self.assertIn(head,starts[1]['initial_message']['content'][0]['text'])
 
-    def run_unchanged(self, github, author='test-bot', owner='test-bot', review_author=None, gitea_json=False, requests=1):
+    def run_unchanged(self, github, author='test-bot', owner='test-bot', review_author=None, gitea_json=False, requests=1,
+                      flaky=None):
         """The newest review, by `author`, is of an older head; the forge's compare diff of both
         heads has the same patch identity. With `requests` > 1 (GitHub), the request label is
-        put back after each outcome, so one poller process handles that many requests. Returns what the adapter did: the posted comments,
-        the compares read, the conversations started, the labels, the forge paths read, errors."""
+        put back after each outcome, so one poller process handles that many requests. `flaky`
+        maps a forge path to how many times it first answers 503. Returns what the adapter did:
+        the posted comments, the compares read, the conversations started, the labels, the forge
+        paths read."""
+        flaky = dict(flaky or {})
         head, old = 'a' * 40, 'b' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed']
         labels, posted, compares, starts, paths, errors = {'review-this'}, [], [], [], [], []
@@ -134,6 +138,10 @@ class AdapterTests(unittest.TestCase):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length']))) if self.headers.get('Content-Length') else None
                 result, raw = None, None
                 paths.append(path)
+                if flaky.get(path):
+                    flaky[path] -= 1
+                    self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers()
+                    return
                 if path == '/forge/search/issues':
                     q = urllib.parse.parse_qs(query)['q'][0]
                     result = {'items': [] if 'label:' in q else [{'repository_url': 'https://example.test/repos/owner/repo', 'number': 1, 'title': 'test', 'labels': [{'name': n} for n in labels]}]}
@@ -252,6 +260,15 @@ class AdapterTests(unittest.TestCase):
         # the receiver trusts only BOT_NAME's reviews
         posted, compares, starts, _, _, _ = self.run_unchanged(False, author='stranger')
         self.assertEqual(([s['agent_profile_id'] for s in starts], posted, compares), (['codex-astra'], [], []))
+
+    def test_a_forge_read_that_fails_once_is_tried_again(self):
+        # a brief forge outage (503) on a read must not fail the request: both receivers retry GETs
+        for github in (True, False):
+            with self.subTest('github' if github else 'gitea'):
+                posted, _, starts, labels, paths, (_, old) = self.run_unchanged(
+                    github, flaky={'/forge/repos/owner/repo/pulls/1': 1})
+                self.assert_verdict_stands(posted, starts, labels, old)
+                self.assertGreaterEqual(paths.count('/forge/repos/owner/repo/pulls/1'), 3, 'the failed read was asked again')
 
     def test_gitea_before_1_27_reviews_in_full(self):
         # an older Gitea ignores ?output=diff and answers JSON: no identity, a full review

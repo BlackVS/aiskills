@@ -9,6 +9,24 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.2] - 2026-10-03
+
+### Fixed
+- hands consumer: a brief forge or Canvas outage no longer loses a review.
+  Before, one timed-out comment read while the review conversation ran failed
+  the review. The failure report then hit the same outage, and the review
+  thread died, leaving `hands-reviewing` on the PR with no comment, even though
+  the conversation went on to post a correct review (#61).
+  - **Watch:** a read that fails transiently (timeout, refused or dropped
+    connection, HTTP 5xx or 429) is logged and tried again at the next poll;
+    only the watch deadline ends the watch. Any other error still fails the
+    review.
+  - **Failure report:** a failure while reporting a failure is logged
+    (`failure not reported`) and never escapes the review thread.
+  - **Forge reads:** both receivers try a forge read (GET) up to three times
+    on transient errors (1 s, then 2 s apart). Writes are not retried, since one
+    that timed out may still have happened.
+
 ## [1.31.1] - 2026-10-03
 
 ### Fixed
