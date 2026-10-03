@@ -79,12 +79,16 @@ All four must pass for the verdict `confirmed`:
    not, and the merge is a rebase merge of the pull request, the merged
    change is read from the base the rebase landed on instead
    (`<base>...<merge commit>`; on Gitea a compare with `?output=diff`, so
-   1.27 or later), and the check reports that base as `base_parent_sha` and
-   the number of commits as `rebased_commits`. It counts as a rebase merge
-   when the pull request's commits form one line of 2 to 100 commits from its
-   head, and as many commits ending at the merge commit each have one parent
-   and carry the same commit messages in the same order; anything else is
-   compared by its first parent only.
+   1.27 or later), and the reviewed change is read again from that base
+   (`<base>...<reviewed head>` on GitHub, and on Gitea for an older head).
+   The check reports that base as `base_parent_sha` and the number of
+   commits as `rebased_commits`. It counts as a rebase merge when the pull
+   request's commits form one line of 2 to 100 commits from its head, and as
+   many commits ending at the merge commit each have one parent and carry the
+   same commit messages in the same order; anything else is compared by its
+   first parent only. When the pull request's commits or the rebased commits
+   cannot be read, the check is `pending` (retry later), not `failed`, even
+   though the first-parent change did not match.
 
    The patch identity is a SHA-256 over a canonical form of the diff, the
    same function for both forges (not byte-compatible with `git patch-id`):

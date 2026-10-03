@@ -113,9 +113,10 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(labels,{'hands-reviewed'})
             self.assertIn(head,starts[1]['initial_message']['content'][0]['text'])
 
-    def run_unchanged(self, github, author='test-bot', owner='test-bot', review_author=None, gitea_json=False):
+    def run_unchanged(self, github, author='test-bot', owner='test-bot', review_author=None, gitea_json=False, requests=1):
         """The newest review, by `author`, is of an older head; the forge's compare diff of both
-        heads has the same patch identity. Returns what the adapter did: the posted comments,
+        heads has the same patch identity. With `requests` > 1 (GitHub), the request label is
+        put back after each outcome, so one poller process handles that many requests. Returns what the adapter did: the posted comments,
         the compares read, the conversations started, the labels, the forge paths read, errors."""
         head, old = 'a' * 40, 'b' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed']
@@ -197,6 +198,11 @@ class AdapterTests(unittest.TestCase):
                             break
                         except urllib.error.URLError: time.sleep(.05)
                 success = outcome.wait(12)
+                for _ in range(requests - 1):
+                    if not success:
+                        break
+                    outcome.clear(); labels.clear(); labels.add('review-this')
+                    success = outcome.wait(12)
             finally:
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
@@ -216,6 +222,12 @@ class AdapterTests(unittest.TestCase):
         self.assert_verdict_stands(posted, starts, labels, old)
         self.assertEqual(compares, [(f'/forge/repos/owner/repo/compare/release/1...{old}', '', 'application/vnd.github.diff'),
                                     (f'/forge/repos/owner/repo/compare/release/1...{head}', '', 'application/vnd.github.diff')])
+        self.assertEqual(paths.count('/forge/user'), 1)
+
+    def test_github_adapter_reads_the_token_owner_once(self):
+        # two requests in one poller process: the second uses the login read for the first
+        posted, compares, starts, _, paths, _ = self.run_unchanged(True, requests=2)
+        self.assertEqual((len(posted), len(compares), starts), (2, 4, []), 'both requests keep the verdict')
         self.assertEqual(paths.count('/forge/user'), 1)
 
     def test_github_adapter_trusts_only_the_reviewer_login(self):
