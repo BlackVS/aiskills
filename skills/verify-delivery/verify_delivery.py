@@ -443,22 +443,31 @@ def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge
     if not head or not parent:
         return {**result, "status": "failed",
                 "detail": "the trees differ, and the merge commit has no parent to compare its change against"}
+    # Three-dot compare diffs from the merge base: of the first parent and the reviewed head, the
+    # reviewed change; of the first parent and the merge commit, the merge commit's change. Gitea
+    # serves them as raw diffs with ?output=diff since 1.27; an older Gitea ignores the parameter
+    # and answers JSON, or (before 1.22) has no compare endpoint at all.
+    compare = (f"/compare/{parent}...{reviewed}", f"/compare/{parent}...{merge_sha}")
     if kind == "github":
-        # Three-dot compare diffs from the merge base: of the first parent and the reviewed head,
-        # the reviewed change; of the first parent and the merge commit, the merge commit's change.
-        paths = (f"/compare/{parent}...{reviewed}", f"/compare/{parent}...{merge_sha}")
+        paths = compare
     elif final:
         paths = (f"/pulls/{number}.diff", f"/git/commits/{merge_sha}.diff")
     else:
-        return {**result, "status": "failed",
-                "detail": "the review names an older head, and Gitea's API has no diff of an older head's "
-                          "change to compare with the merged change: re-review at the final head"}
+        paths = tuple(path + "?output=diff" for path in compare)
+    no_older_diff = {**result, "status": "failed",
+                     "detail": "the review names an older head, and this Gitea's API returns no diff of an older "
+                               "head's change (compare with ?output=diff needs Gitea 1.27 or later): "
+                               "re-review at the final head"}
     try:
         texts = [forge.diff(path) for path in paths]
     except (Unavailable, NotFound) as e:
+        if kind == "gitea" and not final and isinstance(e, NotFound):
+            return no_older_diff
         why = str(e) if isinstance(e, Unavailable) else "the forge did not find it"
         return {**result, "status": "pending",
                 "detail": f"the trees differ, and a diff for the patch identity could not be read ({why})"}
+    if kind == "gitea" and not final and any(t.lstrip().startswith(b"{") for t in texts):
+        return no_older_diff
     try:
         (was_reviewed, files), (merged, _) = (patch_identity(t) for t in texts)
     except ValueError as e:

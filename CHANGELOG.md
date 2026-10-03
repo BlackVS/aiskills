@@ -9,6 +9,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.30.1] - 2026-10-02
+
+### Fixed
+- verify-delivery on Gitea: a trusted review of an older head is now carried
+  across a base-only update, as on GitHub. Gitea serves the compare diff with
+  `compare/<a>...<b>?output=diff` from 1.27. This was observed on gitea.com
+  (1.27.0+dev, 2026-10-02), where its patch identity equals that of git's own
+  three-dot diff. The parameter is absent from the 1.23.8, 1.24.7, 1.25.5 and
+  1.26.4 API specs. The helper reads both changes from that compare. When a
+  Gitea answers JSON (before 1.27) or has no compare endpoint (before 1.22),
+  the review still fails with "re-review at the final head", and the detail
+  now names the Gitea version needed. Tests cover the carried review, a later
+  change it does not cover, and the three ways an older Gitea answers; a new
+  Gitea fixture holds the older head's diff.
+
 ## [1.30.0] - 2026-10-02
 
 ### Added

@@ -736,13 +736,48 @@ class GitHub(Verify, unittest.TestCase):
 class Gitea(Verify, unittest.TestCase):
     forge = "gitea"
 
-    def test_review_at_an_older_head_cannot_be_carried_over_on_gitea(self):
+    def test_review_at_an_older_head_carries_over_a_base_only_update(self):
+        # Gitea 1.27+ serves the compare diff with ?output=diff (observed on gitea.com, 1.27.0+dev,
+        # 2026-10-02: its patch identity equals that of git's own three-dot diff)
         self.reviewed_only_at_older_head()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["rule"]), ("passed", "patch_identity"))
+        self.assertEqual({r["reviewed_head"]: r["rule"] for r in same["reviewed"]}, {HEAD: "tree_equality", OLD: "patch_identity"})
+        compares = [r for r in self.fake.requests if "/compare/" in r["url"]]
+        self.assertEqual([urllib.parse.urlsplit(r["url"]).path.split("/compare/")[1] for r in compares],
+                         [f"{PARENT}...{OLD}", f"{PARENT}...{MERGE}"])
+        self.assertTrue(all(urllib.parse.urlsplit(r["url"]).query == "output=diff" for r in compares))
+        self.assertTrue(all(r["headers"].get("Accept") == "text/plain" for r in compares))
+
+    def test_review_at_an_older_head_does_not_cover_a_later_change(self):
+        self.reviewed_only_at_older_head()
+        self.fake.diffs["old_change"] = self.fake.diffs["old_change"].replace("+    return label\n", "")
         code, doc = self.run_vd()
         self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
         same = self.check(doc, "tree_equality")
         self.assertEqual((same["status"], same["reviewed_head"]), ("failed", OLD))
-        self.assertIn("re-review at the final head", same["detail"])
+        self.assertIn("is not the reviewed change", same["detail"])
+
+    def test_review_at_an_older_head_on_a_gitea_without_the_compare_diff(self):
+        # before 1.27 the parameter is ignored and the compare endpoint answers JSON; before 1.22
+        # there is no compare endpoint: either way the review cannot be carried over, and says why
+        older = {"json": lambda req: Response(200, b'{"total_commits":1,"commits":[]}'),
+                 "missing": lambda req: (_ for _ in ()).throw(urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))}
+        cases = [(name, f"{PARENT}...{OLD}", answer) for name, answer in older.items()]
+        cases.append(("json for the merge commit only", f"{PARENT}...{MERGE}", older["json"]))
+        for name, compared, answer in cases:
+            with self.subTest(name):
+                self.reviewed_only_at_older_head()
+                self.fake.overrides = {f"/repos/acme/widgets/compare/{compared}": answer}
+                code, doc = self.run_vd()
+                self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((same["status"], same["reviewed_head"]), ("failed", OLD))
+                self.assertIn("needs Gitea 1.27 or later", same["detail"])
+                self.assertIn("re-review at the final head", same["detail"])
+                self.assertNotIn("evidence", doc)
 
     def test_without_an_allowlist_the_reviews_cannot_be_satisfied(self):
         code, doc = self.run_vd(authors=[])
