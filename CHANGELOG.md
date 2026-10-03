@@ -9,6 +9,25 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.3] - 2026-10-03
+
+### Fixed
+- hands consumer: a review that is on the PR is no longer failed by a forge
+  outage while it is labelled done. If the pull-request read or a label write
+  that completes a posted review fails transiently, the watch logs it (`label
+  swap failed, retrying at the next poll`) and completes the review at the next
+  poll. Before, an outage that outlasted 1.31.2's three GET attempts, or any
+  failed label write, reported "could not complete" and removed
+  `hands-reviewing` from a reviewed PR. Both label writes are idempotent, so
+  trying again is safe. If the forge stays unreachable until the watch
+  deadline, the deadline tries once more. If that fails too, it removes
+  `hands-reviewing` and posts a note (never a review, and no retry advice)
+  saying the review stands and `hands-reviewed` is to be added by hand. Before,
+  it failed the request as "no review posted", which invited a duplicate
+  review. A new
+  adapter test shows that a forge write is never sent twice (first items of
+  #64).
+
 ## [1.31.2] - 2026-10-03
 
 ### Fixed

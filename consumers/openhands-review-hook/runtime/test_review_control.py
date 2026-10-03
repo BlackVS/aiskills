@@ -334,7 +334,7 @@ class RunnerTests(unittest.TestCase):
                 finished=False, comment_after_calls=None, clock=None,
                 primary='codex-astra', fallback='claude-opus', secondary=None, llm_refs=None, explicit=False,
                 profile_info=None, prompt_text='model={model} label={label}', runs=None, resume=None, on_comments=None, usage_id=None,
-                break_after_completion=None, fail=None, on_app=None, on_events=None):
+                break_after_completion=None, fail=None, on_app=None, on_events=None, on_pulls=None, on_label=None):
         starts, labels, failures, calls = [], [], [], {'comments': 0}
         self.notes = notes = []
         def note(*args):
@@ -343,6 +343,8 @@ class RunnerTests(unittest.TestCase):
             notes.append(args)
         def api(path):
             if '/pulls/' in path:
+                if on_pulls:
+                    on_pulls()
                 return {'state': 'open', 'head': {'sha': 'b'*40 if changed and starts else HEAD}}
             calls['comments'] += 1
             if on_comments:
@@ -370,7 +372,11 @@ class RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             prompt = Path(temp)/'prompt'; prompt.write_text(prompt_text)
             self.logs = logs = []
-            runner = Runner(api, app, lambda *args: labels.append(args), profile_info or (lambda p: (p,p)),
+            def set_label(*args):
+                if on_label:
+                    on_label()
+                labels.append(args)
+            runner = Runner(api, app, set_label, profile_info or (lambda p: (p,p)),
                             fail or (lambda *args: failures.append(args)), log=logs.append,
                             timeout=0 if timeout else 10, sleep=lambda _: None,
                             llm_ref=lambda name: (llm_refs or {}).get(name), problems=lambda s: dict(problems or {}), runs=runs,
@@ -425,6 +431,68 @@ class RunnerTests(unittest.TestCase):
                                                 comment_after_calls=3)
         self.assertEqual((len(starts), failures), (1, []))
         self.assertIn(('owner/repo', 1, 'hands-reviewed', True), labels)
+
+    @staticmethod
+    def raising_at(n, error):
+        """A hook that raises ERROR on its Nth call only."""
+        calls = []
+        def hook():
+            calls.append(1)
+            if len(calls) == n:
+                raise error
+        return hook
+
+    def test_a_posted_review_is_labelled_done_after_a_brief_outage(self):
+        # the review is on the PR: an outage while it is labelled done is tried again at the next
+        # poll, never reported as a failure (#64)
+        done = ('owner/repo', 1, 'hands-reviewed', True)
+        cases = {
+            'label swap': ({'on_label': self.raising_at(1, TimeoutError())}, 'label swap'),
+            'label swap, second write': ({'on_label': self.raising_at(2, self.http_error(502))}, 'label swap'),
+            'pull request read': ({'on_pulls': self.raising_at(3, urllib.error.URLError(ConnectionRefusedError()))}, 'watch read'),
+            # the review shows up at the fresh look after "finished" (the second read), then the swap fails once
+            'after the conversation finished': ({'finished': True, 'completed_first': False, 'comment_after_calls': 2,
+                                                 'on_label': self.raising_at(1, TimeoutError())}, 'label swap'),
+        }
+        for name, (hooks, what) in cases.items():
+            with self.subTest(name):
+                starts, labels, failures = self.execute(quota=False, **{'completed_first': True, **hooks})
+                self.assertEqual((len(starts), failures), (1, []), 'no failure is reported')
+                self.assertEqual(labels[-1], done)
+                self.assertTrue(any(line.startswith(f'{what} failed, retrying at the next poll: owner/repo#1:') for line in self.logs), self.logs)
+                self.assertIn('review done: owner/repo#1 profile=codex-astra', self.logs)
+
+    def test_a_posted_review_is_never_called_missing_at_the_deadline(self):
+        # one watch iteration (clock: deadline from 0, one check below it, then past it); the label
+        # swap fails in it, so the deadline tries once more
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def always_down():
+            raise TimeoutError()
+        starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
+        self.assertEqual(failures, [], 'not a failure: no "could not run", no advice to request another review')
+        self.assertIn('review posted, not labelled done: owner/repo#1 the forge was unreachable until the deadline', self.logs)
+        self.assertIn('posted review not marked: owner/repo#1: TimeoutError', self.logs)  # the forge is still down
+        # the forge is back for the last word: hands-reviewing removed, a note (never a review) says what to do
+        calls = []
+        def down_for_the_watch():
+            calls.append(1)
+            if len(calls) <= 2:  # the swap in the one iteration and the last try at the deadline
+                raise TimeoutError()
+        starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=down_for_the_watch)
+        self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewing', False)))
+        [(_, _, note)] = self.notes
+        self.assertTrue(note.startswith('the review above is posted, but the forge could not be reached to label it done'), note)
+        self.assertIn('add `hands-reviewed` by hand; no new review is needed', note)
+        self.assertNotIn('re-add', note.lower())
+        starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(),
+                                                on_label=self.raising_at(1, TimeoutError()))
+        self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)), 'the last try at the deadline completes it')
+        # with nothing posted, the deadline still says "no review posted": test_timeout_does_not_retry
+
+    def test_a_label_swap_refused_for_good_still_fails(self):
+        starts, labels, failures = self.execute(quota=False, completed_first=True, on_label=self.raising_at(1, self.http_error(403)))
+        self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
 
     def test_a_read_that_is_an_answer_still_fails_the_review(self):
         for error in (self.http_error(404), self.http_error(401), ValueError('not json')):
@@ -940,6 +1008,7 @@ class RunnerTests(unittest.TestCase):
     def test_timeout_does_not_retry(self):
         starts, labels, failures = self.execute(timeout=True)
         self.assertEqual(len(starts), 1); self.assertFalse(labels); self.assertTrue(failures)
+        self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
 
     def test_rejected_request_configuration_names_the_cause(self):
         bad = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'LLMBadRequestError', 'detail': 'Upstream API error: 400',

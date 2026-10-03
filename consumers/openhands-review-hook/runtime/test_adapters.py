@@ -118,7 +118,7 @@ class AdapterTests(unittest.TestCase):
         """The newest review, by `author`, is of an older head; the forge's compare diff of both
         heads has the same patch identity. With `requests` > 1 (GitHub), the request label is
         put back after each outcome, so one poller process handles that many requests. `flaky`
-        maps a forge path to how many times it first answers 503. Returns what the adapter did:
+        maps a forge path (or "METHOD path") to how many times it first answers 503. Returns what the adapter did:
         the posted comments, the compares read, the conversations started, the labels, the forge
         paths read."""
         flaky = dict(flaky or {})
@@ -138,8 +138,9 @@ class AdapterTests(unittest.TestCase):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length']))) if self.headers.get('Content-Length') else None
                 result, raw = None, None
                 paths.append(path)
-                if flaky.get(path):
-                    flaky[path] -= 1
+                key = path if flaky.get(path) else f'{self.command} {path}'
+                if flaky.get(key):
+                    flaky[key] -= 1
                     self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers()
                     return
                 if path == '/forge/search/issues':
@@ -269,6 +270,16 @@ class AdapterTests(unittest.TestCase):
                     github, flaky={'/forge/repos/owner/repo/pulls/1': 1})
                 self.assert_verdict_stands(posted, starts, labels, old)
                 self.assertGreaterEqual(paths.count('/forge/repos/owner/repo/pulls/1'), 3, 'the failed read was asked again')
+
+    def test_a_forge_write_is_never_sent_twice(self):
+        # a write that failed may still have happened: the note's POST is not retried, so the
+        # verdict check gives up and the request is reviewed in full instead
+        for github in (True, False):
+            with self.subTest('github' if github else 'gitea'):
+                posted, _, starts, _, _, _ = self.run_unchanged(
+                    github, flaky={'POST /forge/repos/owner/repo/issues/1/comments': 1})
+                self.assertEqual(posted, [], 'the one note POST failed and was not sent again')
+                self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra'])
 
     def test_gitea_before_1_27_reviews_in_full(self):
         # an older Gitea ignores ?output=diff and answers JSON: no identity, a full review
