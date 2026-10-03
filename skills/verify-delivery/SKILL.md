@@ -22,7 +22,9 @@ All four must pass for the verdict `confirmed`:
 1. **Reviewed head.** The PR's final head commit is taken from the forge.
    The required reviews must be `READY_FOR_HUMAN_MERGE`: the latest review
    comment that names the final head counts, and one posted or edited after
-   the merge does not. With no review of the final head, the latest one of an
+   the merge does not. Only comments on the pull request count: a formal
+   pull-request review is listed under `ignored`, because its body can be
+   edited without a recorded edit time (GitHub's API gives it none). With no review of the final head, the latest one of an
    older head counts instead, but only as far as check 3 finds the merged
    change to be that head's change (a base-only update after the review keeps
    it valid; any other later change does not). On Gitea the link is read
