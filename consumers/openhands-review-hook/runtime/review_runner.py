@@ -312,15 +312,25 @@ class Runner:
                  record['profile'], prompt_file, workspaces, resume=record)
 
     def _complete(self, repo, num, head, profile, conv_id=None, switch=None):
-        current = self.api(f'/repos/{repo}/pulls/{num}')
+        """Label a posted review done; True once handled. False when the forge could not be
+        reached for it (a transient error, logged): the watch tries again at the next poll, so
+        a review that is on the PR is never failed for a brief outage. Both label writes are
+        idempotent: the removal is guarded by a read of the labels, and adding is a set union."""
+        current = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/pulls/{num}'))
+        if current is MISSED:
+            return False
         if current.get('state') != 'open' or current['head']['sha'] != head:
             self.fail(repo, num, 'the review is stale because the pull request changed or closed')
-            return
-        self.set_label(repo, num, self.working, False)
-        self.set_label(repo, num, self.done, True)
+            return True
+        def swap():
+            self.set_label(repo, num, self.working, False)
+            self.set_label(repo, num, self.done, True)
+        if self._watched(repo, num, swap, 'label swap') is MISSED:
+            return False
         self.log(f'review done: {repo}#{num} profile={profile}')
         if switch and conv_id:
             self._verify_switch(repo, num, profile, conv_id, switch)
+        return True
 
     def _verify_switch(self, repo, num, profile, conv_id, switch):
         """Combined mode signs the review with the primary's model; say so on the
@@ -388,16 +398,16 @@ class Runner:
             self.log(f'patch check skipped: {repo}#{num}: {type(error).__name__}')
             return False
 
-    def _watched(self, repo, num, read):
-        """READ's answer, or MISSED after a transient error (logged). The conversation runs on
-        whether or not one read reaches the forge or Canvas, so the watch tries again at the
-        next poll; only its deadline ends it. Any other error is raised."""
+    def _watched(self, repo, num, read, what='watch read'):
+        """READ's answer, or MISSED after a transient error (logged as WHAT). The conversation
+        runs on whether or not one call reaches the forge or Canvas, so the watch tries again
+        at the next poll; only its deadline ends it. Any other error is raised."""
         try:
             return read()
         except Exception as error:
             if not transient(error):
                 raise
-            self.log(f'watch read failed, retrying at the next poll: {repo}#{num}: {type(error).__name__}')
+            self.log(f'{what} failed, retrying at the next poll: {repo}#{num}: {type(error).__name__}')
             return MISSED
 
     def _start(self, repo, num, label, selected):
@@ -525,8 +535,9 @@ class Runner:
                 if comments is MISSED:
                     continue
                 if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
-                    self._complete(repo, num, head, profile, conv_id, switch)
-                    return
+                    if self._complete(repo, num, head, profile, conv_id, switch):
+                        return
+                    continue
                 info = self._watched(repo, num, lambda: self.app_api(f'/api/conversations/{conv_id}'))
                 if info is MISSED:
                     continue
@@ -538,8 +549,9 @@ class Runner:
                     if comments is MISSED:
                         continue  # still finished at the next poll: looked at again then
                     if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
-                        self._complete(repo, num, head, profile, conv_id, switch)  # not another iteration: the deadline may have passed
-                        return
+                        if self._complete(repo, num, head, profile, conv_id, switch):  # not another iteration: the deadline may have passed
+                            return
+                        continue
                     self.log(f'review finished without posting: {repo}#{num} conversation={conv_id}')
                     self.fail(repo, num, f'the review conversation finished without posting a review (conversation {conv_id}); '
                               'inspect it in Canvas, then re-add the label')
