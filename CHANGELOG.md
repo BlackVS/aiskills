@@ -9,6 +9,24 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.1] - 2026-10-03
+
+### Fixed
+- verify-delivery: a rebase-merge walk that cannot be read is tried once per
+  run, not once for every reviewed head (the result was already `pending`;
+  only the requests repeated). A failed rebase comparison now says the
+  combined change of the rebase merge's commits is not the reviewed change.
+  `SKILL.md` says the reviewed change is read again from the rebase's base,
+  and that an unreadable commit listing or walk is `pending`. New tests: the
+  walk read once with two reviewed heads, and an unreadable compare after the
+  base is found is `pending`. Closes #57.
+- hands consumer: the GitHub poller's `REVIEW_AUTHOR` documentation and the
+  1.31.0 `UPDATING.md` row say to set it when the token has no user (a GitHub
+  App installation token). New tests: the token owner is read once across
+  requests, and the reviewer login is read only when the pull request has a
+  review comment. The review guide records the Gitea 1.27 compare diff and the
+  commit order of `pulls/{index}/commits` observed on gitea.com. Closes #59.
+
 ## [1.31.0] - 2026-10-03
 
 ### Added

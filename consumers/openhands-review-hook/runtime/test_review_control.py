@@ -601,6 +601,17 @@ class RunnerTests(unittest.TestCase):
         _, _, _, _, logs, _ = self.unchanged([self.review_comment(old)], same, reviewer=None)
         self.assertIn('patch check skipped: owner/repo#1: no trusted reviewer login', logs)
 
+    def test_the_reviewer_login_is_read_only_when_a_review_exists(self):
+        # a PR with no review-format comment never needs the login (on GitHub: no GET /user)
+        old, calls = 'b' * 40, []
+        def reviewer():
+            calls.append(1); return 'hands-bot'
+        for comments, expected in (([{'body': 'discussion'}], 0), ([self.review_comment(old)], 1)):
+            with self.subTest(expected=expected):
+                calls.clear()
+                self.unchanged(comments, {old: 'same', HEAD: 'same'}, reviewer=reviewer)
+                self.assertEqual(len(calls), expected)
+
     def test_a_pr_that_moves_or_closes_during_the_check_is_never_completed(self):
         # read 1 fixes the head (_start), read 2 gives the base, read 3 confirms the head after
         # the comparison: a PR that moved to another patch or closed fails as stale, unlabelled done

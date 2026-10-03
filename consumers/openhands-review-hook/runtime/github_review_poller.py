@@ -43,7 +43,10 @@ host:
                      must START with
   REVIEW_AUTHOR      the GitHub login that posts the review comments, default
                      the token's owner (GET /user); a repeated request on an
-                     unchanged patch keeps only a review by this login
+                     unchanged patch keeps only a review by this login. Set it
+                     when the token has no user (a GitHub App installation
+                     token answers 403 there): otherwise every request is
+                     reviewed in full
   PROMPT_FILE        default /opt/openhands/hooks/github_review_prompt.txt
                      (placeholders: {repo} {num} {title!r} {marker} {profile}
                      {label})

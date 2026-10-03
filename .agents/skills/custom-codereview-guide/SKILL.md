@@ -115,3 +115,20 @@ Forge pagination, observed credential-free on 2026-09-24:
   is ignored) and returns every comment with `X-Total-Count`; the repo-wide
   `/issues/comments` endpoint is the paged one. No pagination applies to the
   per-issue reads the receivers make.
+
+Gitea compare diff, observed credential-free on gitea.com (1.27.0+dev) on
+2026-10-02, and in the published API specs of 1.23.8, 1.24.7, 1.25.5 and
+1.26.4:
+
+- `GET /repos/{owner}/{repo}/compare/{a}...{b}?output=diff` returns a raw
+  unified diff on 1.27, and its patch identity (`verify-delivery`'s
+  `patch_identity`) equals that of git's own `git diff a...b`. Up to 1.26.4
+  the parameter is not in the spec and the endpoint answers JSON (before 1.22
+  there is no compare endpoint). `verify-delivery` and the Gitea receiver
+  therefore treat a JSON or 404 answer as "no diff of an older head": a
+  failure that names Gitea 1.27 (verify-delivery), or a full review (the
+  receiver). A released 1.27 has not been checked yet.
+- `GET /repos/{owner}/{repo}/pulls/{index}/commits` on a merged pull request
+  still lists its commits, newest first, each with `parents`; GitHub lists
+  them oldest first. `verify-delivery`'s rebase-merge check orders them by
+  their parents.
