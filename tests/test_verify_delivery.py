@@ -649,7 +649,7 @@ class Verify:
         self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
         same = self.check(doc, "tree_equality")
         self.assertEqual((same["status"], same["base_parent_sha"], same["rebased_commits"]), ("failed", BASE, 2))
-        self.assertIn("is not the reviewed change", same["detail"])
+        self.assertIn("the combined change of the rebase merge's commits is not the reviewed change", same["detail"])
 
     def pr_commit(self, sha):
         return next(c for c in self.fake.data["pull_commits"] if c["sha"] == sha)
@@ -707,6 +707,43 @@ class Verify:
         code, doc = self.run_vd()
         self.assertEqual((code, doc["verdict"]), (4, "pending"))
         self.assertIn("rebase merge could not be read", self.check(doc, "tree_equality")["detail"])
+
+    @staticmethod
+    def unavailable(req):
+        raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, io.BytesIO(b"{}"))
+
+    def test_an_unreadable_rebase_walk_is_read_once(self):
+        """Two reviewed heads both miss on the first parent; the walk that fails is not repeated."""
+        listing = "/repos/acme/widgets/pulls/42/commits"
+        reads = {}
+        for heads in ("final head only", "final and older head"):
+            self.fake = FakeForge(self.forge)
+            self.rebase_merge()
+            if heads == "final and older head":
+                self.reviewed_only_at_older_head()
+            self.fake.overrides = {listing: self.unavailable}
+            code, doc = self.run_vd()
+            self.assertEqual((code, doc["verdict"]), (4, "pending"), heads)
+            self.assertEqual(len(self.check(doc, "tree_equality")["reviewed"]), 1 if heads == "final head only" else 2)
+            reads[heads] = sum(urllib.parse.urlsplit(r["url"]).path.endswith(listing) for r in self.fake.requests)
+        self.assertGreater(reads["final head only"], 0)
+        self.assertEqual(reads["final and older head"], reads["final head only"])
+
+    def test_an_unreadable_compare_of_a_rebase_merge_is_pending(self):
+        answers = {"unavailable": self.unavailable}
+        if self.forge == "github":  # on Gitea a missing compare means a Gitea before 1.22 (a failure that says so)
+            answers["not found"] = lambda req: (_ for _ in ()).throw(
+                urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))
+        for name, answer in answers.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.rebase_merge()
+                self.fake.overrides = {f"/repos/acme/widgets/compare/{BASE}...{MERGE}": answer}
+                code, doc = self.run_vd()
+                self.assertEqual((code, doc["verdict"]), (4, "pending"))
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((same["status"], same["rebased_commits"]), ("pending", 2))
+                self.assertIn("could not be read", same["detail"])
 
     def test_a_rebase_merge_reviewed_at_an_older_head(self):
         self.rebase_merge()

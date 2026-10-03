@@ -13,7 +13,7 @@ pushes. Standard library only.
 Prints one JSON document on stdout. Exit codes: 0 confirmed, 3 not confirmed,
 4 pending or retryable (the API was unavailable), 2 usage error. See SKILL.md.
 """
-import argparse, datetime, functools, hashlib, json, os, re, socket, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, hashlib, json, os, re, socket, sys, time, urllib.error, urllib.parse, urllib.request
 
 EXIT_CONFIRMED, EXIT_USAGE, EXIT_NOT_CONFIRMED, EXIT_PENDING = 0, 2, 3, 4
 TIMEOUT = 20        # seconds per request
@@ -415,7 +415,7 @@ def verify(args, forge, kind, number):
     t_head, t_merge = tree_of(head_commit), tree_of(merge_commit)
     same = {"name": "tree_equality", "head_sha": head, "head_tree": t_head, "merge_commit_sha": merge_sha,
             "merge_commit_url": merge_url, "merge_tree": t_merge}
-    rebase = functools.lru_cache(maxsize=None)(lambda: rebase_base(forge, number, head, merge_commit))
+    rebase = once(lambda: rebase_base(forge, number, head, merge_commit))
     results = [merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge, rebase)
                for reviewed in (reviewed_heads or [head])]
     worst = next((r for status in ("failed", "pending") for r in results if r["status"] == status), None)
@@ -442,6 +442,23 @@ def verify(args, forge, kind, number):
         ci["status"] = "passed"
     checks.append(ci)
     return checks, pr_url, head_url, merge_url, runs
+
+
+def once(read):
+    """READ, called at most once: later calls return its result, or raise its Unavailable
+    again, so a walk that could not be read is not repeated for every reviewed head."""
+    outcome = []
+    def call():
+        if not outcome:
+            try:
+                outcome.append((read(), None))
+            except Unavailable as e:
+                outcome.append((None, e))
+        value, error = outcome[0]
+        if error:
+            raise error
+        return value
+    return call
 
 
 def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge, rebase=None):
@@ -520,6 +537,9 @@ def change_matches(kind, forge, number, reviewed, final, parent, merge_sha, resu
               "patch_identity": {"reviewed_change": was_reviewed, "merge_change": merged, "files": files}}
     if was_reviewed == merged:
         result.update(status="passed", rule="patch_identity")
+    elif rebased:
+        result.update(status="failed", detail="the trees differ, and the combined change of the rebase merge's commits "
+                                              "is not the reviewed change")
     else:
         result.update(status="failed", detail="the trees differ, and the merge commit's change is not the reviewed change")
     return result
