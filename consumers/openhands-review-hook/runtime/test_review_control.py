@@ -462,6 +462,23 @@ class RunnerTests(unittest.TestCase):
                 self.assertTrue(any(line.startswith(f'{what} failed, retrying at the next poll: owner/repo#1:') for line in self.logs), self.logs)
                 self.assertIn('review done: owner/repo#1 profile=codex-astra', self.logs)
 
+    def test_a_posted_review_is_never_called_missing_at_the_deadline(self):
+        # one watch iteration (clock: deadline from 0, one check below it, then past it); the label
+        # swap fails in it, so the deadline tries once more
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def always_down():
+            raise TimeoutError()
+        starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
+        [(_, _, reason)] = failures
+        self.assertTrue(reason.startswith('the review is posted, but the forge could not be reached to label it done'), reason)
+        self.assertIn('replace `hands-reviewing` with `hands-reviewed` by hand', reason)
+        self.assertNotIn('no review posted', reason)
+        starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(),
+                                                on_label=self.raising_at(1, TimeoutError()))
+        self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)), 'the last try at the deadline completes it')
+        # with nothing posted, the deadline still says "no review posted": test_timeout_does_not_retry
+
     def test_a_label_swap_refused_for_good_still_fails(self):
         starts, labels, failures = self.execute(quota=False, completed_first=True, on_label=self.raising_at(1, self.http_error(403)))
         self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
@@ -980,6 +997,7 @@ class RunnerTests(unittest.TestCase):
     def test_timeout_does_not_retry(self):
         starts, labels, failures = self.execute(timeout=True)
         self.assertEqual(len(starts), 1); self.assertFalse(labels); self.assertTrue(failures)
+        self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
 
     def test_rejected_request_configuration_names_the_cause(self):
         bad = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'LLMBadRequestError', 'detail': 'Upstream API error: 400',

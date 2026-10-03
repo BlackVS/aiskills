@@ -529,12 +529,14 @@ class Runner:
                                     'choices': choices, 'reading': reading, 'head': head, 'since': since,
                                     'attempt': attempt, 'conversation': conv_id, 'started': started, 'deadline': ends})
             deadline = time.monotonic() + max(0.0, ends - time.time())
+            posted = False  # a review is on the PR: the deadline must not call it missing
             while time.monotonic() < deadline:
                 self.sleep(self.poll)
                 comments = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}'))
                 if comments is MISSED:
                     continue
                 if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
+                    posted = True
                     if self._complete(repo, num, head, profile, conv_id, switch):
                         return
                     continue
@@ -549,7 +551,10 @@ class Runner:
                     if comments is MISSED:
                         continue  # still finished at the next poll: looked at again then
                     if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
-                        if self._complete(repo, num, head, profile, conv_id, switch):  # not another iteration: the deadline may have passed
+                        posted = True
+                        # completed here, not on another iteration: the deadline may have passed (if the
+                        # forge fails it, the deadline below tries once more)
+                        if self._complete(repo, num, head, profile, conv_id, switch):
                             return
                         continue
                     self.log(f'review finished without posting: {repo}#{num} conversation={conv_id}')
@@ -581,5 +586,12 @@ class Runner:
                 self.fail(repo, num, reason + suffix)
                 return
             else:
+                if posted:  # the forge kept failing the label swap: one last try, then say what happened
+                    if self._complete(repo, num, head, profile, conv_id, switch):
+                        return
+                    self.fail(repo, num, f'the review is posted, but the forge could not be reached to label it done within '
+                                         f'{self.timeout // 60} minutes; the review stands: replace `{self.working}` with '
+                                         f'`{self.done}` by hand instead of requesting another review')
+                    return
                 self.fail(repo, num, f'no review posted within {self.timeout // 60} minutes; no automatic retry')
                 return

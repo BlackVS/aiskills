@@ -19,8 +19,12 @@ content fixes inside existing skills. The current version is in `VERSION`.
   poll. Before, an outage that outlasted 1.31.2's three GET attempts, or any
   failed label write, reported "could not complete" and removed
   `hands-reviewing` from a reviewed PR. Both label writes are idempotent, so
-  trying again is safe. A new adapter test shows that a forge write is never
-  sent twice (first items of #64).
+  trying again is safe. If the forge stays unreachable until the watch
+  deadline, the deadline tries once more and then reports that the review is
+  posted but could not be labelled done, with the labels to swap by hand,
+  rather than "no review posted" (which invited a duplicate review). A new
+  adapter test shows that a forge write is never sent twice (first items of
+  #64).
 
 ## [1.31.2] - 2026-10-03
 
