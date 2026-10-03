@@ -52,11 +52,12 @@ import hmac
 import json
 import re
 from review_policy import requested_profiles
-from review_runner import recovered_head, next_page
+from review_runner import recovered_head, next_page, patch_identity
 from review_runner import Runner, RunStore
 import os
 import threading
 import time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -110,6 +111,19 @@ def api(path, method="GET", data=None):
         if not url:
             return result
     return result
+
+
+def change_identity(repo, base, head):
+    """The patch identity of the change at `head`: Gitea's three-dot compare from the merge
+    base with `base`, as a raw diff (?output=diff, Gitea 1.27 or later; the diff
+    verify-delivery hashes). An older Gitea ignores the parameter and answers JSON, which
+    has no identity (ValueError), or 404 before 1.22: either way the request gets a full review."""
+    req = urllib.request.Request(
+        f"{GITEA}/repos/{repo}/compare/{urllib.parse.quote(base, safe='/')}...{head}?output=diff",
+        headers={"Authorization": "token " + TOKEN, "Accept": "text/plain"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return patch_identity(r.read())[0]
 
 
 def label_id(repo, name):
@@ -203,7 +217,8 @@ def run_review(repo, num, title, label, profile, resume=None):
         runner = Runner(api, app_api, set_label, profile_info, fail_review,
                         marker=MARKER, bot=BOT_NAME, working=L_WORKING,
                         done=L_DONE, timeout=WATCH_SECONDS,
-                        poll=int(os.environ.get('REVIEW_POLL_SECONDS', '30')), runs=RUNS, note=note_review)
+                        poll=int(os.environ.get('REVIEW_POLL_SECONDS', '30')), runs=RUNS, note=note_review,
+                        change_identity=change_identity)
         runner.run(repo, num, title, label, profile, PROMPT_FILE, WORKSPACES_DIR, resume=resume)
     finally:
         with lock:

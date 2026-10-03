@@ -10,14 +10,17 @@ The primary profile handles `review-this`. A single explicit
 `review-this:<profile>` label overrides it; multiple explicit labels are rejected.
 A plain `review-this` on a PR whose newest review is of an earlier head is not
 reviewed again when the change has the same patch identity at both heads (the
-`verify-delivery` digest of GitHub's three-dot compare diff, so a base-only
-update keeps it): the GitHub poller posts a note naming both heads and both
+`verify-delivery` digest of the forge's three-dot compare diff, so a base-only
+update keeps it): the receiver posts a note naming both heads and both
 identities, says the previous verdict stands, and labels the request done
 without starting a conversation. The note is not a review and never satisfies
-a delivery check. A request for the same head, an explicit
-`review-this:<profile>` label, a changed patch, and any diff that cannot be
-read or has no identity (binary, empty) get a full review. The Gitea receiver
-always reviews: Gitea's API has no diff of an older head's change.
+a delivery check. Only a review comment by the reviewer's own login counts:
+`BOT_NAME` on Gitea, and on GitHub `REVIEW_AUTHOR`, or the token's owner when
+it is unset; a review-looking comment by anyone else is ignored. A request for
+the same head, an explicit `review-this:<profile>` label, a changed patch, and
+any diff that cannot be read or has no identity (binary, empty) get a full
+review. On Gitea the compare diff needs Gitea 1.27 or later (`?output=diff`);
+an older Gitea answers JSON, so there every request gets a full review.
 The configured fallback applies only when the selected profile is the primary.
 Each profile carries a reasoning effort: API providers set it on the generated
 LLM profile (`none`, `low`, `medium`, `high`, `xhigh`, `max`; `high` is the

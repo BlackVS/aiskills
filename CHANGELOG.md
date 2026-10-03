@@ -9,6 +9,27 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-10-03
+
+### Added
+- hands consumer: the Gitea receiver keeps the previous verdict of an
+  unchanged patch, as the GitHub poller has since 1.30.0. A plain
+  `review-this` on a PR whose newest review is of an earlier head with the
+  same patch identity gets the "previous verdict stands" note instead of a new
+  review. The identity is read from Gitea's three-dot compare with
+  `?output=diff` (Gitea 1.27 or later); an older Gitea answers JSON, which has
+  no identity, so there every request is still reviewed in full.
+
+### Changed
+- hands consumer: only the reviewer's own review comments can make a
+  previous verdict stand. The Gitea receiver uses `BOT_NAME`; the GitHub
+  poller uses the new optional `REVIEW_AUTHOR`, else the token's owner (read
+  once from `GET /user`). Before, the GitHub poller took a review-looking
+  comment from any author, so a forged one on an earlier head could stand in
+  for a review. A site whose GitHub reviews are posted by another account
+  sets `REVIEW_AUTHOR`, or every request is reviewed in full. Logins compare
+  case-insensitively. Closes the remaining parts of #13.
+
 ## [1.30.4] - 2026-10-03
 
 ### Fixed
