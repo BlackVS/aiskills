@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.4] - 2026-10-03
+
+### Fixed
+- verify-delivery: `SKILL.md` says the rebase-merge check is `pending` only
+  while the forge is unavailable for the moment; a commit list or commit the
+  forge does not find means "not a rebase merge", and the first-parent result
+  stands (#62).
+- hands consumer tests: the adapter tests' fake forge handles one request at a
+  time, and the test resets the labels under the same lock, so a handler never
+  reads the label set while the test refills it (#62).
+
 ## [1.31.3] - 2026-10-03
 
 ### Fixed

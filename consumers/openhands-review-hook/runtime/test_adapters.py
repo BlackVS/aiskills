@@ -126,12 +126,18 @@ class AdapterTests(unittest.TestCase):
         names = ['review-this', 'hands-reviewing', 'hands-reviewed']
         labels, posted, compares, starts, paths, errors = {'review-this'}, [], [], [], [], []
         outcome = threading.Event()  # labelled done, or a conversation started
+        # One request at a time, and the labels reset under the same lock: a handler never reads
+        # `labels` while the test thread refills it for the next request.
+        guard = threading.Lock()
         diff = b'diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n'
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
-            def do_GET(self): self.handle_request()
-            def do_POST(self): self.handle_request()
-            def do_DELETE(self): self.handle_request()
+            def do_GET(self): self.locked()
+            def do_POST(self): self.locked()
+            def do_DELETE(self): self.locked()
+            def locked(self):
+                with guard:
+                    self.handle_request()
             def handle_request(self):
                 path = urllib.parse.unquote(self.path.split('?')[0])
                 query = urllib.parse.urlsplit(self.path).query
@@ -210,7 +216,8 @@ class AdapterTests(unittest.TestCase):
                 for _ in range(requests - 1):
                     if not success:
                         break
-                    outcome.clear(); labels.clear(); labels.add('review-this')
+                    with guard:
+                        outcome.clear(); labels.clear(); labels.add('review-this')
                     success = outcome.wait(12)
             finally:
                 proc.terminate(); output = proc.communicate(timeout=5)[0]

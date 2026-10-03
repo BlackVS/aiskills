@@ -86,9 +86,11 @@ All four must pass for the verdict `confirmed`:
    request's commits form one line of 2 to 100 commits from its head, and as
    many commits ending at the merge commit each have one parent and carry the
    same commit messages in the same order; anything else is compared by its
-   first parent only. When the pull request's commits or the rebased commits
-   cannot be read, the check is `pending` (retry later), not `failed`, even
-   though the first-parent change did not match.
+   first parent only. When the forge is unavailable for the moment while the
+   pull request's commits or the rebased commits are read, the check is
+   `pending` (retry later), not `failed`, even though the first-parent change
+   did not match. A commit list or commit the forge does not find (404) means
+   the merge is not a rebase merge, and the first-parent result stands.
 
    The patch identity is a SHA-256 over a canonical form of the diff, the
    same function for both forges (not byte-compatible with `git patch-id`):
