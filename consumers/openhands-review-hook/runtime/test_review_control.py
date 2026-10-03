@@ -495,9 +495,11 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(failures)
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
-    def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None):
+    def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None,
+                  bot=None, reviewer='hands-bot'):
         """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
-        to its change's patch identity, or is an exception the identity lookup raises."""
+        to its change's patch identity, or is an exception the identity lookup raises.
+        `reviewer` is the login whose reviews the patch check trusts (`bot` the receiver's)."""
         starts, labels, failures, notes, logs, asked = [], [], [], [], [], []
         reads = []
         def api(path):
@@ -522,14 +524,15 @@ class RunnerTests(unittest.TestCase):
             prompt = Path(temp) / 'prompt'; prompt.write_text('model={model} label={label}')
             runner = Runner(api, app, lambda *args: labels.append(args), lambda p: (p, p), lambda *args: failures.append(args),
                             log=logs.append, timeout=10, sleep=lambda _: None, llm_ref=lambda name: None,
-                            problems=lambda s: {}, note=lambda *args: notes.append(args), change_identity=identity)
+                            problems=lambda s: {}, note=lambda *args: notes.append(args), change_identity=identity,
+                            bot=bot, reviewer=reviewer)
             with patch('review_runner.read_settings', return_value={'primary': 'codex-astra', 'secondary': None, 'fallback': None}):
                 runner.run('owner/repo', 1, 'title', label, selected, str(prompt), '/tmp/reviews')
         return starts, labels, failures, notes, logs, asked
 
     @staticmethod
-    def review_comment(sha, verdict='READY_FOR_HUMAN_MERGE'):
-        return {'body': f'[hands-bot review] reviewed at head {sha}\n\nRISK\nLOW\n\nVERDICT\n{verdict}\n'}
+    def review_comment(sha, verdict='READY_FOR_HUMAN_MERGE', login='hands-bot'):
+        return {'user': {'login': login}, 'body': f'[hands-bot review] reviewed at head {sha}\n\nRISK\nLOW\n\nVERDICT\n{verdict}\n'}
 
     def test_a_request_on_an_unchanged_patch_keeps_the_previous_verdict(self):
         old = 'b' * 40
@@ -568,6 +571,35 @@ class RunnerTests(unittest.TestCase):
         starts, _, _, notes, _, asked = self.unchanged([self.review_comment(old)], {old: 'same', HEAD: 'same'},
                                                        label='review-this:codex-astra')
         self.assertEqual((len(starts), notes, asked), (1, [], []), 'an explicit profile request always runs a review')
+
+    def test_only_a_review_by_the_trusted_login_stands(self):
+        old = 'b' * 40
+        same = {old: 'same', HEAD: 'same'}
+        stands = {
+            'the reviewer login': ([self.review_comment(old)], {}),
+            'in another case': ([self.review_comment(old, login='Hands-Bot')], {}),
+            'from a callable': ([self.review_comment(old)], {'reviewer': lambda: 'hands-bot'}),
+            "the receiver's bot when no reviewer is given": ([self.review_comment(old)], {'reviewer': None, 'bot': 'hands-bot'}),
+            'a newer comment by another login is not a review': (
+                [self.review_comment(old), self.review_comment(HEAD, login='stranger')], {}),
+        }
+        for name, (comments, kw) in stands.items():
+            with self.subTest(name):
+                starts, _, failures, notes, _, _ = self.unchanged(comments, same, **kw)
+                self.assertEqual((starts, failures, len(notes)), ([], [], 1))
+        reviewed = {
+            'another login': ([self.review_comment(old, login='stranger')], {}),
+            'no login reported': ([{k: v for k, v in self.review_comment(old).items() if k != 'user'}], {}),
+            'no trusted login at all': ([self.review_comment(old)], {'reviewer': None}),
+            'the trusted login cannot be read': ([self.review_comment(old)], {'reviewer': lambda: {}['login']}),
+        }
+        for name, (comments, kw) in reviewed.items():
+            with self.subTest(name):
+                starts, _, failures, notes, logs, asked = self.unchanged(comments, same, **kw)
+                self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra'], 'a full review runs')
+                self.assertEqual((notes, failures, asked), ([], [], []))
+        _, _, _, _, logs, _ = self.unchanged([self.review_comment(old)], same, reviewer=None)
+        self.assertIn('patch check skipped: owner/repo#1: no trusted reviewer login', logs)
 
     def test_a_pr_that_moves_or_closes_during_the_check_is_never_completed(self):
         # read 1 fixes the head (_start), read 2 gives the base, read 3 confirms the head after

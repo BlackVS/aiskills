@@ -41,6 +41,9 @@ host:
                      a restart re-attaches to, default /opt/openhands/hooks
   MARKER             default "[hands-bot review]" - what the posted comment
                      must START with
+  REVIEW_AUTHOR      the GitHub login that posts the review comments, default
+                     the token's owner (GET /user); a repeated request on an
+                     unchanged patch keeps only a review by this login
   PROMPT_FILE        default /opt/openhands/hooks/github_review_prompt.txt
                      (placeholders: {repo} {num} {title!r} {marker} {profile}
                      {label})
@@ -85,6 +88,7 @@ L_DONE = os.environ.get("LABEL_DONE", "hands-reviewed")
 WATCH_SECONDS = int(os.environ.get("WATCH_MINUTES", "45")) * 60
 MARKER = os.environ.get("MARKER", "[hands-bot review]")
 PROMPT_FILE = os.environ.get("PROMPT_FILE", "/opt/openhands/hooks/github_review_prompt.txt")
+REVIEW_AUTHOR = os.environ.get("REVIEW_AUTHOR", "").strip()
 RUNS = RunStore(os.path.join(os.environ.get("REVIEW_RUNS_DIR", "/opt/openhands/hooks"), "review-runs-github.json"))
 
 # Same palette as the Gitea org labels, so the two hosts look alike.
@@ -138,6 +142,19 @@ def change_identity(repo, base, head):
     )
     with urllib.request.urlopen(req, timeout=60) as r:
         return patch_identity(r.read())[0]
+
+
+_token_owner = []
+
+
+def reviewer_login():
+    """The login whose review comments the patch check trusts: REVIEW_AUTHOR, else the
+    token's owner, read once (GET /user). A failed read raises: that request is reviewed."""
+    if REVIEW_AUTHOR:
+        return REVIEW_AUTHOR
+    if not _token_owner:
+        _token_owner.append(api("/user")["login"])
+    return _token_owner[0]
 
 
 def ensure_label(repo, name):
@@ -241,7 +258,7 @@ def run_review(repo, num, title, label, profile, resume=None):
                         marker=MARKER, bot=None, working=L_WORKING,
                         done=L_DONE, timeout=WATCH_SECONDS,
                         poll=int(os.environ.get('REVIEW_POLL_SECONDS', '30')), runs=RUNS, note=note_review,
-                        change_identity=change_identity)
+                        change_identity=change_identity, reviewer=reviewer_login)
         runner.run(repo, num, title, label, profile, PROMPT_FILE, WORKSPACES_DIR, resume=resume)
     finally:
         with lock:

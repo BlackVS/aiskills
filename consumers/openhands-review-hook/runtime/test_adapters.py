@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -112,12 +113,14 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(labels,{'hands-reviewed'})
             self.assertIn(head,starts[1]['initial_message']['content'][0]['text'])
 
-    def test_github_adapter_keeps_the_verdict_of_an_unchanged_patch(self):
-        # the newest review is of an older head; GitHub's compare diff of both heads has the same
-        # patch identity, so the poller notes it, labels the request done and starts no conversation
+    def run_unchanged(self, github, author='test-bot', owner='test-bot', review_author=None, gitea_json=False):
+        """The newest review, by `author`, is of an older head; the forge's compare diff of both
+        heads has the same patch identity. Returns what the adapter did: the posted comments,
+        the compares read, the conversations started, the labels, the forge paths read, errors."""
         head, old = 'a' * 40, 'b' * 40
-        labels, posted, compares, starts, errors = {'review-this'}, [], [], [], []
-        done = threading.Event()
+        names = ['review-this', 'hands-reviewing', 'hands-reviewed']
+        labels, posted, compares, starts, paths, errors = {'review-this'}, [], [], [], [], []
+        outcome = threading.Event()  # labelled done, or a conversation started
         diff = b'diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n'
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
@@ -126,25 +129,36 @@ class AdapterTests(unittest.TestCase):
             def do_DELETE(self): self.handle_request()
             def handle_request(self):
                 path = urllib.parse.unquote(self.path.split('?')[0])
+                query = urllib.parse.urlsplit(self.path).query
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length']))) if self.headers.get('Content-Length') else None
                 result, raw = None, None
+                paths.append(path)
                 if path == '/forge/search/issues':
-                    query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)['q'][0]
-                    result = {'items': [] if 'label:' in query else [{'repository_url': 'https://example.test/repos/owner/repo', 'number': 1, 'title': 'test', 'labels': [{'name': n} for n in labels]}]}
+                    q = urllib.parse.parse_qs(query)['q'][0]
+                    result = {'items': [] if 'label:' in q else [{'repository_url': 'https://example.test/repos/owner/repo', 'number': 1, 'title': 'test', 'labels': [{'name': n} for n in labels]}]}
+                elif path == '/forge/repos/issues/search': result = []
+                elif path == '/forge/user': result = {'login': owner}
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}, 'base': {'ref': 'release/1'}}
                 elif path.startswith('/forge/repos/owner/repo/compare/'):
-                    compares.append((path, self.headers.get('Accept'))); raw = diff.replace(b'\n', b'\r\n') if head in path else diff
+                    compares.append((path, query, self.headers.get('Accept')))
+                    raw = (b'{"total_commits":1,"commits":[]}' if gitea_json else
+                           diff.replace(b'\n', b'\r\n') if head in path else diff)
                 elif path == '/forge/repos/owner/repo/issues/1/labels':
                     if self.command == 'POST':
-                        labels.update(body['labels'])
-                        if 'hands-reviewed' in labels: done.set()
-                    result = [{'name': n} for n in labels]
-                elif path.startswith('/forge/repos/owner/repo/issues/1/labels/'): labels.discard(path.split('/')[-1])
+                        labels.update(body['labels'] if github else (names[i-1] for i in body['labels']))
+                        if 'hands-reviewed' in labels: outcome.set()
+                    result = [{'name': n, 'id': names.index(n)+1} for n in labels]
+                elif path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
+                    name = path.split('/')[-1]
+                    labels.discard(name if github else names[int(name)-1])
+                elif path == '/forge/orgs/owner/labels' or path == '/forge/repos/owner/repo/labels':
+                    result = [{'name': n, 'id': i+1} for i, n in enumerate(names)]
                 elif path.startswith('/forge/repos/owner/repo/labels'): result = {'name': path.split('/')[-1]}
                 elif path == '/forge/repos/owner/repo/issues/1/comments':
                     if self.command == 'POST': posted.append(body['body'])
-                    result = [{'user': {'login': 'test-bot'}, 'body': f'[test-bot review] reviewed at head {old}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
-                elif path.startswith('/api/conversations'): starts.append(path); result = {'id': '1'}
+                    result = [{'user': {'login': author}, 'body': f'[test-bot review] reviewed at head {old}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
+                elif path == '/api/conversations': starts.append(body); result = {'id': '1'}; outcome.set()
+                elif path.startswith('/api/conversations'): result = {'execution_status': 'running'}
                 else: errors.append((self.command, path))
                 payload = raw if raw is not None else json.dumps(result).encode()
                 self.send_response(200); self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
@@ -156,26 +170,82 @@ class AdapterTests(unittest.TestCase):
             (root/'token').write_text('test-only')
             (root/'settings').write_text(json.dumps({'revision': 1, 'primary': 'codex-astra', 'fallback': None}))
             (root/'prompt').write_text('Review {repo} #{num}, model {model}, marker {marker}, label {label}')
+            with socket.socket() as sock: sock.bind(('127.0.0.1', 0)); hook_port = sock.getsockname()[1]
             base = f'http://127.0.0.1:{server.server_port}'
-            env = dict(os.environ, GITHUB_API=base+'/forge', GITHUB_TOKEN_FILE=str(root/'token'), OPENHANDS_API=base,
-                LOCAL_BACKEND_API_KEY='test-only', PROFILES_DIR=str(profiles), REVIEW_SETTINGS_FILE=str(root/'settings'),
-                PROMPT_FILE=str(root/'prompt'), WORKSPACES_DIR='/tmp/reviews', REVIEW_POLL_SECONDS='1',
-                GITHUB_OWNER='owner', GITHUB_REPOS='owner/repo', MARKER='[test-bot review]', POLL_SECONDS='1',
+            env = dict(os.environ, GITHUB_API=base+'/forge', GITEA_API=base+'/forge',
+                GITHUB_TOKEN_FILE=str(root/'token'), GITEA_TOKEN_FILE=str(root/'token'), OPENHANDS_API=base,
+                LOCAL_BACKEND_API_KEY='test-only', HOOK_SECRET='test-only', PROFILES_DIR=str(profiles),
+                REVIEW_SETTINGS_FILE=str(root/'settings'), PROMPT_FILE=str(root/'prompt'), WORKSPACES_DIR='/tmp/reviews',
+                REVIEW_POLL_SECONDS='1', GITHUB_OWNER='owner', GITHUB_REPOS='owner/repo', REVIEW_ORG='owner',
+                BOT_NAME='test-bot', MARKER='[test-bot review]', POLL_SECONDS='1', HOOK_PORT=str(hook_port),
                 REVIEW_RUNS_DIR=str(root), PYTHONUNBUFFERED='1')
-            proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name('github_review_poller.py'))], env=env,
+            env.pop('REVIEW_AUTHOR', None)
+            if review_author:
+                env['REVIEW_AUTHOR'] = review_author
+            script = 'github_review_poller.py' if github else 'review_hook.py'
+            proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name(script))], env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             try:
-                success = done.wait(12)
+                if not github:
+                    body = json.dumps({'action': 'label_updated', 'repository': {'full_name': 'owner/repo'},
+                                       'pull_request': {'number': 1, 'title': 'test', 'labels': [{'name': 'review-this'}]}}).encode()
+                    request = urllib.request.Request(f'http://127.0.0.1:{hook_port}/hooks/gitea', data=body,
+                        headers={'X-Gitea-Signature': hmac.new(b'test-only', body, hashlib.sha256).hexdigest()})
+                    for _ in range(40):
+                        try:
+                            with urllib.request.urlopen(request, timeout=2) as response: self.assertEqual(response.status, 204)
+                            break
+                        except urllib.error.URLError: time.sleep(.05)
+                success = outcome.wait(12)
             finally:
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
         self.assertTrue(success, output)
-        self.assertEqual((starts, errors), ([], []))
-        self.assertEqual(compares, [(f'/forge/repos/owner/repo/compare/release/1...{old}', 'application/vnd.github.diff'),
-                                    (f'/forge/repos/owner/repo/compare/release/1...{head}', 'application/vnd.github.diff')])
+        self.assertEqual(errors, [], output)
+        return posted, compares, starts, labels, paths, (head, old)
+
+    def assert_verdict_stands(self, posted, starts, labels, old):
+        self.assertEqual(starts, [], 'no conversation is started')
         [note] = posted
         self.assertTrue(note.startswith(f'⚠️ [test-bot review] note: patch unchanged since {old}; previous verdict stands'), note)
         self.assertEqual(labels, {'hands-reviewed'})
+
+    def test_github_adapter_keeps_the_verdict_of_an_unchanged_patch(self):
+        # the review comment is trusted as the token owner's (GET /user)
+        posted, compares, starts, labels, paths, (head, old) = self.run_unchanged(True)
+        self.assert_verdict_stands(posted, starts, labels, old)
+        self.assertEqual(compares, [(f'/forge/repos/owner/repo/compare/release/1...{old}', '', 'application/vnd.github.diff'),
+                                    (f'/forge/repos/owner/repo/compare/release/1...{head}', '', 'application/vnd.github.diff')])
+        self.assertEqual(paths.count('/forge/user'), 1)
+
+    def test_github_adapter_trusts_only_the_reviewer_login(self):
+        # REVIEW_AUTHOR names the login that posts the reviews; the token owner is then not read
+        posted, _, starts, labels, paths, (_, old) = self.run_unchanged(True, author='review-app', review_author='Review-App')
+        self.assert_verdict_stands(posted, starts, labels, old)
+        self.assertNotIn('/forge/user', paths)
+        # a review-looking comment by anyone else is not a review: the request is reviewed in full
+        for name, kw in {'not the token owner': {'author': 'stranger'},
+                         'not REVIEW_AUTHOR': {'author': 'test-bot', 'review_author': 'review-app'}}.items():
+            with self.subTest(name):
+                posted, compares, starts, _, _, _ = self.run_unchanged(True, **kw)
+                self.assertEqual(([s['agent_profile_id'] for s in starts], posted, compares), (['codex-astra'], [], []))
+
+    def test_gitea_adapter_keeps_the_verdict_of_an_unchanged_patch(self):
+        # Gitea 1.27+ serves the compare as a raw diff with ?output=diff
+        posted, compares, starts, labels, paths, (head, old) = self.run_unchanged(False)
+        self.assert_verdict_stands(posted, starts, labels, old)
+        self.assertEqual(compares, [(f'/forge/repos/owner/repo/compare/release/1...{old}', 'output=diff', 'text/plain'),
+                                    (f'/forge/repos/owner/repo/compare/release/1...{head}', 'output=diff', 'text/plain')])
+        self.assertNotIn('/forge/user', paths)
+        # the receiver trusts only BOT_NAME's reviews
+        posted, compares, starts, _, _, _ = self.run_unchanged(False, author='stranger')
+        self.assertEqual(([s['agent_profile_id'] for s in starts], posted, compares), (['codex-astra'], [], []))
+
+    def test_gitea_before_1_27_reviews_in_full(self):
+        # an older Gitea ignores ?output=diff and answers JSON: no identity, a full review
+        posted, compares, starts, labels, _, _ = self.run_unchanged(False, gitea_json=True)
+        self.assertEqual(([s['agent_profile_id'] for s in starts], posted), (['codex-astra'], []))
+        self.assertTrue(compares)
 
     def test_github_adapter_quota_fallback(self): self.run_adapter(True)
     def test_gitea_adapter_quota_fallback(self): self.run_adapter(False)

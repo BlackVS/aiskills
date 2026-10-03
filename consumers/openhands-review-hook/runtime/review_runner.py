@@ -93,8 +93,9 @@ def valid_review(comment, marker, head, bot=None):
 
 
 def review_verdict(comment, marker, bot=None):
-    """(reviewed head as written, verdict) of a review comment, else None."""
-    if bot and comment.get('user', {}).get('login') != bot:
+    """(reviewed head as written, verdict) of a review comment, else None. With `bot`, only
+    a comment by that login counts (logins compare case-insensitively)."""
+    if bot and ((comment.get('user') or {}).get('login') or '').lower() != bot.lower():
         return None
     body = comment.get('body', '')
     match = re.match(re.escape(marker) + r' reviewed at head ([0-9a-f]{7,40})\b', body)
@@ -246,7 +247,7 @@ class Runner:
                  marker='[hands-bot review]', bot=None, working='hands-reviewing',
                  done='hands-reviewed', timeout=2700, poll=30, sleep=time.sleep,
                  llm_ref=profile_llm_ref, problems=settings_problems, runs=None, note=None,
-                 change_identity=None):
+                 change_identity=None, reviewer=None):
         self.api, self.app_api, self.set_label = api, app_api, set_label
         self.profile_info, self.fail, self.log = profile_info, fail, log
         self.runs = runs  # a RunStore, or None to keep nothing across restarts
@@ -255,6 +256,10 @@ class Runner:
         # against `base` (three-dot, from the merge base), or None where the forge has no diff
         # of an older head; then a repeated request is always reviewed afresh
         self.change_identity = change_identity
+        # reviewer: the login whose review comments the patch check trusts (a string, or a
+        # callable returning one), else `bot`; with neither, a repeated request is always
+        # reviewed afresh, since anyone could post a comment that looks like a review
+        self.reviewer = reviewer
         self.llm_ref = llm_ref
         self.problems = problems
         self.marker, self.bot = marker, bot
@@ -317,13 +322,22 @@ class Runner:
         without starting a conversation. The note is not a review: it never starts with the
         review marker line, so a delivery check cannot count it. A PR that moved off `head` or
         closed while the identities were compared fails the request as stale (True: handled),
-        never completes it. Anything unexpected (no diff, a binary change, a forge error)
-        gives False, and the request is reviewed."""
+        never completes it. Only reviews by the trusted reviewer login count, so a comment
+        that merely looks like a review never stands for one. Anything unexpected (no
+        trusted login, no diff, a binary change, a forge error) gives False, and the request
+        is reviewed."""
         if not self.change_identity or not self.note:
             return False
         try:
-            reviews = [r for r in (review_verdict(c, self.marker, self.bot)
-                                   for c in self.api(f'/repos/{repo}/issues/{num}/comments') or []) if r]
+            comments = [c for c in self.api(f'/repos/{repo}/issues/{num}/comments') or []
+                        if review_verdict(c, self.marker)]
+            if not comments:
+                return False  # nothing reviewed yet: the reviewer login is not even needed
+            author = self.reviewer() if callable(self.reviewer) else (self.reviewer or self.bot)
+            if not author:
+                self.log(f'patch check skipped: {repo}#{num}: no trusted reviewer login')
+                return False
+            reviews = [r for r in (review_verdict(c, self.marker, author) for c in comments) if r]
             if not reviews or head.startswith(reviews[-1][0]):
                 return False  # nothing reviewed yet, or a request to review the same head again
             old, verdict = reviews[-1]
