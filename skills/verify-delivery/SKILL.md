@@ -131,8 +131,8 @@ Options for the checks:
 | `--review-author NAME=LOGIN` (repeatable) | GitHub: `OWNER`, `MEMBER`, `COLLABORATOR`; Gitea: none (required) | An account whose comments may give review `NAME`. A list for a review replaces the association default for it, in both directions. |
 | `--trust-any-author` | off | Accept a review from any author. Only where just trusted accounts can comment; reported as `"author_check": "disabled"`. Not combined with `--review-author`. |
 | `--verdict-pattern REGEX` | a `VERDICT` line followed by `READY_FOR_HUMAN_MERGE` | What makes a review READY. |
-| `--merger NAME` (repeatable) | anyone | Allowlist of accounts that may merge. |
-| `--bot-account NAME` (repeatable) | none | Treat this account as a bot. |
+| `--merger NAME` (repeatable) | anyone | Allowlist of accounts that may merge. Compared case-insensitively. |
+| `--bot-account NAME` (repeatable) | none | Treat this account as a bot. Compared case-insensitively. |
 | `--allow-bot-merge` | off | Accept a merge by a bot or app. |
 | `--known-flaky NAME` (repeatable) | none | Report this check's failure as `failed: known flaky` (still not confirmed). |
 
