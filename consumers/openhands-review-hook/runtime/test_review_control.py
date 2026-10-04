@@ -564,7 +564,8 @@ class RunnerTests(unittest.TestCase):
             raise TimeoutError('The read operation timed out')  # the forge that failed is still down
         starts, labels, failures = self.execute(quota=False, on_comments=self.raising_once(self.http_error(404)),
                                                 comment_after_calls=2, fail=fail)  # returns: nothing raised
-        self.assertEqual(self.logs[-2:], ['review failed: owner/repo#1: HTTPError', 'failure not reported: owner/repo#1: TimeoutError'])
+        self.assertEqual(self.logs[-2:], ['review failed: owner/repo#1: HTTPError',
+                                          'failure report raised, may not be on the PR: owner/repo#1: TimeoutError'])
 
     def test_only_reads_are_retried_and_only_after_transient_errors(self):
         from review_runner import retried, transient

@@ -317,8 +317,8 @@ class Runner:
                 return
             try:
                 self.fail(repo, num, 'review service could not complete the request; inspect the service locally')
-            except Exception as failed:  # the forge that failed may fail the report too: never kill the thread
-                self.log(f'failure not reported: {repo}#{num}: {type(failed).__name__}')
+            except Exception:  # the forge that failed may fail the report too (fail() logged it): never kill the thread
+                pass
         finally:
             if self.runs:
                 self.runs.clear(repo, num)
