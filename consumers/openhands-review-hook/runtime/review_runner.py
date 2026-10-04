@@ -293,10 +293,16 @@ class Runner:
         self.timeout, self.poll, self.sleep = timeout, poll, sleep
 
     def fail(self, repo, num, reason):
-        """Report the request as failed on the PR. Marked first: a report whose comment was
-        posted before something raised still counts, so the request never gets a second one."""
+        """Report the request as failed on the PR, attempted once per request: it is marked
+        first, so a report whose comment was posted before something raised never gets a
+        second one. A report that raises is logged as possibly missing from the PR, then the
+        error goes on as before."""
         self.failure_reported = True
-        self._report_failure(repo, num, reason)
+        try:
+            self._report_failure(repo, num, reason)
+        except Exception as error:
+            self.log(f'failure report raised, may not be on the PR: {repo}#{num}: {type(error).__name__}')
+            raise
 
     def run(self, repo, num, title, label, selected, prompt_file, workspaces, resume=None):
         """One review. `resume` is a record from the RunStore: the conversation

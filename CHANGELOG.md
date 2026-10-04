@@ -19,8 +19,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
     that look fails too, the request fails with "the forge could not be
     reached … to see whether the review was posted; look at the pull request
     before requesting another review", not "no review posted".
-  - **One failure comment:** a request gets at most one. If something raises
-    after a failure was already reported, it is only logged.
+  - **One failure comment:** a request's failure report is attempted once. If
+    something raises after it, that is only logged. A report that itself raises
+    is logged as "failure report raised, may not be on the PR", so an operator
+    knows to look.
   - **Log wording:** the last label-swap try at the deadline logs "the deadline
     has passed", not "retrying at the next poll". The 1.31.3 entry's deadline
     note describes attempts: the label removal and the note are skipped while

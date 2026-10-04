@@ -520,6 +520,22 @@ class RunnerTests(unittest.TestCase):
         self.execute(quota=False, finished=True, fail=fail)  # "finished without posting", then the raise
         self.assertEqual([f[-1].split(' (')[0] for f in failures], ['the review conversation finished without posting a review'])
         self.assertIn('review failed: owner/repo#1: ValueError', self.logs)
+        self.assertIn('failure report raised, may not be on the PR: owner/repo#1: ValueError', self.logs)
+
+    def test_a_report_that_fails_before_the_pr_says_so_in_the_log(self):
+        # the forge is still down at the deadline, and the report itself fails: one attempt, and
+        # the log says the report may not be on the PR (so the operator looks)
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def down():
+            raise TimeoutError()
+        attempts = []
+        def fail(*args):
+            attempts.append(args); raise TimeoutError()
+        self.execute(quota=False, clock=clock(), on_comments=down, fail=fail)
+        self.assertEqual(len(attempts), 1, 'attempted once')
+        self.assertEqual(self.logs[-2:], ['failure report raised, may not be on the PR: owner/repo#1: TimeoutError',
+                                          'review failed: owner/repo#1: TimeoutError'])
 
     def test_the_last_swap_at_the_deadline_says_it_is_the_last(self):
         # no "retrying at the next poll" when there is no next poll (#64 item 8)
