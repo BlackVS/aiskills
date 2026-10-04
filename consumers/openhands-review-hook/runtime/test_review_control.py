@@ -490,6 +490,48 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)), 'the last try at the deadline completes it')
         # with nothing posted, the deadline still says "no review posted": test_timeout_does_not_retry
 
+    def test_a_missed_last_look_is_taken_again_at_the_deadline(self):
+        # one watch iteration whose comment read fails, then the deadline (#64 item 2)
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        down = TimeoutError('The read operation timed out')
+        # the review was posted during the outage: the look at the deadline finds it and completes
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_comments=self.raising_at(1, down),
+                                                comment_after_calls=2)
+        self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)))
+        # nothing posted: the look at the deadline says so, as before
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_comments=self.raising_at(1, down))
+        self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
+        # the forge is still down at the deadline: unknown, not missing
+        def always_down():
+            raise down
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_comments=always_down)
+        [(_, _, reason)] = failures
+        self.assertTrue(reason.startswith('the forge could not be reached at the 0-minute deadline to see whether the '
+                                          'review was posted'), reason)
+        self.assertIn('watch read failed, the deadline has passed: owner/repo#1: TimeoutError', self.logs)
+
+    def test_a_failure_is_reported_once(self):
+        # the report's comment is posted, then something raises: no second "could not complete" (#64 item 6)
+        failures = []
+        def fail(*args):
+            failures.append(args)
+            raise ValueError('after the comment was posted')
+        self.execute(quota=False, finished=True, fail=fail)  # "finished without posting", then the raise
+        self.assertEqual([f[-1].split(' (')[0] for f in failures], ['the review conversation finished without posting a review'])
+        self.assertIn('review failed: owner/repo#1: ValueError', self.logs)
+
+    def test_the_last_swap_at_the_deadline_says_it_is_the_last(self):
+        # no "retrying at the next poll" when there is no next poll (#64 item 8)
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def always_down():
+            raise TimeoutError()
+        self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
+        swaps = [line for line in self.logs if line.startswith('label swap failed')]
+        self.assertEqual(swaps, ['label swap failed, retrying at the next poll: owner/repo#1: TimeoutError',
+                                 'label swap failed, the deadline has passed: owner/repo#1: TimeoutError'])
+
     def test_a_label_swap_refused_for_good_still_fails(self):
         starts, labels, failures = self.execute(quota=False, completed_first=True, on_label=self.raising_at(1, self.http_error(403)))
         self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
