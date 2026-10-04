@@ -295,8 +295,11 @@ class Runner:
     def fail(self, repo, num, reason):
         """Report the request as failed on the PR, attempted once per request: it is marked
         first, so a report whose comment was posted before something raised never gets a
-        second one. A report that raises is logged as possibly missing from the PR, then the
-        error goes on as before."""
+        second one, whichever path calls this again. A report that raises is logged as
+        possibly missing from the PR, then the error goes on as before."""
+        if self.failure_reported:
+            self.log(f'failure already reported, not again: {repo}#{num}')
+            return
         self.failure_reported = True
         try:
             self._report_failure(repo, num, reason)
@@ -414,7 +417,7 @@ class Runner:
             return True
         except Exception as error:  # forge answers may carry details: the type only
             self.log(f'patch check skipped: {repo}#{num}: {type(error).__name__}')
-            return False
+            return self.failure_reported  # a failure it reported (even one that raised) ends the request
 
     def _watched(self, repo, num, read, what='watch read', then='retrying at the next poll'):
         """READ's answer, or MISSED after a transient error (logged as WHAT, then THEN). The

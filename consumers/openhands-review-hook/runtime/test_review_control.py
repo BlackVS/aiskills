@@ -720,7 +720,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
     def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None,
-                  bot=None, reviewer='hands-bot'):
+                  bot=None, reviewer='hands-bot', fail=None):
         """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
         to its change's patch identity, or is an exception the identity lookup raises.
         `reviewer` is the login whose reviews the patch check trusts (`bot` the receiver's)."""
@@ -746,7 +746,7 @@ class RunnerTests(unittest.TestCase):
             return next(v for k, v in identities.items() if sha.startswith(k))
         with tempfile.TemporaryDirectory() as temp:
             prompt = Path(temp) / 'prompt'; prompt.write_text('model={model} label={label}')
-            runner = Runner(api, app, lambda *args: labels.append(args), lambda p: (p, p), lambda *args: failures.append(args),
+            runner = Runner(api, app, lambda *args: labels.append(args), lambda p: (p, p), fail or (lambda *args: failures.append(args)),
                             log=logs.append, timeout=10, sleep=lambda _: None, llm_ref=lambda name: None,
                             problems=lambda s: {}, note=lambda *args: notes.append(args), change_identity=identity,
                             bot=bot, reviewer=reviewer)
@@ -847,6 +847,28 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual((starts, notes), ([], []), 'no note and no conversation for a superseded head')
                 self.assertEqual([f[-1] for f in failures], ['the pull request changed or closed; request a fresh review'])
                 self.assertNotIn(('owner/repo', 1, 'hands-reviewed', True), labels)
+
+    def test_a_stale_report_in_the_patch_check_that_raises_ends_the_request(self):
+        # the PR moves during the comparison and the stale report raises: the patch check's own catch
+        # must not let the request run on into a second report or a conversation (#67's external review)
+        old, attempts = 'b' * 40, []
+        def fail(*args):
+            attempts.append(args); raise TimeoutError()
+        moved = {'state': 'open', 'head': {'sha': 'd' * 40}, 'base': {'ref': 'main'}}
+        starts, labels, failures, notes, logs, asked = self.unchanged([self.review_comment(old)], {old: 'same', HEAD: 'same'},
+                                                                      later=moved, fail=fail)
+        self.assertEqual([a[-1] for a in attempts], ['the pull request changed or closed; request a fresh review'])
+        self.assertEqual((starts, notes), ([], []))
+        self.assertIn('failure report raised, may not be on the PR: owner/repo#1: TimeoutError', logs)
+        self.assertNotIn('failure already reported, not again: owner/repo#1', logs, 'the request ended at the patch check')
+
+    def test_a_second_failure_report_is_never_sent(self):
+        from review_runner import Runner
+        reports, logs = [], []
+        runner = Runner(None, None, None, None, lambda *args: reports.append(args), log=logs.append)
+        runner.fail('owner/repo', 1, 'first'); runner.fail('owner/repo', 1, 'second')
+        self.assertEqual([r[-1] for r in reports], ['first'])
+        self.assertIn('failure already reported, not again: owner/repo#1', logs)
 
     def test_patch_identity_is_verify_deliverys(self):
         import importlib.util
