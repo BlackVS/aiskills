@@ -14,8 +14,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
 ### Fixed
 - hands consumer: the watch deadline no longer misreports a review hidden by a
   forge outage (#64, items 2, 6 and 8).
-  - **Missed last look:** if the last look at the comments failed, the
-    deadline looks once more. A review found then is labelled done as usual. If
+  - **Missed last look:** if the last look at the comments failed, or there
+    was none (a run resumed after its deadline had passed), the deadline looks
+    once more. A review found then is labelled done as usual. If
     that look fails too, the request fails with "the forge could not be
     reached … to see whether the review was posted; look at the pull request
     before requesting another review", not "no review posted".
@@ -23,8 +24,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
     something raises after it, that is only logged. A report that itself raises
     is logged as "failure report raised, may not be on the PR", so an operator
     knows to look. This line replaces 1.31.2's `failure not reported`.
-  - **Log wording:** the last label-swap try at the deadline logs "the deadline
-    has passed", not "retrying at the next poll". The 1.31.3 entry's deadline
+  - **Log wording:** the tries at the deadline (the last look at the comments,
+    the pull-request read and the label swap) log "the deadline has passed",
+    not "retrying at the next poll". The 1.31.3 entry's deadline
     note describes attempts: the label removal and the note are skipped while
     the forge is still down.
 

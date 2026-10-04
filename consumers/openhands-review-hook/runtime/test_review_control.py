@@ -511,6 +511,15 @@ class RunnerTests(unittest.TestCase):
                                           'review was posted'), reason)
         self.assertIn('watch read failed, the deadline has passed: owner/repo#1: TimeoutError', self.logs)
 
+    def test_a_resumed_run_past_its_deadline_looks_at_the_comments(self):
+        # the receiver restarted after the deadline: the watch never runs, the deadline still looks once
+        late = self.record(deadline=time.time() - 60)
+        starts, labels, failures = self.execute(quota=False, completed_first=True, resume=late)
+        self.assertEqual((starts, failures, labels[-1]), ([], [], ('owner/repo', 1, 'hands-reviewed', True)),
+                         'the review posted while the receiver was down is labelled done')
+        starts, labels, failures = self.execute(quota=False, resume=self.record(deadline=time.time() - 60))
+        self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
+
     def test_a_failure_is_reported_once(self):
         # the report's comment is posted, then something raises: no second "could not complete" (#64 item 6)
         failures = []
@@ -895,9 +904,10 @@ class RunnerTests(unittest.TestCase):
         starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record(head='c' * 40))
         self.assertEqual(starts, []); self.assertFalse(labels)  # the PR moved during the restart
         self.assertIn('changed or closed', failures[-1][2])
+        # the recorded deadline had passed: no watch, but the deadline still looks once (1.31.5), so the
+        # review posted meanwhile is labelled done (test_a_resumed_run_past_its_deadline_looks_at_the_comments)
         starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record(deadline=time.time() - 1))
-        self.assertEqual(starts, []); self.assertFalse(labels)  # the recorded deadline had passed
-        self.assertIn('no review posted within', failures[-1][2])
+        self.assertEqual((starts, failures, labels[-1]), ([], [], ('owner/repo', 1, 'hands-reviewed', True)))
         # the recorded deadline rules, not the restarted service's WATCH_MINUTES: a timeout of 0 here still watches
         starts, labels, failures = self.execute(quota=False, completed_first=True, timeout=True, resume=self.record(deadline=time.time() + 100))
         self.assertEqual(starts, []); self.assertTrue(labels); self.assertFalse(failures)

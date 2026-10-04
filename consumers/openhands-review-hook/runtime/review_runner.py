@@ -548,7 +548,7 @@ class Runner:
                                     'attempt': attempt, 'conversation': conv_id, 'started': started, 'deadline': ends})
             deadline = time.monotonic() + max(0.0, ends - time.time())
             posted = False  # a review is on the PR: the deadline must not call it missing
-            missed = False  # the last look at the comments failed: the deadline looks once more
+            missed = True  # no successful look at the comments yet: the deadline looks once more
             comments_read = lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}')
             while time.monotonic() < deadline:
                 self.sleep(self.poll)
@@ -608,7 +608,7 @@ class Runner:
                 self.fail(repo, num, reason + suffix)
                 return
             else:
-                if missed and not posted:  # the last look failed: a review may be there all the same
+                if missed and not posted:  # never looked, or the last look failed: a review may be there
                     comments = self._watched(repo, num, comments_read, then='the deadline has passed')
                     if comments is MISSED:  # unknown, not missing: never invite a second review blindly
                         self.fail(repo, num, f'the forge could not be reached at the {self.timeout // 60}-minute deadline '
