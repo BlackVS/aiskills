@@ -23,9 +23,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
   - **One failure comment:** a request's failure report is attempted once,
     whichever path asks for it again (a second call only logs "failure already
     reported, not again"). If something raises after it, that is only logged.
-    A stale report from the patch check ends the request even when it raises. A report that itself raises
-    is logged as "failure report raised, may not be on the PR", so an operator
-    knows to look. This line replaces 1.31.2's `failure not reported`.
+    A stale report from the patch check ends the request even when it raises.
+    A report that itself raises is logged as "failure report raised, may not
+    be on the PR", so an operator knows to look. This line replaces 1.31.2's `failure not reported`.
   - **Log wording:** the tries at the deadline (the last look at the comments,
     the pull-request read and the label swap) log "the deadline has passed",
     not "retrying at the next poll". The 1.31.3 entry's deadline
