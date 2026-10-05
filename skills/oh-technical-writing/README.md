@@ -8,6 +8,7 @@ Use it for:
 - design and architecture discussions
 - code-review, issue, and pull-request explanations
 - editing technical prose that is too long, fragmented, dramatic, or vague
+- technical text persisted through write tools (task fields, comments, documents, memories) or saved as Markdown
 
 It complements the upstream [`plain-english-content`](https://github.com/OpenHands/extensions/tree/main/skills/plain-english-content) skill (not included in this set): that skill focuses on accessible public content and GOV.UK-style formatting, while this one focuses on complete technical arguments in engineering conversations.
 

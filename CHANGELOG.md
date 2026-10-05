@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.8] - 2026-10-05
+
+### Changed
+- oh-technical-writing: the skill's description, scope sentence and README
+  list name technical text persisted through write tools or saved as
+  Markdown, which
+  1.31.7's "Persisted text" section covers. A client that picks skills by
+  their description now loads it for that text too.
+
+### Fixed
+- hands consumer tests: the review-control drain test sizes its refused body
+  from `io.DEFAULT_BUFFER_SIZE` plus half the drain bound, instead of a fixed
+  32 KiB. A Python with a larger default read buffer no longer makes the
+  refusal cases pass trivially and the bound case fail (checked with a
+  simulated 128 KiB buffer).
+
 ## [1.31.7] - 2026-10-05
 
 ### Changed

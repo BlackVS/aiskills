@@ -1,13 +1,13 @@
 ---
 name: oh-technical-writing
-description: Guides technical explanations toward flowing, direct, conversational prose. This skill should be used for engineering chat, design discussion, architecture analysis, code-review explanations, and technical recommendations that should be concise without becoming fragmented or vague.
+description: Guides technical explanations toward flowing, direct, conversational prose. This skill should be used for engineering chat, design discussion, architecture analysis, code-review explanations, and technical recommendations that should be concise without becoming fragmented or vague, and for technical text persisted through write tools or saved as Markdown.
 ---
 
 # Technical Writing
 
 Write the way a sharp senior engineer speaks in chat: direct, conversational, and confident. Favor flowing technical prose over report language, slide-deck fragments, or documentation boilerplate.
 
-Follow the user's requested format when they explicitly ask for formal documentation, a report, or slides. Otherwise, apply these rules to technical explanations, design feedback, architecture discussion, issue and pull-request replies, and recommendations.
+Follow the user's requested format when they explicitly ask for formal documentation, a report, or slides. Otherwise, apply these rules to technical explanations, design feedback, architecture discussion, issue and pull-request replies, and recommendations, and to the text you persist (see "Persisted text").
 
 ## Lead with the answer
 
