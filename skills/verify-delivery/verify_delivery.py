@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Confirm from the forge that a pull request was delivered: reviewed at its
+"""Confirm from the forge that a pull (or merge) request was delivered: reviewed at its
 final head, merged (by a person, by default), merged content equal to the
 reviewed content, and CI green on the merge commit.
 
@@ -9,6 +9,7 @@ pushes. Standard library only.
     GITHUB_TOKEN_FILE=/path/to/token python3 verify_delivery.py --pr https://github.com/OWNER/REPO/pull/7
     GITEA_TOKEN_FILE=/path/to/token  python3 verify_delivery.py --pr https://git.example.org/OWNER/REPO/pulls/7 \\
         --api-base https://git.example.org/api/v1
+    GITLAB_TOKEN_FILE=/path/to/token python3 verify_delivery.py --pr https://gitlab.example.org/GROUP/REPO/-/merge_requests/7
 
 Prints one JSON document on stdout. Exit codes: 0 confirmed, 3 not confirmed,
 4 pending or retryable (the API was unavailable), 2 usage error. See SKILL.md.
@@ -38,6 +39,12 @@ GITHUB_PASS = {"success", "neutral", "skipped"}
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 GITEA_PASS = {"success"}
 GITEA_PENDING = {"pending"}
+# GitLab pipeline statuses. Only success passes: a skipped pipeline ran no job at all (a "[skip ci]"
+# in the merge commit's message is enough), unlike one skipped GitHub check. A manual one waits for
+# a person, so it is pending; failed, canceled and skipped fail.
+GITLAB_PASS = {"success"}
+GITLAB_PENDING = {"created", "waiting_for_resource", "preparing", "pending", "running", "scheduled",
+                  "manual", "waiting_for_callback", "canceling"}
 
 
 class UsageError(Exception):
@@ -87,7 +94,7 @@ class Http:
         if accept:
             headers["Accept"] = accept
         if self._token:
-            headers["Authorization"] = ("Bearer " if self._kind == "github" else "token ") + self._token
+            headers["Authorization"] = ("token " if self._kind == "gitea" else "Bearer ") + self._token
         for attempt in (1, 2):
             req = urllib.request.Request(url, headers=headers, method="GET")
             try:
@@ -105,7 +112,7 @@ class Http:
 
 
 class Forge:
-    """The few read endpoints this check needs, for GitHub and Gitea."""
+    """The few read endpoints this check needs, for GitHub and Gitea (GitLabForge translates them)."""
 
     def __init__(self, http, kind, api_base, owner, repo):
         self.http, self.kind = http, kind
@@ -159,7 +166,7 @@ class Forge:
         so the token is never sent anywhere else. A next page that cannot be followed
         is an error: a partial listing could hide a later review or a failed check."""
         sep = "&" if "?" in path else "?"
-        url = self.api + self.repo_path + path + sep + ("per_page=100" if self.kind == "github" else "limit=50")
+        url = self.api + self.repo_path + path + sep + ("limit=50" if self.kind == "gitea" else "per_page=100")
         items = []
         for _ in range(MAX_PAGES):
             data, headers = self._fetch(url)
@@ -182,10 +189,182 @@ def next_link(header):
     return None
 
 
+class GitLabForge(Forge):
+    """GitLab's merge request API read through the requests verify() makes of GitHub and Gitea:
+    each one is translated, and each answer normalised to the shape the checks read.
+
+    A merge request is the pull request; its notes, without the system notes, are its comments
+    (GitLab approvals carry no text, so there are no formal reviews). The merged commit is the
+    merge commit, else the squash commit (a fast-forward squash), else the head itself (a
+    fast-forward merge). Commits have no tree id, so tree equality is a straight compare with no
+    diffs; a diff is rebuilt from a three-dot compare. Post-merge CI is the latest pipeline on
+    the merged commit for the target branch with source push."""
+
+    def __init__(self, http, kind, api_base, owner, repo):
+        super().__init__(http, kind, api_base, owner, repo)
+        self.repo_path = "/projects/" + urllib.parse.quote(f"{owner}/{repo}", safe="")
+        self.mr = {}  # the merge request, once read: its web URL and target branch are needed later
+
+    def get(self, path):
+        m = re.fullmatch(r"/pulls/(\d+)", path)
+        if m:
+            return self.pull(m.group(1))
+        m = re.fullmatch(r"/git/commits/([0-9a-f]+)", path)
+        if m:
+            c = super().get(f"/repository/commits/{m.group(1)}")
+            return {"sha": c.get("id"), "html_url": c.get("web_url"), "message": c.get("message"),
+                    "parents": [{"sha": p} for p in c.get("parent_ids") or []]}
+        raise NotFound(path)  # nothing else is read on GitLab
+
+    def pull(self, iid):
+        mr = self.mr = super().get(f"/merge_requests/{iid}")
+        state = {"opened": "open", "locked": "open"}.get(mr.get("state"), mr.get("state"))
+        merged = mr.get("state") == "merged"
+        merged_sha = merged_as = base = None
+        if merged:
+            if mr.get("merge_commit_sha") and mr["merge_commit_sha"] != mr.get("sha"):
+                merged_sha = mr["merge_commit_sha"]
+                merged_as = "squash and merge commit" if mr.get("squash_commit_sha") else "merge commit"
+            elif mr.get("squash_commit_sha"):
+                merged_sha, merged_as = mr["squash_commit_sha"], "fast-forward squash"
+            else:
+                # a fast-forward: the head is the merged commit, and the base the request started from
+                # (its first parent is only the request's previous commit)
+                merged_sha, merged_as = mr.get("sha"), "fast-forward"
+                # without its base the change cannot be told apart from the commits under it: False
+                # (not None) makes the content check fail instead of comparing from the first parent
+                base = (mr.get("diff_refs") or {}).get("base_sha") or False
+        user = mr.get("merge_user") or mr.get("merged_by")
+        merged_by = None
+        if user:
+            # the bot flag is only on the user record, not on the merge request's user object
+            account = self.user(user.get("id"))
+            merged_by = {"login": user.get("username"), "id": user.get("id"), "bot": account.get("bot")}
+        return {"state": state, "merged": merged, "merged_at": mr.get("merged_at"), "merge_commit_sha": merged_sha,
+                "merged_as": merged_as, "merged_base": base, "html_url": mr.get("web_url"),
+                "head": {"sha": mr.get("sha")}, "merged_by": merged_by}
+
+    def user(self, uid):
+        if uid is None:
+            return {}
+        try:
+            return self._fetch(f"{self.api}/users/{int(uid)}")[0] or {}
+        except NotFound:
+            return {}
+
+    def pages(self, path, key=None):
+        m = re.fullmatch(r"/issues/(\d+)/comments", path)
+        if m:
+            url = self.mr.get("web_url") or ""
+            return [{"body": n.get("body"), "created_at": n.get("created_at"), "updated_at": n.get("updated_at"),
+                     "html_url": f"{url}#note_{n.get('id')}", "user": {"login": (n.get("author") or {}).get("username")}}
+                    for n in super().pages(f"/merge_requests/{m.group(1)}/notes?sort=asc&order_by=created_at")
+                    if not n.get("system")]
+        if re.fullmatch(r"/pulls/\d+/reviews", path):
+            return []  # approvals carry no text: nothing to read
+        return super().pages(path, key)
+
+    def compare(self, a, b, straight=False):
+        data = super().get(f"/repository/compare?from={a}&to={b}" + ("&straight=true" if straight else "&unidiff=true"))
+        if data.get("compare_timeout"):
+            # despite its name, GitLab sets it when the diff overflows its limits: lasting, not a timeout
+            raise ValueError("the change is past GitLab's diff limits, so GitLab does not return it in full")
+        return data.get("diffs") or []
+
+    def same_tree(self, a, b):
+        """Whether commits A and B have the same tree: a straight compare between them has no diffs.
+        False when GitLab cannot list them all; the patch identity then decides (and fails the same way)."""
+        try:
+            return a == b or not self.compare(a, b, straight=True)
+        except ValueError:
+            return False
+
+    def diff(self, path):
+        m = re.fullmatch(r"/compare/([0-9a-f]+)\.\.\.([0-9a-f]+)", path)
+        if not m:
+            raise NotFound(path)
+        return gitlab_diff(self.compare(m.group(1), m.group(2)))
+
+    def pipelines(self, sha):
+        target = urllib.parse.quote(self.mr.get("target_branch") or "", safe="")
+        # newest first: the latest pipeline is the one that counts, as GitHub's filter=latest does for checks
+        return super().pages(f"/pipelines?sha={sha}&ref={target}&source=push&order_by=id&sort=desc")
+
+
+def git_path(prefix, path):
+    """PREFIX + PATH as git writes it in a diff header: quoted, with C escapes and octal bytes,
+    when it has a control character, a quote, a backslash or a byte past ASCII."""
+    raw = (prefix + path).encode("utf-8")
+    if not any(b < 0x20 or b >= 0x7f or b in b'"\\' for b in raw):
+        return prefix + path
+    named = {7: "\\a", 8: "\\b", 9: "\\t", 10: "\\n", 11: "\\v", 12: "\\f", 13: "\\r", 34: '\\"', 92: "\\\\"}
+    return '"' + "".join(named.get(b) or (f"\\{b:03o}" if b < 0x20 or b >= 0x7f else chr(b)) for b in raw) + '"'
+
+
+def gitlab_diff(diffs):
+    """A unified git diff rebuilt from GitLab compare entries: each entry's hunks, under the
+    "diff --git", mode and rename lines git writes, with paths quoted as git quotes them (a path
+    with a control character, a newline included, or replaced bytes has no identity). The patch
+    identity of the rebuilt diff equals that of GitLab's raw diff of the same change (checked on
+    gitlab.com). An entry with no hunks
+    that is not a pure rename or mode change, content GitLab collapsed or found too large, and
+    text in which GitLab replaced bytes that are not UTF-8 have no identity (ValueError). A binary
+    file's "Binary files ... differ" line is kept, so patch_identity refuses it."""
+    lines = []
+    for d in diffs:
+        old, new = d.get("old_path") or "", d.get("new_path") or ""
+        if any(ord(c) < 0x20 or c in "\x7f\ufffd" for c in old + new):
+            # a path over two lines could pass for a header line, and replaced bytes could make two
+            # files one: such a path is not rebuilt at all
+            raise ValueError("a changed file's path has a control character or replaced bytes")
+        lines.append(f"diff --git {git_path('a/', old)} {git_path('b/', new)}")
+        if d.get("new_file"):
+            lines.append(f"new file mode {d.get('b_mode')}")
+        elif d.get("deleted_file"):
+            lines.append(f"deleted file mode {d.get('a_mode')}")
+        elif d.get("a_mode") != d.get("b_mode"):
+            lines += [f"old mode {d.get('a_mode')}", f"new mode {d.get('b_mode')}"]
+        if d.get("renamed_file"):
+            lines += [f"rename from {git_path('', old)}", f"rename to {git_path('', new)}"]
+        text = d.get("diff") or ""
+        # an empty diff is a pure rename or mode change only where GitLab says the file was not too
+        # large: before 18.4 it sends no too_large key, and a large renamed file looks the same
+        pure = "too_large" in d and (d.get("renamed_file") or (d.get("a_mode") != d.get("b_mode")
+                                                              and not (d.get("new_file") or d.get("deleted_file"))))
+        if "\n@@" in "\n" + text:
+            # GitLab's own ---/+++ lines are dropped: the headers above stand for them
+            text = text[("\n" + text).index("\n@@"):]
+        elif text and not pure and not text.startswith("Binary files "):
+            # text without a hunk would hash as an unchanged file
+            raise ValueError(f"GitLab returns a diff of {new} without a hunk")
+        if d.get("collapsed") or d.get("too_large"):
+            raise ValueError(f"GitLab returns no diff for {new} (collapsed or too large)")
+        if not text and not pure:
+            raise ValueError(f"GitLab returns no text diff for {new} (an empty file, or content it left out)")
+        if "\ufffd" in text:
+            # GitLab replaces bytes that are not UTF-8: two different lines could then hash alike
+            raise ValueError(f"GitLab's diff of {new} has bytes replaced (text that is not UTF-8)")
+        lines.append(text.rstrip("\n"))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 # ---------------------------------------------------------------- reference parsing
 
 def parse_ref(ref, number, forge, api_base):
-    """(kind, api_base, owner, repo, number) from a PR URL, or owner/repo plus a number."""
+    """(kind, api_base, owner, repo, number) from a PR URL, or owner/repo plus a number. On
+    GitLab OWNER is the namespace, subgroups included."""
+    m = re.match(r"^(https?)://([^/]+)/(.+)/([^/]+)/-/merge_requests/(\d+)(?:/[^?#]*)?(?:[?#].*)?$", ref or "")
+    if m:
+        scheme, host, owner, repo, num = m.groups()
+        if forge and forge != "gitlab":
+            raise UsageError("a merge request URL is a GitLab reference: drop --forge or give --forge gitlab")
+        if api_base:
+            # a GitLab under a relative URL root (https://HOST/ROOT/api/v4): ROOT is not part of the namespace
+            base = urllib.parse.urlsplit(api_base)
+            root = base.path.rstrip("/").removesuffix("/api/v4").strip("/")
+            if root and base.netloc == host and owner.startswith(root + "/"):
+                owner = owner[len(root) + 1:]
+        return "gitlab", api_base or f"{scheme}://{host}/api/v4", owner, repo, int(num)
     m = re.match(r"^(https?)://([^/]+)(/.*)?/([^/]+)/([^/]+)/(pull|pulls)/(\d+)(?:/[^?#]*)?(?:[?#].*)?$", ref or "")
     if m:
         scheme, host, prefix, owner, repo, word, num = m.groups()
@@ -193,17 +372,21 @@ def parse_ref(ref, number, forge, api_base):
         if kind == "github" and not api_base:
             api_base = "https://api.github.com" if host == "github.com" else f"{scheme}://{host}/api/v3"
         return kind, api_base, owner, repo, int(num)
-    m = re.match(r"^([\w.-]+)/([\w.-]+)(?:#(\d+))?$", ref or "")
+    m = re.match(r"^([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)(?:[#!](\d+))?$", ref or "")
     if m:
         owner, repo, num = m.groups()
+        if forge != "gitlab" and ("/" in owner or "!" in (ref or "")):
+            raise UsageError("only GitLab has subgroups and the !N form: give --forge gitlab")
+        if forge == "gitlab" and "#" in (ref or ""):
+            raise UsageError("on GitLab #N is an issue: give the merge request as GROUP/REPO!N")
         num = int(num) if num else number
         if not num:
-            raise UsageError("give the pull request number: owner/repo#N or --number N")
+            raise UsageError("give the pull request number: owner/repo#N (owner/repo!N on GitLab) or --number N")
         kind = forge or "github"
         if kind == "github" and not api_base:
             api_base = "https://api.github.com"
         return kind, api_base, owner, repo, num
-    raise UsageError("--pr must be a pull request URL, owner/repo#N, or owner/repo with --number")
+    raise UsageError("--pr must be a pull or merge request URL, owner/repo#N, or owner/repo with --number")
 
 
 # ---------------------------------------------------------------- the checks
@@ -228,7 +411,7 @@ def author_verdict(c, name, kind, authors, trust_any):
     if kind == "github":
         assoc = c.get("association") or "missing"
         return None if assoc in TRUSTED_ASSOCIATIONS else f"author association {assoc} not trusted"
-    return "no author allowlist for this review (required on Gitea)"
+    return f"no author allowlist for this review (required on {'GitLab' if kind == 'gitlab' else 'Gitea'})"
 
 
 # A review counts only as a comment on the pull request: the one record every forge keeps with both
@@ -280,7 +463,7 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
                             "reason": "names an older or different head" if at_final else "superseded by a later review"})
         if rule == "allowlist required":
             reviews.append({"review": name, "status": "unsatisfiable", "author_rule": rule,
-                            "detail": "an author allowlist is required on Gitea: give --review-author "
+                            "detail": f"an author allowlist is required on {'GitLab' if kind == 'gitlab' else 'Gitea'}: give --review-author "
                                       f"{name}=LOGIN (or --trust-any-author where only trusted accounts can comment)"})
             continue
         if latest is None:
@@ -304,6 +487,10 @@ def account_type(user, kind, bots):
         return "Bot", "login ends with [bot]"
     if kind == "github":
         return user.get("type") or "unknown", "GitHub account type"
+    if kind == "gitlab":
+        if user.get("bot") is None:
+            return "unknown", "GitLab user record without a bot flag (it needs a token)"
+        return ("Bot" if user["bot"] else "User"), "GitLab user bot flag"
     if (user.get("id") or 0) < 0:
         return "Bot", "Gitea system account (negative id)"
     return "User", "Gitea has no bot flag; not listed with --bot-account"
@@ -320,6 +507,12 @@ def ci_results(kind, merge_sha, forge, flaky):
             runs.append({"name": r.get("name"), "id": r.get("id"), "url": r.get("html_url") or "",
                          "state": r.get("status"), "conclusion": r.get("conclusion"),
                          "result": "passed" if ok else "pending" if not done else "failed"})
+    elif kind == "gitlab":
+        for p in forge.pipelines(merge_sha)[:1]:
+            state = p.get("status")
+            runs.append({"name": p.get("name") or "pipeline", "id": p.get("id"), "url": p.get("web_url") or "",
+                         "state": state, "conclusion": state,
+                         "result": "passed" if state in GITLAB_PASS else "pending" if state in GITLAB_PENDING else "failed"})
     else:
         for s in forge.pages(f"/commits/{merge_sha}/status", key="statuses"):
             state = s.get("status") or s.get("state")
@@ -383,6 +576,8 @@ def verify(args, forge, kind, number):
     user = pr.get("merged_by") or {}
     merge = {"name": "merge", "merged": merged, "merged_at": merged_at, "merge_commit_sha": merge_sha or None,
              "pr_url": pr_url, "merged_by": user.get("login")}
+    if pr.get("merged_as"):
+        merge["merged_as"] = pr["merged_as"]  # GitLab: merge commit, squash, or fast-forward
     if not merged:
         merge["status"] = "pending" if pr.get("state") == "open" else "failed"
         merge["detail"] = "not merged yet" if merge["status"] == "pending" else "closed without merging"
@@ -415,8 +610,17 @@ def verify(args, forge, kind, number):
     t_head, t_merge = tree_of(head_commit), tree_of(merge_commit)
     same = {"name": "tree_equality", "head_sha": head, "head_tree": t_head, "merge_commit_sha": merge_sha,
             "merge_commit_url": merge_url, "merge_tree": t_merge}
-    rebase = once(lambda: rebase_base(forge, number, head, merge_commit))
-    results = [merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge, rebase)
+    if kind == "gitlab":
+        # GitLab commits carry no tree id: equal trees are a straight compare with no diffs. A
+        # fast-forward merge needs no rebase walk either: its base is the request's own.
+        same_tree = bool(head) and forge.same_tree(head, merge_sha)
+        same["tree_basis"] = "a straight compare of the head and the merged commit"
+        rebase = None
+    else:
+        same_tree = bool(t_head) and t_head == t_merge
+        rebase = once(lambda: rebase_base(forge, number, head, merge_commit))
+    results = [merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase,
+                              pr.get("merged_base"))
                for reviewed in (reviewed_heads or [head])]
     worst = next((r for status in ("failed", "pending") for r in results if r["status"] == status), None)
     shown = worst or next((r for r in results if r["rule"] == "patch_identity"), results[0])
@@ -461,19 +665,23 @@ def once(read):
     return call
 
 
-def merged_matches(kind, forge, number, reviewed, head, t_head, merge_sha, merge_commit, t_merge, rebase=None):
+def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase=None, base=None):
     """Is the merged content the content reviewed at head REVIEWED? Rule tree_equality: the merge
     commit's tree is the reviewed (final) head's tree. Rule patch_identity, when the trees differ
     because the base moved after the review: the merge commit's change against its first parent
     has the same patch identity as the reviewed head's change against its merge base. A rebase
     merge of several commits reports its last rebased commit as the merge commit, so when that
     commit's change does not match, the change from the base the rebase landed on (REBASE(),
-    see rebase_base) is compared instead."""
+    see rebase_base) is compared instead. BASE, where the forge gives it (a GitLab fast-forward),
+    replaces the first parent; False means the forge gave none where one is needed."""
     result = {"reviewed_head": reviewed, "rule": None}
     final = bool(head) and head.startswith(reviewed)
-    if final and t_head and t_head == t_merge:
+    if final and same_tree:
         return {**result, "status": "passed", "rule": "tree_equality"}
-    parent = ((merge_commit.get("parents") or [{}])[0] or {}).get("sha")
+    if base is False:
+        return {**result, "status": "failed",
+                "detail": "the trees differ, and the forge does not say which base the fast-forward started from"}
+    parent = base or ((merge_commit.get("parents") or [{}])[0] or {}).get("sha")
     if not head or not parent:
         return {**result, "status": "failed",
                 "detail": "the trees differ, and the merge commit has no parent to compare its change against"}
@@ -501,7 +709,7 @@ def change_matches(kind, forge, number, reviewed, final, parent, merge_sha, resu
     # (before 1.22) has no compare endpoint at all.
     compare = (f"/compare/{parent}...{reviewed}", f"/compare/{parent}...{merge_sha}")
     gitea_compare = kind == "gitea" and (rebased or not final)
-    if kind == "github":
+    if kind in ("github", "gitlab"):
         paths = compare
     elif not final:
         paths = tuple(path + "?output=diff" for path in compare)
@@ -521,6 +729,8 @@ def change_matches(kind, forge, number, reviewed, final, parent, merge_sha, resu
                                      "re-review at the final head"}
     try:
         texts = [forge.diff(path) for path in paths]
+    except ValueError as e:  # GitLab: a compare entry with no text diff
+        return {**result, "status": "failed", "detail": f"the trees differ, and the patch identity cannot be established: {e}"}
     except (Unavailable, NotFound) as e:
         if gitea_compare and isinstance(e, NotFound):
             return no_compare_diff
@@ -639,11 +849,11 @@ def evidence_for(pr_url, head_url, merge_url, runs):
 
 def build_parser():
     p = ArgParser(prog="verify_delivery.py", description=__doc__.split("\n\n")[0], allow_abbrev=False)
-    p.add_argument("--pr", required=True, help="pull request URL, owner/repo#N, or owner/repo with --number")
+    p.add_argument("--pr", required=True, help="pull or merge request URL, owner/repo#N, or owner/repo with --number")
     p.add_argument("--number", type=int, help="pull request number when --pr is owner/repo")
-    p.add_argument("--forge", choices=("github", "gitea"), help="forge type (default: from the URL; github for owner/repo)")
+    p.add_argument("--forge", choices=("github", "gitea", "gitlab"), help="forge type (default: from the URL; github for owner/repo)")
     p.add_argument("--api-base", help="REST API base, e.g. https://git.example.org/api/v1 (required for Gitea)")
-    p.add_argument("--token-env", help="environment variable naming the token FILE (default GITHUB_TOKEN_FILE or GITEA_TOKEN_FILE)")
+    p.add_argument("--token-env", help="environment variable naming the token FILE (default GITHUB_TOKEN_FILE, GITEA_TOKEN_FILE or GITLAB_TOKEN_FILE)")
     p.add_argument("--anonymous", action="store_true", help="no token (public repositories; low rate limits)")
     p.add_argument("--review", action="append", default=[], metavar="NAME=REGEX",
                    help="a required review: a regex with a (?P<sha>...) group; replaces the defaults, repeatable")
@@ -711,14 +921,16 @@ def resolve(args, env):
     args.mergers = {login.strip().lower() for login in args.merger}
     kind, api_base, owner, repo, number = parse_ref(args.pr, args.number, args.forge, args.api_base)
     if not api_base:
-        raise UsageError("--api-base is required for Gitea (for example https://git.example.org/api/v1)")
+        example = "https://gitlab.example.org/api/v4" if kind == "gitlab" else "https://git.example.org/api/v1"
+        raise UsageError(f"--api-base is required for {'GitLab without a merge request URL' if kind == 'gitlab' else 'Gitea'} "
+                         f"(for example {example})")
     if not api_base.startswith(("https://", "http://")):
         raise UsageError("--api-base must be an http(s) URL")
     if api_base.startswith("http://") and not args.anonymous:
         raise UsageError("a token is only sent over https: use an https --api-base (or --anonymous)")
     token = None
     if not args.anonymous:
-        var = args.token_env or ("GITHUB_TOKEN_FILE" if kind == "github" else "GITEA_TOKEN_FILE")
+        var = args.token_env or {"github": "GITHUB_TOKEN_FILE", "gitlab": "GITLAB_TOKEN_FILE"}.get(kind, "GITEA_TOKEN_FILE")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", var):
             raise UsageError("--token-env takes the NAME of an environment variable, not a token")
         # A token can look like a variable name, so a --token-env value is never repeated.
@@ -753,7 +965,7 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
         except SystemExit as e:  # --help
             return EXIT_USAGE if e.code else 0
         kind, api_base, owner, repo, number, token = resolve(args, env)
-        forge = Forge(Http(token, kind, opener=opener, sleep=sleep), kind, api_base, owner, repo)
+        forge = (GitLabForge if kind == "gitlab" else Forge)(Http(token, kind, opener=opener, sleep=sleep), kind, api_base, owner, repo)
         checks, pr_url, head_url, merge_url, runs = verify(args, forge, kind, number)
     except UsageError as e:
         emit({"verdict": "not_confirmed", "error": {"kind": "usage", "message": str(e)}, "checks": []}, stdout, token)

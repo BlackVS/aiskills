@@ -9,6 +9,43 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-10-05
+
+### Added
+- verify-delivery: GitLab merge requests (#54), with `--forge gitlab`, a
+  merge request URL (subgroups included) or `GROUP/REPO!N`, and
+  `GITLAB_TOKEN_FILE` (sent as a Bearer token). The four checks read:
+  - **reviewed head:** the merge request's notes, without system notes. As on
+    Gitea, each review needs a `--review-author` list, since GitLab has no
+    author association.
+  - **merge:** `merge_user`, typed by the `bot` flag of its user record (no
+    flag, for example without a token, is `unknown`, not a person). The merged
+    commit is the merge commit, else the squash commit, else the head itself
+    (a fast-forward), reported as `merged_as`.
+  - **merged content:** tree equality as a straight compare with no diffs (GitLab
+    commits carry no tree id). The patch identity uses diffs rebuilt from the
+    three-dot compare, with paths quoted as git quotes them, which hash like
+    GitLab's raw diff. A fast-forward
+    compares from the merge request's base, and fails without one. A change
+    past GitLab's diff limits, text in which GitLab replaced bytes that are not UTF-8, a path
+    with a control character or replaced bytes, and (before GitLab 18.4) a
+    renamed file sent without text have no identity.
+  - **post-merge CI:** the latest pipeline on the merged commit for the target
+    branch with source `push`. Only `success` passes. `manual`, running and
+    canceling pipelines are pending. `failed`, `canceled` and `skipped` fail, since a
+    skipped pipeline ran no job.
+  - **tests:** fixtures recorded from a live run on gitlab.com, one per merge
+    strategy (a merge commit and a squash by a bot account, a fast-forward
+    by a person), with the project, accounts, ids, SHAs, messages and file
+    contents replaced by placeholders.
+
+### Fixed
+- hands consumer tests: the review-control drain test no longer fails on
+  macOS when the reset from its deliberately bounded drain overtakes the
+  answer. The client takes a reset as the end of the answer, so a refusal
+  whose status line is lost still fails, and the bounded case is checked on
+  the server side only.
+
 ## [1.31.9] - 2026-10-05
 
 ### Fixed

@@ -20,7 +20,7 @@ works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
 | `oh-improve-agent-readiness` | extensions (onboarding plugin, `improve-agent-readiness`) | Turns a readiness report's gaps into 5–10 ranked, repo-specific fixes and implements the approved ones. |
 | `oh-qa-changes` | extensions (`qa-changes`) | QA a PR by RUNNING the software: env setup, exercise changed behavior as a user, PASS/FAIL report with before/after evidence. Not tests (CI's job), not reading code (review's job). |
 | `oh-learn-from-code-review` | extensions (`learn-from-code-review`) | Distill merged-PR review feedback into repo skills and the `custom-codereview-guide` the reviewer reads; Gitea+GitHub; AI-reviewer comments included as signal. |
-| `verify-delivery` | written here | Confirm from the forge that a PR was delivered: reviews READY at the final head, merged by a person, merged tree equal to the reviewed one, CI green on the merge commit. Read-only helper, JSON verdict and evidence. |
+| `verify-delivery` | written here | Confirm from the forge (GitHub, Gitea or GitLab) that a PR was delivered: reviews READY at the final head, merged by a person, merged tree equal to the reviewed one, CI green on the merge commit. Read-only helper, JSON verdict and evidence. |
 
 `prompts/` holds ready-to-fill prompts for each skill. The command stubs the
 upstream ships were only "read SKILL.md, then `$ARGUMENTS`", so they were replaced
@@ -476,7 +476,7 @@ repository trusts: a listed account, or on GitHub an owner, member or
 collaborator), the PR was merged by a
 person, the merged content is the reviewed content (the same tree, or after a
 base-only update the same patch identity), and CI on the merge commit is green. Its helper, `skills/verify-delivery/verify_delivery.py`,
-uses only the Python standard library and works against GitHub and Gitea:
+uses only the Python standard library and works against GitHub, Gitea and GitLab (merge requests):
 
 ```bash
 GITHUB_TOKEN_FILE=/path/to/read-only-token python3 skills/verify-delivery/verify_delivery.py \
@@ -489,7 +489,7 @@ usage error. The token is read from the file an environment variable names,
 never from the command line, and never appears in the output. Review patterns,
 review author allowlists, the required count, a merger allowlist, bot accounts and known-flaky checks are
 options; `SKILL.md` documents them and how to read the result. The helper is
-tested offline against recorded API responses for both forges
+tested offline against recorded API responses for all three forges
 (`tests/test_verify_delivery.py`).
 
 ## Compatibility rules

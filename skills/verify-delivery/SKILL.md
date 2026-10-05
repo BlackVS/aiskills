@@ -1,6 +1,6 @@
 ---
 name: verify-delivery
-description: Confirm from the forge (GitHub or Gitea) that a pull request was actually delivered, before recording it as done. Checks that the required reviews are READY_FOR_HUMAN_MERGE at exactly the final head, that the pull request was merged by a person, that the merged content is the reviewed content (the same tree, or the same patch identity after a base-only update), and that CI on the merge commit is green. Read-only; returns JSON with a verdict and, only when confirmed, the evidence to record. Use when a coordinator or any agent must decide whether a PR counts as delivered.
+description: Confirm from the forge (GitHub, Gitea or GitLab) that a pull request (a GitLab merge request) was actually delivered, before recording it as done. Checks that the required reviews are READY_FOR_HUMAN_MERGE at exactly the final head, that the pull request was merged by a person, that the merged content is the reviewed content (the same tree, or the same patch identity after a base-only update), and that CI on the merge commit is green. Read-only; returns JSON with a verdict and, only when confirmed, the evidence to record. Use when a coordinator or any agent must decide whether a PR counts as delivered.
 ---
 
 # Verify delivery
@@ -31,6 +31,10 @@ All four must pass for the verdict `confirmed`:
    from the compare API with `?output=diff`, which Gitea serves from 1.27; an
    older Gitea answers JSON (or, before 1.22, has no compare endpoint), and
    there a review of an older head fails: re-review at the final head. `reviewed_heads` lists the heads the READY reviews name.
+   On GitLab the comments are the merge request's notes; system notes are
+   skipped, and approvals carry no text, so they are not reviews. Resolving a
+   resolvable note after the merge moves its `updated_at`, so it then reads as
+   edited after the merge: a false "not confirmed", never a false confirm.
    Reviews are recognised by their text **and by an author the repository
    trusts**; the author is checked first, so an untrusted comment never
    counts and never displaces a trusted one, even when it is newer. By default
@@ -45,8 +49,9 @@ All four must pass for the verdict `confirmed`:
    `--review-author NAME=LOGIN`; without a list, on GitHub, an author whose
    `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` (anything else,
    or none reported, is ignored with the reason). Gitea reports no
-   association, so there each review needs a `--review-author` list or it
-   cannot be satisfied (the result is `not_confirmed`). `--trust-any-author`
+   association, and neither does GitLab, so there each review needs a
+   `--review-author` list or it cannot be satisfied (the result is
+   `not_confirmed`). `--trust-any-author`
    turns the check off, for private repositories where only trusted accounts
    can comment; the output then says `"author_check": "disabled"`. The forge
    does not report who edited a comment, so the check applies to its author.
@@ -56,6 +61,12 @@ All four must pass for the verdict `confirmed`:
    merged it are recorded. By default that account must be a person (a
    GitHub `User`, not a `Bot`). Gitea has no bot flag: its system accounts
    count as bots, and you name any other bot accounts with `--bot-account`.
+   On GitLab the account is the merge request's `merge_user`, and its type
+   comes from the `bot` flag of its user record (a project or group access
+   token's account is a bot). That flag needs a token; without it the type is
+   `unknown`, which is not a person. GitLab's merged commit is the merge
+   commit, else the squash commit (a fast-forward squash), else the head itself
+   (a fast-forward merge); `merged_as` says which.
    `--merger NAME` restricts who may merge; `--allow-bot-merge` accepts bots.
 3. **Merged content = reviewed content** (the `tree_equality` check), for
    every head a READY review names (`reviewed` lists each with its result).
@@ -73,6 +84,24 @@ All four must pass for the verdict `confirmed`:
      on Gitea from `pulls/{index}.diff` and `git/commits/{merge}.diff` for the
      final head, and from the same two compares with `?output=diff` for an
      older head (Gitea 1.27 or later).
+
+   On GitLab commits carry no tree id, so `tree_equality` holds when a
+   straight compare of the head and the merged commit has no diffs
+   (`tree_basis` says so). The diffs are rebuilt from GitLab's three-dot
+   compare (`repository/compare?from=…&to=…&unidiff=true`): each file's hunks
+   under the `diff --git`, mode and rename lines git writes, with paths quoted
+   as git quotes them, which gives the
+   same patch identity as GitLab's raw diff of the merge request (checked on
+   gitlab.com). A fast-forward compares from the merge request's base
+   (`diff_refs.base_sha`) instead of the head's first parent; one without a
+   recorded base fails unless the reviewed head is the merged head. GitLab sends a
+   binary file as a "Binary files … differ" line, as git does, so it has no
+   identity. A file it collapsed, found too large or sent without text, a
+   change past its diff limits (`compare_timeout`), diff text in which it
+   replaced bytes that are not UTF-8, and a path with a control character (a
+   newline included) or replaced bytes have none either, nor, before GitLab
+   18.4 (which first reports `too_large`), a renamed file sent without text:
+   the check fails.
 
    A rebase merge of several commits reports its last rebased commit as the
    merge commit, so that commit's change alone never matches. When it does
@@ -93,13 +122,17 @@ All four must pass for the verdict `confirmed`:
    the merge is not a rebase merge, and the first-parent result stands.
 
    The patch identity is a SHA-256 over a canonical form of the diff, the
-   same function for both forges (not byte-compatible with `git patch-id`):
+   same function for every forge (not byte-compatible with `git patch-id`):
    each `diff --git` line, the mode, new/deleted file and rename/copy lines,
    and every hunk line (context, added, removed and `\ No newline`) are kept
    in order; index lines, the `---`/`+++` lines, hunk headers with their line
    numbers, similarity scores and blank separator lines are dropped. Only
    CRLF line endings are normalised: the bytes are hashed as they are, never
-   decoded, so a file that is not UTF-8 keeps every byte. Because context
+   decoded, so a file that is not UTF-8 keeps every byte. GitLab's API does
+   not return such bytes as they are: it re-encodes them, drops them or
+   replaces them. Only a replacement (U+FFFD) is detected and refused, so on
+   GitLab two changes that differ only in such bytes can share an identity.
+   Because context
    counts, the same line added elsewhere in a file does not match, and a
    base update that changed the lines next to a hunk does not match either
    (the conservative outcome: re-review). A diff that cannot be read, or is
@@ -112,7 +145,12 @@ All four must pass for the verdict `confirmed`:
    GitHub; on Gitea only `success` passes, `pending` is pending, and `error`,
    `failure` and `warning` fail). Still running means pending. On GitHub only
    check runs are read: CI that reports solely through the older commit-status
-   API shows up as no CI yet, so the result stays pending. A failure fails. A failing check you
+   API shows up as no CI yet, so the result stays pending. On GitLab only the
+   latest pipeline on the merged commit for the target branch with source
+   `push` counts (a branch or scheduled pipeline on the same commit does not):
+   only `success` passes. `manual` and anything still queued, running or
+   canceling is pending, and `failed`, `canceled` and `skipped` fail: a skipped pipeline ran
+   no job (a `[skip ci]` in the merge commit's message is enough). A failure fails. A failing check you
    list with `--known-flaky` is reported separately as `failed: known flaky`,
    and the delivery is still **not confirmed**.
 
@@ -130,14 +168,26 @@ GITEA_TOKEN_FILE=/path/to/read-only-token \
   python3 <skill-dir>/verify_delivery.py --pr https://git.example.org/OWNER/REPO/pulls/45 \
   --api-base https://git.example.org/api/v1 \
   --review-author local=LOCAL_REVIEWER --review-author external=EXTERNAL_REVIEWER
+
+GITLAB_TOKEN_FILE=/path/to/read-only-token \
+  python3 <skill-dir>/verify_delivery.py --pr https://gitlab.example.org/GROUP/REPO/-/merge_requests/67 \
+  --review-author local=LOCAL_REVIEWER --review-author external=EXTERNAL_REVIEWER
 ```
 
 On Windows run it with `python` or `py -3`. The token needs read access to
-pull requests, comments, commits and checks (or statuses) only. Other
-references: `--pr OWNER/REPO#123`, or `--pr OWNER/REPO --number 123`;
-`--forge gitea` when it cannot be told from the URL; `--api-base` for
-GitHub Enterprise (`https://HOST/api/v3` is assumed from a URL) and always
-for Gitea, over https whenever a token is used; `--token-env NAME` for a different variable; `--anonymous` for a
+pull requests, comments, commits and checks (or statuses) only; on GitLab a
+token with `read_api` (a project access token with the Reporter role is
+enough) is sent as a Bearer token. Other references: `--pr OWNER/REPO#123`,
+or `--pr OWNER/REPO --number 123`; on GitLab `--forge gitlab` with
+`--pr 'GROUP/SUBGROUP/REPO!67'` (quoted: `!` is special to an interactive
+shell) and `--api-base`; `#N` is refused there, since on GitLab it names an
+issue. `--forge gitea` when it
+cannot be told from the URL; `--api-base` for GitHub Enterprise
+(`https://HOST/api/v3` is assumed from a URL), for a GitLab not served at
+`https://HOST/api/v4` (under a relative URL root, give
+`https://HOST/ROOT/api/v4`: `ROOT` is then not read as part of the
+namespace), and always for Gitea, over https whenever a token is used. GitLab
+projects are addressed by their URL-encoded path (`GROUP%2FREPO`); `--token-env NAME` for a different variable; `--anonymous` for a
 public repository without a token.
 
 Options for the checks:
@@ -146,7 +196,7 @@ Options for the checks:
 | --- | --- | --- |
 | `--review NAME=REGEX` (repeatable) | `local` and `external` as above | A required review. The regex must have a `(?P<sha>...)` group capturing the head it names (7 to 40 hex digits). Giving any `--review` replaces the defaults. |
 | `--required-reviews N` | all of them | How many of the reviews must be READY. |
-| `--review-author NAME=LOGIN` (repeatable) | GitHub: `OWNER`, `MEMBER`, `COLLABORATOR`; Gitea: none (required) | An account whose comments may give review `NAME`. A list for a review replaces the association default for it, in both directions. |
+| `--review-author NAME=LOGIN` (repeatable) | GitHub: `OWNER`, `MEMBER`, `COLLABORATOR`; Gitea and GitLab: none (required) | An account whose comments may give review `NAME`. A list for a review replaces the association default for it, in both directions. |
 | `--trust-any-author` | off | Accept a review from any author. Only where just trusted accounts can comment; reported as `"author_check": "disabled"`. Not combined with `--review-author`. |
 | `--verdict-pattern REGEX` | a `VERDICT` line followed by `READY_FOR_HUMAN_MERGE` | What makes a review READY. |
 | `--merger NAME` (repeatable) | anyone | Allowlist of accounts that may merge. Compared case-insensitively. |
@@ -169,9 +219,9 @@ One JSON document on stdout:
   `{kind, ref}` to record as they are, with at most 16 entries, each ref at
   most 512 bytes:
   - `reviewed_head`: the reviewed head commit's URL;
-  - `human_merge`: the pull request's URL;
-  - `post_merge_ci`: the CI run URLs (the merge commit's URL when there are
-    too many runs to list).
+  - `human_merge`: the pull (or merge) request's URL;
+  - `post_merge_ci`: the CI run URLs (on GitLab the pipeline's; the merge
+    commit's URL when there are too many runs to list).
 - `error`: present when the run could not complete, with its `kind`
   (`usage`, `unavailable`, `not_found`).
 

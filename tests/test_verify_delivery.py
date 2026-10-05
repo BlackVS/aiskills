@@ -1,11 +1,11 @@
 """skills/verify-delivery/verify_delivery.py against recorded API responses
-(tests/fixtures/verify_delivery/<forge>/), for GitHub and Gitea. No network: a
+(tests/fixtures/verify_delivery/<forge>/), for GitHub, Gitea and GitLab. No network: a
 fake opener serves the fixtures and records every request; no real clock: the
 retry sleep is replaced and every timestamp comes from the fixtures.
 
 Run: python3 -m unittest tests/test_verify_delivery.py
 """
-import copy, datetime, email.message, io, json, os, pathlib, subprocess, sys, tempfile, unittest, urllib.error, urllib.parse
+import copy, datetime, email.message, io, json, os, pathlib, re, subprocess, sys, tempfile, unittest, urllib.error, urllib.parse
 import urllib.request, urllib.response
 from unittest import mock
 
@@ -1002,6 +1002,373 @@ class Gitea(Verify, unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("--api-base", json.loads(out.getvalue())["error"]["message"])
         self.assertEqual(self.fake.requests, [])
+
+
+
+GITLAB = FIXTURES / "gitlab"
+GITLAB_API = "https://gitlab.example.org/api/v4"
+GITLAB_PROJECT = "/projects/acme%2Fwidgets"
+
+
+class FakeGitLab:
+    """Serves the exchanges recorded from a live run on gitlab.com (2026-10-05), one fixture per
+    merge strategy, with the project, accounts, ids and commit SHAs replaced by placeholders.
+    A request is matched on its path and query, as recorded; anything else answers 404."""
+
+    def __init__(self, name):
+        self.answers = {x["path"]: x for x in json.loads((GITLAB / f"{name}.json").read_text())}
+        self.requests, self.overrides = [], {}
+
+    def body(self, prefix):
+        """The recorded answer to the one request whose path and query start with PREFIX."""
+        [x] = [x for path, x in self.answers.items() if path.startswith(GITLAB_PROJECT + prefix) or path.startswith(prefix)]
+        return x["body"]
+
+    def __call__(self, req, timeout=None):
+        self.requests.append({"method": req.get_method(), "url": req.full_url, "headers": dict(req.header_items()),
+                              "timeout": timeout})
+        url = urllib.parse.urlsplit(req.full_url)
+        path = url.path[len("/api/v4"):] + ("?" + url.query if url.query else "")
+        for prefix, answer in self.overrides.items():
+            if path.startswith(GITLAB_PROJECT + prefix) or path.startswith(prefix):
+                return answer(req)
+        x = self.answers.get(path)
+        if x is None:
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b'{"message":"404 Not Found"}'))
+        return Response(x["status"], json.dumps(x["body"]).encode())
+
+
+class GitLab(unittest.TestCase):
+    """The GitLab adapter (#54) on recorded merge requests: a merge commit and a squash, both
+    merged by a project access token's bot account, and a fast-forward merged by a person. Each
+    has one review note by the merging account and a green push pipeline on the target branch."""
+
+    REVIEWER = {"merge_commit": "project_1001_bot_example", "squash": "project_1001_bot_example",
+                "fast_forward": "maintainer"}
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="verify-delivery-"))
+        self.token_file = self.tmp / "token"
+        self.token_file.write_text(TOKEN + "\n")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def load(self, name):
+        self.name, self.fake = name, FakeGitLab(name)
+        [self.mr] = [x["body"] for path, x in self.fake.answers.items() if re.fullmatch(r".*/merge_requests/\d+", path)]
+        return self.mr
+
+    def run_vd(self, *extra, reviewer=None, env=None):
+        out = io.StringIO()
+        iid = self.mr["iid"]
+        args = ["--pr", f"https://gitlab.example.org/acme/widgets/-/merge_requests/{iid}", "--required-reviews", "1",
+                "--review-author", f"external={reviewer or self.REVIEWER[self.name]}", *extra]
+        env = {"GITLAB_TOKEN_FILE": str(self.token_file)} if env is None else env
+        code = vd.main(args, env=env, stdout=out, opener=self.fake, sleep=lambda s: None)
+        self.assertNotIn(TOKEN, out.getvalue())
+        return code, json.loads(out.getvalue())
+
+    def check(self, doc, name):
+        return next(c for c in doc["checks"] if c["name"] == name)
+
+    def paths(self):
+        return [urllib.parse.urlsplit(r["url"]).path[len("/api/v4"):] for r in self.fake.requests]
+
+    def test_each_merge_strategy_is_confirmed(self):
+        cases = {"merge_commit": ("merge commit", "Bot", ["--allow-bot-merge"]),
+                 "squash": ("squash and merge commit", "Bot", ["--allow-bot-merge"]),
+                 "fast_forward": ("fast-forward", "User", [])}
+        for name, (merged_as, account, extra) in cases.items():
+            with self.subTest(name):
+                mr = self.load(name)
+                code, doc = self.run_vd(*extra)
+                self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+                merge = self.check(doc, "merge")
+                self.assertEqual((merge["merged_as"], merge["account_type"]), (merged_as, account))
+                self.assertEqual(merge["account_type_basis"], "GitLab user bot flag")
+                merged = mr["merge_commit_sha"] or mr["squash_commit_sha"] or mr["sha"]
+                self.assertEqual(merge["merge_commit_sha"], merged)
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((same["status"], same["rule"]), ("passed", "tree_equality"))
+                self.assertEqual(doc["pr"], {"forge": "gitlab", "repo": "acme/widgets", "number": mr["iid"], "url": mr["web_url"]})
+                ev = {e["kind"]: e["ref"] for e in doc["evidence"]}
+                self.assertEqual(ev["human_merge"], mr["web_url"])
+                self.assertIn("/-/pipelines/", ev["post_merge_ci"])
+
+    def test_a_bot_merge_needs_the_opt_in(self):
+        self.load("merge_commit")
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        merge = self.check(doc, "merge")
+        self.assertEqual((merge["status"], merge["account_type"]), ("failed", "Bot"))
+
+    def test_without_a_bot_flag_the_merger_is_not_taken_for_a_person(self):
+        # the flag is on the user record only, and it needs a token: without it, the account is unknown
+        self.load("fast_forward")
+        user = self.mr["merge_user"]["id"]
+        for name, answer in {"no flag": lambda req: Response(200, json.dumps({"id": user, "username": "maintainer"}).encode()),
+                             "no record": lambda req: (_ for _ in ()).throw(
+                                 urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))}.items():
+            with self.subTest(name):
+                self.fake.overrides = {f"/users/{user}": answer}
+                code, doc = self.run_vd()
+                self.assertEqual(code, 3)
+                merge = self.check(doc, "merge")
+                self.assertEqual((merge["account_type"], merge["status"]), ("unknown", "failed"))
+
+    def test_fast_forward_is_its_own_merged_commit(self):
+        # no merge commit: the head is what landed, so no compare is needed for the trees
+        self.load("fast_forward")
+        self.assertIsNone(self.mr["merge_commit_sha"])
+        self.run_vd()
+        self.assertFalse(any("/compare" in p for p in self.paths()), self.paths())
+
+    def test_requests_are_read_only_with_the_token_in_a_bearer_header(self):
+        self.load("merge_commit")
+        self.run_vd("--allow-bot-merge")
+        self.assertEqual({r["method"] for r in self.fake.requests}, {"GET"})
+        self.assertEqual({r["headers"].get("Authorization") for r in self.fake.requests}, {f"Bearer {TOKEN}"})
+        self.assertTrue(all(TOKEN not in r["url"] for r in self.fake.requests))
+        self.assertTrue(all(r["url"].startswith(GITLAB_API + "/") for r in self.fake.requests), "only the API host")
+        self.assertTrue(all(p.startswith((GITLAB_PROJECT + "/", "/users/")) for p in self.paths()))
+
+    def test_only_the_latest_target_branch_push_pipeline_counts(self):
+        self.load("fast_forward")
+        self.run_vd()
+        [ci] = [r["url"] for r in self.fake.requests if "/pipelines" in r["url"]]
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(ci).query)
+        self.assertEqual((query["ref"], query["source"], query["sort"]), ([self.mr["target_branch"]], ["push"], ["desc"]))
+        pipelines = self.fake.body("/pipelines")
+        self.assertEqual(len(pipelines), 1, "the branch pipeline on the same commit is not listed")
+        for status, (code, result) in {"failed": (3, "failed"), "canceled": (3, "failed"), "running": (4, "pending"),
+                                       "manual": (4, "pending"), "canceling": (4, "pending"),
+                                       "skipped": (3, "failed")}.items():
+            with self.subTest(status):
+                older = {**pipelines[0], "id": 1, "status": "failed"}  # an earlier run: only the latest counts
+                latest = {**pipelines[0], "status": status}
+                self.fake.overrides = {"/pipelines": lambda req, body=[latest, older]: Response(200, json.dumps(body).encode())}
+                got, doc = self.run_vd()
+                ci = self.check(doc, "post_merge_ci")
+                self.assertEqual((got, [r["result"] for r in ci["runs"]]), (code, [result]))
+        self.fake.overrides = {"/pipelines": lambda req: Response(200, b"[]")}
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "post_merge_ci")["status"]), (4, "pending"))
+
+    def test_system_notes_are_skipped_and_reviews_link_to_their_note(self):
+        self.load("squash")
+        notes = self.fake.body("/merge_requests/2/notes")
+        self.assertTrue(any(n["system"] for n in notes), "the recording has a system note")
+        code, doc = self.run_vd("--allow-bot-merge")
+        review = {r["review"]: r for r in self.check(doc, "reviewed_head")["reviews"]}["external"]
+        [note] = [n for n in notes if not n["system"]]
+        self.assertEqual(review["url"], f"{self.mr['web_url']}#note_{note['id']}")
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(next(r["url"] for r in self.fake.requests if "/notes" in r["url"])).query)
+        self.assertEqual((query["sort"], query["order_by"]), (["asc"], ["created_at"]))
+
+    def fast_forward_of_an_earlier_review(self):
+        """The fast-forward request, reviewed only at an earlier head, with two commits: the trees differ."""
+        self.load("fast_forward")
+        head, earlier = self.mr["sha"], "e" * 40
+        self.fake.body(f"/repository/commits/{head}")["parent_ids"] = ["c" * 40]
+        note = self.fake.body("/merge_requests/3/notes")[0]
+        note["body"] = note["body"].replace(head, earlier)
+        change = {"compare_timeout": False, "diffs": [{"old_path": "README.md", "new_path": "README.md", "a_mode": "100644",
+                                                       "b_mode": "100644", "diff": "@@ -1 +1 @@\n-a\n+b\n", "too_large": False}]}
+        self.fake.overrides = {"/repository/compare": lambda req: Response(200, json.dumps(change).encode())}
+        return head, earlier
+
+    def test_a_fast_forward_of_the_reviewed_head_needs_no_base(self):
+        self.load("fast_forward")
+        self.mr["diff_refs"] = None
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "tree_equality")["rule"]), (0, "tree_equality"))
+
+    def test_a_fast_forward_without_a_base_is_not_compared_from_its_first_parent(self):
+        for name, edit in {"no diff_refs": lambda mr: mr.update(diff_refs=None),
+                           "merge commit is the head": lambda mr: mr.update(merge_commit_sha=mr["sha"], diff_refs=None)}.items():
+            with self.subTest(name):
+                self.fast_forward_of_an_earlier_review()
+                edit(self.mr)
+                code, doc = self.run_vd()
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((code, same["status"]), (3, "failed"))
+                self.assertIn("which base the fast-forward started from", same["detail"])
+                self.assertEqual(self.check(doc, "merge")["merged_as"], "fast-forward")
+                self.assertFalse(any("/compare" in r["url"] for r in self.fake.requests), "never from the first parent")
+
+    def test_a_system_note_never_counts_as_a_review(self):
+        # GitLab writes system notes itself; one shaped like a review is still not a review
+        self.load("fast_forward")
+        notes = self.fake.body("/merge_requests/3/notes")
+        notes[0]["system"] = True
+        code, doc = self.run_vd()
+        self.assertEqual(code, 3)
+        self.assertEqual({r["review"]: r["status"] for r in self.check(doc, "reviewed_head")["reviews"]}["external"], "missing")
+
+    def test_a_fast_forward_compares_from_the_requests_base(self):
+        # a review of an earlier head, then a fast-forward of a request with two commits: the
+        # merged change starts at the request's base, not at the head's first parent
+        head, earlier = self.fast_forward_of_an_earlier_review()
+        base = self.mr["diff_refs"]["base_sha"]
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["rule"], same["base_parent_sha"]), ("patch_identity", base))
+        compares = [urllib.parse.parse_qs(urllib.parse.urlsplit(r["url"]).query) for r in self.fake.requests if "/compare" in r["url"]]
+        self.assertEqual([(q["from"], q["to"]) for q in compares], [([base], [earlier]), ([base], [head])])
+
+    def test_a_note_edited_after_the_merge_does_not_count(self):
+        # observed: editing a note moves updated_at and keeps created_at
+        self.load("fast_forward")
+        notes = self.fake.body("/merge_requests/3/notes")
+        notes[0]["updated_at"] = "2027-01-01T00:00:00.000Z"
+        code, doc = self.run_vd()
+        self.assertEqual(code, 3)
+        self.assertIn("edited after the merge", [i["reason"] for i in self.check(doc, "reviewed_head")["ignored"]])
+
+    def test_without_an_allowlist_the_reviews_cannot_be_satisfied(self):
+        self.load("fast_forward")
+        out = io.StringIO()
+        vd.main(["--pr", f"https://gitlab.example.org/acme/widgets/-/merge_requests/3", "--required-reviews", "1"],
+                env={"GITLAB_TOKEN_FILE": str(self.token_file)}, stdout=out, opener=self.fake)
+        reviews = self.check(json.loads(out.getvalue()), "reviewed_head")["reviews"]
+        self.assertEqual({r["status"] for r in reviews}, {"unsatisfiable"})
+        self.assertTrue(all("allowlist is required on GitLab" in r["detail"] for r in reviews))
+
+    def test_an_older_gitlab_names_the_merger_in_merged_by(self):
+        self.load("fast_forward")
+        self.mr["merged_by"], self.mr["merge_user"] = self.mr["merge_user"], None
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "merge")["merged_by"]), (0, "maintainer"))
+
+    def test_open_and_closed_requests(self):
+        for state, (code, verdict) in {"opened": (4, "pending"), "locked": (4, "pending"),
+                                       "closed": (3, "not_confirmed")}.items():
+            with self.subTest(state):
+                self.load("fast_forward")
+                self.mr.update(state=state, merged_at=None, merge_user=None, merged_by=None)
+                got, doc = self.run_vd()
+                self.assertEqual((got, doc["verdict"]), (code, verdict))
+
+    def base_moved(self):
+        """The merge commit request, as if the target had moved after the review: a straight
+        compare of the head and the merge commit lists a change, so the trees differ."""
+        self.load("merge_commit")
+        straight = next(x for p, x in self.fake.answers.items() if "straight=true" in p)
+        straight["body"]["diffs"] = [{"old_path": "other.txt", "new_path": "other.txt", "diff": "@@ -1 +1 @@\n-a\n+b\n"}]
+        return [x["body"] for p, x in self.fake.answers.items() if "unidiff=true" in p]
+
+    def test_the_patch_identity_carries_a_review_over_a_moved_base(self):
+        self.base_moved()
+        code, doc = self.run_vd("--allow-bot-merge")
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["rule"]), ("passed", "patch_identity"))
+        self.assertEqual(same["base_parent_sha"], self.mr["diff_refs"]["base_sha"])
+        self.assertEqual(same["patch_identity"]["files"], 7)
+
+    def test_a_merged_change_that_is_not_the_reviewed_one_fails(self):
+        reviewed, merged = self.base_moved()
+        merged["diffs"][0]["diff"] += "+unreviewed\n"
+        code, doc = self.run_vd("--allow-bot-merge")
+        self.assertEqual((code, self.check(doc, "tree_equality")["status"]), (3, "failed"))
+
+    def test_a_change_without_a_text_diff_has_no_identity(self):
+        cases = {"binary": ("Binary files a/x and b/x differ\n", "binary file"),  # GitLab writes git's line
+                 "no text": ("", "no text diff"),
+                 "bytes replaced": ("@@ -1 +1 @@\n-a\n+caf\ufffd\n", "bytes replaced")}
+        for name, (text, why) in cases.items():
+            with self.subTest(name):
+                reviewed, merged = self.base_moved()
+                merged["diffs"][0]["diff"] = text
+                code, doc = self.run_vd("--allow-bot-merge")
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((code, same["status"]), (3, "failed"))
+                self.assertIn(why, same["detail"])
+
+    def test_a_change_past_the_diff_limits_fails_and_is_not_retried(self):
+        # compare_timeout is GitLab's overflow flag: lasting, so failed, never pending
+        reviewed, merged = self.base_moved()
+        for body in [x["body"] for p, x in self.fake.answers.items() if "/compare" in p]:
+            body["compare_timeout"] = True
+        code, doc = self.run_vd("--allow-bot-merge")
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((code, doc["verdict"], same["status"]), (3, "not_confirmed", "failed"))
+        self.assertIn("diff limits", same["detail"])
+        self.assertEqual(self.check(doc, "post_merge_ci")["status"], "passed", "the other checks still report")
+
+    def test_the_rebuilt_diff_has_the_identity_of_the_raw_diff(self):
+        # GitLab's compare entries carry the hunks without git's header lines; rebuilt, they hash
+        # like the merge request's raw diff (GET .../raw_diffs, recorded with the same placeholders)
+        self.load("merge_commit")
+        reviewed, _ = [x["body"] for p, x in self.fake.answers.items() if "unidiff=true" in p]
+        raw = (GITLAB / "merge_commit_raw.diff").read_bytes()
+        self.assertEqual(vd.patch_identity(vd.gitlab_diff(reviewed["diffs"])), vd.patch_identity(raw))
+        moved = [dict(d, old_path="a/" + d["old_path"], new_path="a/" + d["new_path"]) for d in reviewed["diffs"]]
+        self.assertNotEqual(vd.patch_identity(vd.gitlab_diff(moved)), vd.patch_identity(raw))
+        mode = [dict(reviewed["diffs"][1], b_mode="100755")]
+        self.assertIn(b"old mode 100644\nnew mode 100755", vd.gitlab_diff(mode))
+        rename = [dict(reviewed["diffs"][1], renamed_file=True, new_path="moved.py", diff="")]
+        self.assertIn(b"rename from", vd.gitlab_diff(rename), "a pure rename has an identity")
+        before_18_4 = [{k: v for k, v in rename[0].items() if k not in ("too_large", "collapsed")}]
+        with self.assertRaises(ValueError, msg="without too_large, a renamed large file looks like a pure rename"):
+            vd.gitlab_diff(before_18_4)
+        for broken in (dict(reviewed["diffs"][1], collapsed=True), dict(reviewed["diffs"][1], diff=""),
+                       dict(rename[0], too_large=True)):  # a renamed file whose large change GitLab left out
+            with self.assertRaises(ValueError):
+                vd.gitlab_diff([broken])
+        # deleting a file and emptying it differ only in the mode line
+        hunk = "@@ -1 +0,0 @@\n-a\n"
+        common = {"old_path": "f", "new_path": "f", "a_mode": "100644", "diff": hunk, "too_large": False}
+        deleted = vd.gitlab_diff([dict(common, b_mode="0", deleted_file=True)])
+        emptied = vd.gitlab_diff([dict(common, b_mode="100644")])
+        self.assertIn(b"deleted file mode 100644", deleted)
+        self.assertNotEqual(vd.patch_identity(deleted), vd.patch_identity(emptied))
+
+    def test_paths_are_quoted_as_git_quotes_them(self):
+        # A path with a newline must not carry a header line of its own: unquoted, "x\nindex A" and
+        # "x\nindex B" would put an index line (dropped by the identity) in the diff, so edits to two
+        # different files would hash alike; and a binary file's notice must never be cut off by a path
+        # holding "\n@@". Such a path, or one with replaced bytes, has no identity at all.
+        def entry(path):
+            return {"old_path": path, "new_path": path, "a_mode": "100644", "b_mode": "100644",
+                    "diff": f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b\n"}
+        binary = dict(entry("x\n@@ y"), diff="Binary files a/x\n@@ y and b/x\n@@ y differ\n")
+        headers_only = dict(entry("x"), diff="--- a/x\n+++ b/x\n", too_large=False)  # text, but no hunk
+        for broken in (entry("x\nindex A"), entry("tab\there"), entry("del\x7f"), entry("caf\ufffd"), binary,
+                       dict(entry("ok"), old_path="was\nhere", renamed_file=True), headers_only):
+            with self.subTest(path=broken["old_path"]), self.assertRaises(ValueError):
+                vd.gitlab_diff([broken])
+        # git's own form (core.quotePath): octal bytes past ASCII, C escapes, plain paths unquoted
+        self.assertEqual(vd.git_path("a/", "caf\u00e9.txt"), '"a/caf\\303\\251.txt"')
+        self.assertEqual(vd.git_path("", 'say "hi"\\'), '"say \\"hi\\"\\\\"')
+        self.assertEqual(vd.git_path("a/", "docs/a b (c).py"), "a/docs/a b (c).py")
+        renamed = dict(entry('new "name"'), old_path="old", renamed_file=True)
+        self.assertIn(b'rename to "new \\"name\\""', vd.gitlab_diff([renamed]))
+        self.assertTrue(vd.gitlab_diff([entry("caf\u00e9.txt")]).startswith(b'diff --git "a/caf\\303\\251.txt"'))
+
+    def test_references(self):
+        api = "https://gitlab.example.org/api/v4"
+        self.assertEqual(vd.parse_ref("https://gitlab.example.org/acme/widgets/-/merge_requests/3", None, None, None),
+                         ("gitlab", api, "acme", "widgets", 3))
+        self.assertEqual(vd.parse_ref("https://gitlab.example.org/acme/team/widgets/-/merge_requests/3/diffs?x=1", None, None, None),
+                         ("gitlab", api, "acme/team", "widgets", 3))
+        self.assertEqual(vd.parse_ref("acme/team/widgets!5", None, "gitlab", api), ("gitlab", api, "acme/team", "widgets", 5))
+        self.assertEqual(vd.parse_ref("https://host.example/git/acme/widgets/-/merge_requests/3", None, None,
+                                      "https://host.example/git/api/v4"),
+                         ("gitlab", "https://host.example/git/api/v4", "acme", "widgets", 3), "a relative URL root")
+        for bad, forge in (("acme/team/widgets#5", None), ("https://gitlab.example.org/acme/widgets/-/merge_requests/3", "github"),
+                           ("acme/widgets!5", "github"), ("acme/widgets!5", None), ("acme/widgets#5", "gitlab")):
+            with self.subTest(bad), self.assertRaises(vd.UsageError):
+                vd.parse_ref(bad, None, forge, None)
+        forge = vd.GitLabForge(None, "gitlab", api, "acme/team", "widgets")
+        self.assertEqual(forge.repo_path, "/projects/acme%2Fteam%2Fwidgets")
+        out = io.StringIO()
+        code = vd.main(["--pr", "acme/widgets!5", "--forge", "gitlab"], env={"GITLAB_TOKEN_FILE": str(self.token_file)}, stdout=out)
+        self.assertEqual(code, 2)
+        self.assertIn("--api-base is required for GitLab without a merge request URL", json.loads(out.getvalue())["error"]["message"])
 
 
 class References(unittest.TestCase):
