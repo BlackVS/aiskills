@@ -13,7 +13,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ### Changed
 - oh-technical-writing: the skill's description, scope sentence and README
-  list name text persisted through write tools or saved as Markdown, which
+  list name technical text persisted through write tools or saved as
+  Markdown, which
   1.31.7's "Persisted text" section covers. A client that picks skills by
   their description now loads it for that text too.
 

@@ -1,6 +1,6 @@
 ---
 name: oh-technical-writing
-description: Guides technical explanations toward flowing, direct, conversational prose. This skill should be used for engineering chat, design discussion, architecture analysis, code-review explanations, and technical recommendations that should be concise without becoming fragmented or vague, and for text persisted through write tools or saved as Markdown.
+description: Guides technical explanations toward flowing, direct, conversational prose. This skill should be used for engineering chat, design discussion, architecture analysis, code-review explanations, and technical recommendations that should be concise without becoming fragmented or vague, and for technical text persisted through write tools or saved as Markdown.
 ---
 
 # Technical Writing
