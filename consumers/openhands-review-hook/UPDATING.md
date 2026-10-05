@@ -71,6 +71,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.31.6 | `review-control` reads the rest of a refused request body (at most 64 KiB or 1 s) before closing, so a client never loses the refusal to a connection reset. Deploy `review_control.py` and restart `review-control` while idle. |
 | 1.31.5 | At the watch deadline, a review hidden by a forge outage is looked for once more instead of being reported as missing, and a request never gets a second failure comment. Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.31.3 | A review that is on the PR is completed at the next poll when the label swap after it hits a forge outage, instead of being reported as failed. Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.31.2 | Receivers survive a brief forge or Canvas outage. A transient read error while a review runs is retried at the next poll instead of failing the review, and a failure while reporting a failure is logged instead of killing the review thread. Forge reads (GET) are tried up to three times. Deploy `review_runner.py`, `review_hook.py` and `github_review_poller.py`, then restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). A PR left on `hands-reviewing` by the old behaviour is not repaired by this change: swap its label by hand, or restart the receiver while its review comment is inside the watch window. |

@@ -2,8 +2,10 @@
 import hmac
 import json
 import os
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -63,10 +65,42 @@ def log_unavailable(what, error):
     print(f'review-control: {what} unavailable: {failure_reason(error)}', file=sys.stderr, flush=True)
 
 
+MAX_DRAIN = 64 << 10  # bytes of an unread request body read before the close
+DRAIN_SECONDS = 1.0   # at most this long: the server is single-threaded
+
+
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
         self.connection.settimeout(10)
+        self.body_read = False
+
+    def finish(self):
+        super().finish()  # the answer is flushed
+        headers = getattr(self, 'headers', None) or {}  # none when the request line was unusable
+        if not self.body_read and (headers.get('Content-Length', '0') != '0' or headers.get('Transfer-Encoding')):
+            self.drain()
+
+    def drain(self):
+        """Close gracefully after an answer that left the request body unread (a 401, 413, 415,
+        or a 400 for a bad Content-Length): end the answer with FIN, then read and discard what
+        the client still sends, up to MAX_DRAIN bytes or DRAIN_SECONDS, so the close itself is
+        not a reset. On Windows, closing with unread data resets the connection, and a client
+        that had not read the answer yet loses it (#36)."""
+        try:
+            self.connection.shutdown(socket.SHUT_WR)
+            deadline, left = time.monotonic() + DRAIN_SECONDS, MAX_DRAIN
+            while left > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.connection.settimeout(remaining)
+                chunk = self.connection.recv(min(left, 16 << 10))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except OSError:
+            pass  # the client went away: nothing left to protect
 
     def log_message(self, *args):
         pass
@@ -100,7 +134,9 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= 4096 or self.headers.get('Transfer-Encoding'):
             self.fail(413, 'Invalid request size')
             return REPLIED
-        return json.loads(self.rfile.read(length))
+        body = self.rfile.read(length)
+        self.body_read = True
+        return json.loads(body)
 
     def authorized(self):
         expected = os.environ.get('LOCAL_BACKEND_API_KEY', '')
