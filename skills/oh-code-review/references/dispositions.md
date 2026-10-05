@@ -103,7 +103,7 @@ the merged evidence — never silently escalate to BLOCKER.
 ## Output format
 
 ```
-[<bot> review] reviewed at head <short-sha>
+[<bot> review] reviewed at head <full-sha>
 
 CURRENT OBJECTIVE
 <one sentence: the frozen objective this review was judged against>
@@ -139,6 +139,11 @@ READY_FOR_HUMAN_MERGE | RETURN_TO_IMPLEMENTATION | REVIEW_COULD_NOT_RUN
 RISK
 LOW | MEDIUM | HIGH — <short reason>
 ```
+
+Name the head by its full 40-digit SHA. A delivery check carries a review of an
+older head over a base-only update only when it can tell that head apart: an
+abbreviated SHA can resolve to a branch or tag of that name, and on GitHub and
+Gitea it is not accepted for an older head (`verify-delivery`).
 
 Every section is always present; an empty one prints `- None`, so the output
 parses identically whether or not it has entries. Lead with blockers. Keep it

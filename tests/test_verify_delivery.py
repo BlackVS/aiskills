@@ -762,6 +762,24 @@ class Verify:
         c = next(c for c in self.comments() if OLD in c["body"])
         c["body"] = c["body"].replace("RETURN_TO_IMPLEMENTATION", "READY_FOR_HUMAN_MERGE")
 
+    def test_an_abbreviated_older_head_must_be_named_in_full(self):
+        # a short SHA sent as it is would name a branch or tag of that name first (#73), and this
+        # forge's commit list loses a head that was force-pushed away, so a commit made to share the
+        # abbreviation could stand alone in it: an older head needs its full SHA here
+        self.reviewed_only_at_older_head()
+        c = next(c for c in self.comments() if OLD in c["body"])
+        c["body"] = c["body"].replace(OLD, OLD[:7])
+        commits = self.fake.data["pull_commits"]
+        commits.append({**copy.deepcopy(commits[0]), "sha": OLD[:7] + "f" * 33})  # a twin in the list
+        code, doc = self.run_vd()
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((code, same["status"], same["reviewed_head"]), (3, "failed", OLD[:7]))
+        self.assertIn("name the full 40-digit SHA", same["detail"])
+        self.assertFalse(any(OLD[:7] in r["url"] for r in self.fake.requests), "neither sent nor expanded")
+        c["body"] = c["body"].replace(OLD[:7], OLD)
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), "the full SHA carries the review over as before")
+
     # ---- who posted the review
     def external_at_head(self):
         return next(c for c in self.comments() if c["body"].startswith("[example-bot") and HEAD in c["body"])
@@ -1197,6 +1215,39 @@ class GitLab(unittest.TestCase):
                 self.assertIn("which base the fast-forward started from", same["detail"])
                 self.assertEqual(self.check(doc, "merge")["merged_as"], "fast-forward")
                 self.assertFalse(any("/compare" in r["url"] for r in self.fake.requests), "never from the first parent")
+
+    def test_an_abbreviated_earlier_head_is_found_among_the_versions(self):
+        # GitLab keeps a version per push, a force-push included: an earlier head named by a short
+        # SHA is expanded from them (#73)
+        head, earlier = self.fast_forward_of_an_earlier_review()
+        note = self.fake.body("/merge_requests/3/notes")[0]
+        note["body"] = note["body"].replace(earlier, earlier[:8])
+        code, doc = self.run_vd()  # no versions list: nothing to expand from
+        self.assertEqual(code, 3)
+        self.assertIn("keeps no list of a pull request's past heads", self.check(doc, "tree_equality")["detail"])
+        versions = [{"id": 2, "head_commit_sha": head}]
+        commits = []
+        self.fake.overrides["/merge_requests/3/versions"] = lambda req: Response(200, json.dumps(versions).encode())
+        self.fake.overrides["/merge_requests/3/commits"] = lambda req: Response(200, json.dumps(commits).encode())
+        code, doc = self.run_vd()
+        self.assertIn("matches no head", self.check(doc, "tree_equality")["detail"])
+        commits.append({"id": earlier})  # only among the commits: a commit, never a pushed head
+        code, doc = self.run_vd()
+        self.assertIn("matches no head", self.check(doc, "tree_equality")["detail"])
+        commits.clear()
+        versions.insert(0, {"id": 1, "head_commit_sha": earlier})
+        self.fake.requests.clear()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        compares = [urllib.parse.parse_qs(urllib.parse.urlsplit(r["url"]).query) for r in self.fake.requests if "/compare" in r["url"]]
+        self.assertIn([earlier], [q["to"] for q in compares], "compared by the full SHA")
+        # a commit made to share the abbreviation, with the reviewed head pushed away: the versions
+        # still hold that head, so the short SHA is ambiguous, never the twin's
+        twin = earlier[:8] + "1" * 32
+        commits.append({"id": twin})  # a twin among the commits makes the abbreviation ambiguous
+        code, doc = self.run_vd()
+        self.assertEqual(code, 3)
+        self.assertIn("matches more than one commit", self.check(doc, "tree_equality")["detail"])
 
     def test_a_system_note_never_counts_as_a_review(self):
         # GitLab writes system notes itself; one shaped like a review is still not a review

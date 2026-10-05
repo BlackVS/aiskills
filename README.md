@@ -471,7 +471,7 @@ delivered, typically a team coordinator writing evidence into its team
 system. It asks the forge, read-only, and confirms four things: the required
 reviews are `READY_FOR_HUMAN_MERGE` at exactly the final head (by default the
 local `oh-code-review` pre-merge review and an external reviewer's, in the
-`[<reviewer> review] reviewed at head <sha>` format, posted by an author the
+`[<reviewer> review] reviewed at head <full-sha>` format, posted by an author the
 repository trusts: a listed account, or on GitHub an owner, member or
 collaborator), the PR was merged by a
 person, the merged content is the reviewed content (the same tree, or after a

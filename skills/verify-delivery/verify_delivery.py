@@ -161,6 +161,12 @@ class Forge:
         except NotFound:
             return None
 
+    def pull_heads(self, number):
+        """Every head the pull request had, or None where the forge keeps no such list. GitHub's
+        and Gitea's commit lists lose a head that was force-pushed away, and a commit made to share
+        its abbreviation could then stand alone in them: there an abbreviated SHA is never expanded."""
+        return None
+
     def pages(self, path, key=None):
         """A listing across pages. Follows Link rel="next" only on the API's own host,
         so the token is never sent anywhere else. A next page that cannot be followed
@@ -263,6 +269,23 @@ class GitLabForge(Forge):
         if re.fullmatch(r"/pulls/\d+/reviews", path):
             return []  # approvals carry no text: nothing to read
         return super().pages(path, key)
+
+    def pull_heads(self, number):
+        """(heads, all): the head of every version the merge request had (a version is kept for
+        each push while it is open, a force-push included), and those with its commits. An
+        abbreviation is expanded only to a version's head, and only when it matches nothing else
+        in either list, so a commit made to share it never stands in for a head that was pushed
+        away. None without the versions."""
+        try:
+            heads = [(v.get("head_commit_sha") or "").lower()
+                     for v in super().pages(f"/merge_requests/{number}/versions")]
+        except NotFound:
+            return None
+        try:
+            commits = [(c.get("id") or "").lower() for c in super().pages(f"/merge_requests/{number}/commits")]
+        except NotFound:
+            commits = []
+        return heads, heads + commits
 
     def compare(self, a, b, straight=False):
         data = super().get(f"/repository/compare?from={a}&to={b}" + ("&straight=true" if straight else "&unidiff=true"))
@@ -619,8 +642,9 @@ def verify(args, forge, kind, number):
     else:
         same_tree = bool(t_head) and t_head == t_merge
         rebase = once(lambda: rebase_base(forge, number, head, merge_commit))
+    heads = once(lambda: forge.pull_heads(number))
     results = [merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase,
-                              pr.get("merged_base"))
+                              pr.get("merged_base"), heads)
                for reviewed in (reviewed_heads or [head])]
     worst = next((r for status in ("failed", "pending") for r in results if r["status"] == status), None)
     shown = worst or next((r for r in results if r["rule"] == "patch_identity"), results[0])
@@ -665,7 +689,8 @@ def once(read):
     return call
 
 
-def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase=None, base=None):
+def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase=None, base=None,
+                   heads=None):
     """Is the merged content the content reviewed at head REVIEWED? Rule tree_equality: the merge
     commit's tree is the reviewed (final) head's tree. Rule patch_identity, when the trees differ
     because the base moved after the review: the merge commit's change against its first parent
@@ -673,11 +698,37 @@ def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, me
     merge of several commits reports its last rebased commit as the merge commit, so when that
     commit's change does not match, the change from the base the rebase landed on (REBASE(),
     see rebase_base) is compared instead. BASE, where the forge gives it (a GitLab fast-forward),
-    replaces the first parent; False means the forge gave none where one is needed."""
+    replaces the first parent; False means the forge gave none where one is needed.
+
+    An older head named by an abbreviated SHA is compared only as the one head of the pull request
+    (HEADS(), on GitLab) that the SHA abbreviates, and fails where the forge keeps no list of
+    heads: sent as it is, a branch or tag of that name would take its place (#73). A full SHA
+    always names the commit."""
     result = {"reviewed_head": reviewed, "rule": None}
     final = bool(head) and head.startswith(reviewed)
     if final and same_tree:
         return {**result, "status": "passed", "rule": "tree_equality"}
+    if not final and len(reviewed) < 40:
+        try:
+            listed = heads() if heads else None
+        except Unavailable as e:
+            return {**result, "status": "pending",
+                    "detail": f"the review names an abbreviated SHA, and the pull request's heads could not be read ({e})"}
+        if listed is None:
+            return {**result, "status": "failed",
+                    "detail": f"the review names the older head by the abbreviated SHA {reviewed}, and this forge keeps "
+                              "no list of a pull request's past heads to expand it from (a branch or tag, or a commit "
+                              "made to share the abbreviation, could take its place): name the full 40-digit SHA, or "
+                              "re-review at the final head"}
+        heads_only, everything = listed
+        known = sorted({sha for sha in everything if sha.startswith(reviewed)})
+        if len(known) != 1 or known[0] not in heads_only:
+            return {**result, "status": "failed",
+                    "detail": f"the review names the abbreviated SHA {reviewed}, which "
+                              f"{'matches more than one commit' if len(known) > 1 else 'matches no head'} of this pull "
+                              "request (a branch or tag could take its name): name the full 40-digit SHA, or re-review at the final head"}
+        reviewed = known[0]
+        result["reviewed_sha"] = reviewed
     if base is False:
         return {**result, "status": "failed",
                 "detail": "the trees differ, and the forge does not say which base the fast-forward started from"}
