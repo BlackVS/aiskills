@@ -93,7 +93,8 @@ All four must pass for the verdict `confirmed`:
    as git quotes them, which gives the
    same patch identity as GitLab's raw diff of the merge request (checked on
    gitlab.com). A fast-forward compares from the merge request's base
-   (`diff_refs.base_sha`) instead of the head's first parent. GitLab sends a
+   (`diff_refs.base_sha`) instead of the head's first parent; one without a
+   recorded base fails unless the reviewed head is the merged head. GitLab sends a
    binary file as a "Binary files … differ" line, as git does, so it has no
    identity. A file it collapsed, found too large or sent without text, a
    change past its diff limits (`compare_timeout`), diff text in which it
@@ -147,8 +148,8 @@ All four must pass for the verdict `confirmed`:
    API shows up as no CI yet, so the result stays pending. On GitLab only the
    latest pipeline on the merged commit for the target branch with source
    `push` counts (a branch or scheduled pipeline on the same commit does not):
-   only `success` passes. `manual` and anything still queued or running is
-   pending, and `failed`, `canceled` and `skipped` fail: a skipped pipeline ran
+   only `success` passes. `manual` and anything still queued, running or
+   canceling is pending, and `failed`, `canceled` and `skipped` fail: a skipped pipeline ran
    no job (a `[skip ci]` in the merge commit's message is enough). A failure fails. A failing check you
    list with `--known-flaky` is reported separately as `failed: known flaky`,
    and the delivery is still **not confirmed**.

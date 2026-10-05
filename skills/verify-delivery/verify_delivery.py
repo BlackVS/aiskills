@@ -44,7 +44,7 @@ GITEA_PENDING = {"pending"}
 # a person, so it is pending; failed, canceled and skipped fail.
 GITLAB_PASS = {"success"}
 GITLAB_PENDING = {"created", "waiting_for_resource", "preparing", "pending", "running", "scheduled",
-                  "manual", "waiting_for_callback"}
+                  "manual", "waiting_for_callback", "canceling"}
 
 
 class UsageError(Exception):
@@ -222,7 +222,7 @@ class GitLabForge(Forge):
         merged = mr.get("state") == "merged"
         merged_sha = merged_as = base = None
         if merged:
-            if mr.get("merge_commit_sha"):
+            if mr.get("merge_commit_sha") and mr["merge_commit_sha"] != mr.get("sha"):
                 merged_sha = mr["merge_commit_sha"]
                 merged_as = "squash and merge commit" if mr.get("squash_commit_sha") else "merge commit"
             elif mr.get("squash_commit_sha"):
@@ -231,7 +231,9 @@ class GitLabForge(Forge):
                 # a fast-forward: the head is the merged commit, and the base the request started from
                 # (its first parent is only the request's previous commit)
                 merged_sha, merged_as = mr.get("sha"), "fast-forward"
-                base = (mr.get("diff_refs") or {}).get("base_sha")
+                # without its base the change cannot be told apart from the commits under it: False
+                # (not None) makes the content check fail instead of comparing from the first parent
+                base = (mr.get("diff_refs") or {}).get("base_sha") or False
         user = mr.get("merge_user") or mr.get("merged_by")
         merged_by = None
         if user:
@@ -671,11 +673,14 @@ def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, me
     merge of several commits reports its last rebased commit as the merge commit, so when that
     commit's change does not match, the change from the base the rebase landed on (REBASE(),
     see rebase_base) is compared instead. BASE, where the forge gives it (a GitLab fast-forward),
-    replaces the first parent."""
+    replaces the first parent; False means the forge gave none where one is needed."""
     result = {"reviewed_head": reviewed, "rule": None}
     final = bool(head) and head.startswith(reviewed)
     if final and same_tree:
         return {**result, "status": "passed", "rule": "tree_equality"}
+    if base is False:
+        return {**result, "status": "failed",
+                "detail": "the trees differ, and the forge does not say which base the fast-forward started from"}
     parent = base or ((merge_commit.get("parents") or [{}])[0] or {}).get("sha")
     if not head or not parent:
         return {**result, "status": "failed",

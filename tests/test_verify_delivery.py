@@ -1143,7 +1143,8 @@ class GitLab(unittest.TestCase):
         pipelines = self.fake.body("/pipelines")
         self.assertEqual(len(pipelines), 1, "the branch pipeline on the same commit is not listed")
         for status, (code, result) in {"failed": (3, "failed"), "canceled": (3, "failed"), "running": (4, "pending"),
-                                       "manual": (4, "pending"), "skipped": (3, "failed")}.items():
+                                       "manual": (4, "pending"), "canceling": (4, "pending"),
+                                       "skipped": (3, "failed")}.items():
             with self.subTest(status):
                 older = {**pipelines[0], "id": 1, "status": "failed"}  # an earlier run: only the latest counts
                 latest = {**pipelines[0], "status": status}
@@ -1166,6 +1167,37 @@ class GitLab(unittest.TestCase):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(next(r["url"] for r in self.fake.requests if "/notes" in r["url"])).query)
         self.assertEqual((query["sort"], query["order_by"]), (["asc"], ["created_at"]))
 
+    def fast_forward_of_an_earlier_review(self):
+        """The fast-forward request, reviewed only at an earlier head, with two commits: the trees differ."""
+        self.load("fast_forward")
+        head, earlier = self.mr["sha"], "e" * 40
+        self.fake.body(f"/repository/commits/{head}")["parent_ids"] = ["c" * 40]
+        note = self.fake.body("/merge_requests/3/notes")[0]
+        note["body"] = note["body"].replace(head, earlier)
+        change = {"compare_timeout": False, "diffs": [{"old_path": "README.md", "new_path": "README.md", "a_mode": "100644",
+                                                       "b_mode": "100644", "diff": "@@ -1 +1 @@\n-a\n+b\n", "too_large": False}]}
+        self.fake.overrides = {"/repository/compare": lambda req: Response(200, json.dumps(change).encode())}
+        return head, earlier
+
+    def test_a_fast_forward_of_the_reviewed_head_needs_no_base(self):
+        self.load("fast_forward")
+        self.mr["diff_refs"] = None
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "tree_equality")["rule"]), (0, "tree_equality"))
+
+    def test_a_fast_forward_without_a_base_is_not_compared_from_its_first_parent(self):
+        for name, edit in {"no diff_refs": lambda mr: mr.update(diff_refs=None),
+                           "merge commit is the head": lambda mr: mr.update(merge_commit_sha=mr["sha"], diff_refs=None)}.items():
+            with self.subTest(name):
+                self.fast_forward_of_an_earlier_review()
+                edit(self.mr)
+                code, doc = self.run_vd()
+                same = self.check(doc, "tree_equality")
+                self.assertEqual((code, same["status"]), (3, "failed"))
+                self.assertIn("which base the fast-forward started from", same["detail"])
+                self.assertEqual(self.check(doc, "merge")["merged_as"], "fast-forward")
+                self.assertFalse(any("/compare" in r["url"] for r in self.fake.requests), "never from the first parent")
+
     def test_a_system_note_never_counts_as_a_review(self):
         # GitLab writes system notes itself; one shaped like a review is still not a review
         self.load("fast_forward")
@@ -1178,14 +1210,8 @@ class GitLab(unittest.TestCase):
     def test_a_fast_forward_compares_from_the_requests_base(self):
         # a review of an earlier head, then a fast-forward of a request with two commits: the
         # merged change starts at the request's base, not at the head's first parent
-        self.load("fast_forward")
-        head, base, earlier = self.mr["sha"], self.mr["diff_refs"]["base_sha"], "e" * 40
-        self.fake.body(f"/repository/commits/{head}")["parent_ids"] = ["c" * 40]
-        note = self.fake.body("/merge_requests/3/notes")[0]
-        note["body"] = note["body"].replace(head, earlier)
-        change = {"compare_timeout": False, "diffs": [{"old_path": "README.md", "new_path": "README.md", "a_mode": "100644",
-                                                       "b_mode": "100644", "diff": "@@ -1 +1 @@\n-a\n+b\n"}]}
-        self.fake.overrides = {"/repository/compare": lambda req: Response(200, json.dumps(change).encode())}
+        head, earlier = self.fast_forward_of_an_earlier_review()
+        base = self.mr["diff_refs"]["base_sha"]
         code, doc = self.run_vd()
         self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
         same = self.check(doc, "tree_equality")
@@ -1289,9 +1315,17 @@ class GitLab(unittest.TestCase):
         before_18_4 = [{k: v for k, v in rename[0].items() if k not in ("too_large", "collapsed")}]
         with self.assertRaises(ValueError, msg="without too_large, a renamed large file looks like a pure rename"):
             vd.gitlab_diff(before_18_4)
-        for broken in (dict(reviewed["diffs"][1], collapsed=True), dict(reviewed["diffs"][1], diff="")):
+        for broken in (dict(reviewed["diffs"][1], collapsed=True), dict(reviewed["diffs"][1], diff=""),
+                       dict(rename[0], too_large=True)):  # a renamed file whose large change GitLab left out
             with self.assertRaises(ValueError):
                 vd.gitlab_diff([broken])
+        # deleting a file and emptying it differ only in the mode line
+        hunk = "@@ -1 +0,0 @@\n-a\n"
+        common = {"old_path": "f", "new_path": "f", "a_mode": "100644", "diff": hunk, "too_large": False}
+        deleted = vd.gitlab_diff([dict(common, b_mode="0", deleted_file=True)])
+        emptied = vd.gitlab_diff([dict(common, b_mode="100644")])
+        self.assertIn(b"deleted file mode 100644", deleted)
+        self.assertNotEqual(vd.patch_identity(deleted), vd.patch_identity(emptied))
 
     def test_paths_are_quoted_as_git_quotes_them(self):
         # A path with a newline must not carry a header line of its own: unquoted, "x\nindex A" and
