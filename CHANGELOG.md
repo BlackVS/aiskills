@@ -9,6 +9,19 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.6] - 2026-10-05
+
+### Fixed
+- hands consumer: `review-control` no longer resets the connection after
+  refusing a request whose body it did not read (401, 413, 415, or a 400 for a
+  bad `Content-Length`). Closing with unread body bytes sends a reset, and on
+  Windows a client that had not read the answer yet lost it. That made
+  `test_json_endpoints_refuse_bad_bodies_before_any_discovery` fail now and
+  then on Windows. The handler now ends the answer, then reads and discards the
+  rest of the body, at most 64 KiB or 1 s (the server is single-threaded),
+  before closing. A new test peeks at the connection after each refusal for
+  unread bytes, and checks the bound (#36).
+
 ## [1.31.5] - 2026-10-04
 
 ### Fixed

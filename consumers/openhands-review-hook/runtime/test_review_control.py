@@ -161,6 +161,64 @@ class PolicyTests(unittest.TestCase):
             self.assertFalse(review_policy.settings_path().exists())
         finally: server.shutdown(); server.server_close(); thread.join()
 
+    def test_a_refused_body_is_drained_before_the_close(self):
+        # Closing with unread body bytes resets the connection, and on Windows a client that has not
+        # read the answer yet loses it (#36). The handler reads the rest of a refused body (bounded)
+        # first. Checked on any platform by peeking at the connection after the answer.
+        import socket
+        import review_control
+        unread = []
+        class Peek(Handler):
+            def finish(self):
+                super().finish()
+                self.connection.settimeout(0)
+                try:
+                    unread.append(self.connection.recv(1, socket.MSG_PEEK))  # b'': the client closed, nothing left
+                except BlockingIOError:
+                    unread.append(None)  # open, nothing waiting
+        server = HTTPServer(('127.0.0.1', 0), Peek)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        body = b'{' + b' ' * (32 << 10) + b'}'  # more than the handler's read buffer takes with the headers
+        def refused(headers):
+            raw = socket.create_connection(('127.0.0.1', server.server_port), timeout=10)
+            try:
+                head = ''.join(f'{k}: {v}\r\n' for k, v in headers.items())
+                raw.sendall(f'PUT /api/review-control/settings HTTP/1.1\r\nHost: x\r\n{head}\r\n'.encode() + body)
+                answer = b''
+                while True:
+                    chunk = raw.recv(65536)
+                    if not chunk:
+                        return answer.split(b'\r\n')[0]
+                    answer += chunk
+            finally:
+                raw.close()
+        cases = {
+            '413 too large': ({'Content-Length': str(len(body))}, b'413'),
+            '400 bad length': ({'Content-Length': 'many'}, b'400'),
+            '415 wrong type': ({'Content-Type': 'text/plain', 'Content-Length': str(len(body))}, b'415'),
+            '401 wrong key': ({'X-Session-API-Key': 'wrong', 'Content-Length': str(len(body))}, b'401'),
+        }
+        try:
+            for name, (headers, status) in cases.items():
+                with self.subTest(name):
+                    unread.clear()
+                    line = refused({'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json', **headers})
+                    self.assertIn(status, line)
+                    for _ in range(100):  # the handler's finish runs after the client has its answer
+                        if unread:
+                            break
+                        time.sleep(0.01)
+                    self.assertIn(unread, ([b''], [None]), 'no body bytes left unread at the close')
+            with self.subTest('the drain is bounded'), patch.object(review_control, 'MAX_DRAIN', 1024):
+                unread.clear()
+                refused({'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json', 'Content-Length': str(len(body))})
+                for _ in range(100):
+                    if unread:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(unread, [b' '], 'a body past MAX_DRAIN is left unread, not read to the end')
+        finally: server.shutdown(); server.server_close(); thread.join()
+
     def test_json_endpoints_refuse_bad_bodies_before_any_discovery(self):
         import http.client
         import subprocess
