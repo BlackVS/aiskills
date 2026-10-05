@@ -779,6 +779,9 @@ class Verify:
         c["body"] = c["body"].replace(OLD[:7], OLD)
         code, doc = self.run_vd()
         self.assertEqual((code, doc["verdict"]), (0, "confirmed"), "the full SHA carries the review over as before")
+        c["body"] = c["body"].replace(OLD, OLD[:39])  # one digit short is still abbreviated
+        code, doc = self.run_vd()
+        self.assertIn("name the full 40-digit SHA", self.check(doc, "tree_equality")["detail"])
 
     # ---- who posted the review
     def external_at_head(self):
@@ -1234,6 +1237,13 @@ class GitLab(unittest.TestCase):
         commits.append({"id": earlier})  # only among the commits: a commit, never a pushed head
         code, doc = self.run_vd()
         self.assertIn("matches no head", self.check(doc, "tree_equality")["detail"])
+        self.fake.overrides["/merge_requests/3/versions"] = lambda req: (_ for _ in ()).throw(
+            urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, io.BytesIO(b"")))
+        code, doc = self.run_vd()  # the heads cannot be read now: pending, not failed
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((code, same["status"]), (4, "pending"))
+        self.assertIn("heads could not be read", same["detail"])
+        self.fake.overrides["/merge_requests/3/versions"] = lambda req: Response(200, json.dumps(versions).encode())
         commits.clear()
         versions.insert(0, {"id": 1, "head_commit_sha": earlier})
         self.fake.requests.clear()

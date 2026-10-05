@@ -48,7 +48,7 @@ All four must pass for the verdict `confirmed`:
    trusts**; the author is checked first, so an untrusted comment never
    counts and never displaces a trusted one, even when it is newer. By default
    two reviews are required, both in the `oh-code-review` comment format
-   (`[<reviewer> review] reviewed at head <sha>`, then `VERDICT` /
+   (`[<reviewer> review] reviewed at head <full-sha>`, then `VERDICT` /
    `READY_FOR_HUMAN_MERGE`):
    - `local`: the pre-merge `oh-code-review` review at level high (or max,
      ultra);
