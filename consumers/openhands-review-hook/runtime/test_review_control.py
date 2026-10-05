@@ -188,7 +188,13 @@ class PolicyTests(unittest.TestCase):
                 raw.sendall(f'PUT /api/review-control/settings HTTP/1.1\r\nHost: x\r\n{head}\r\n'.encode() + body)
                 answer = b''
                 while True:
-                    chunk = raw.recv(65536)
+                    try:
+                        chunk = raw.recv(65536)
+                    except ConnectionResetError:
+                        # a close with body bytes left unread resets the connection (the bounded case
+                        # below does that on purpose), and on macOS the reset can overtake the answer:
+                        # the refusals then lose their status line and fail on it
+                        chunk = b''
                     if not chunk:
                         return answer.split(b'\r\n')[0]
                     answer += chunk

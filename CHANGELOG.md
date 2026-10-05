@@ -39,6 +39,13 @@ content fixes inside existing skills. The current version is in `VERSION`.
     by a person), with the project, accounts, ids, SHAs, messages and file
     contents replaced by placeholders.
 
+### Fixed
+- hands consumer tests: the review-control drain test no longer fails on
+  macOS when the reset from its deliberately bounded drain overtakes the
+  answer. The client takes a reset as the end of the answer, so a refusal
+  whose status line is lost still fails, and the bounded case is checked on
+  the server side only.
+
 ## [1.31.9] - 2026-10-05
 
 ### Fixed
