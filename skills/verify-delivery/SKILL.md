@@ -32,7 +32,9 @@ All four must pass for the verdict `confirmed`:
    older Gitea answers JSON (or, before 1.22, has no compare endpoint), and
    there a review of an older head fails: re-review at the final head. `reviewed_heads` lists the heads the READY reviews name.
    On GitLab the comments are the merge request's notes; system notes are
-   skipped, and approvals carry no text, so they are not reviews.
+   skipped, and approvals carry no text, so they are not reviews. Resolving a
+   resolvable note after the merge moves its `updated_at`, so it then reads as
+   edited after the merge: a false "not confirmed", never a false confirm.
    Reviews are recognised by their text **and by an author the repository
    trusts**; the author is checked first, so an untrusted comment never
    counts and never displaces a trusted one, even when it is newer. By default
@@ -87,14 +89,18 @@ All four must pass for the verdict `confirmed`:
    straight compare of the head and the merged commit has no diffs
    (`tree_basis` says so). The diffs are rebuilt from GitLab's three-dot
    compare (`repository/compare?from=…&to=…&unidiff=true`): each file's hunks
-   under the `diff --git`, mode and rename lines git writes, which gives the
+   under the `diff --git`, mode and rename lines git writes, with paths quoted
+   as git quotes them, which gives the
    same patch identity as GitLab's raw diff of the merge request (checked on
    gitlab.com). A fast-forward compares from the merge request's base
    (`diff_refs.base_sha`) instead of the head's first parent. GitLab sends a
    binary file as a "Binary files … differ" line, as git does, so it has no
    identity. A file it collapsed, found too large or sent without text, a
-   change past its diff limits (`compare_timeout`), and diff text in which it
-   replaced bytes that are not UTF-8 have none either: the check fails.
+   change past its diff limits (`compare_timeout`), diff text in which it
+   replaced bytes that are not UTF-8, and a path with a control character (a
+   newline included) or replaced bytes have none either, nor, before GitLab
+   18.4 (which first reports `too_large`), a renamed file sent without text:
+   the check fails.
 
    A rebase merge of several commits reports its last rebased commit as the
    merge commit, so that commit's change alone never matches. When it does
@@ -121,8 +127,11 @@ All four must pass for the verdict `confirmed`:
    in order; index lines, the `---`/`+++` lines, hunk headers with their line
    numbers, similarity scores and blank separator lines are dropped. Only
    CRLF line endings are normalised: the bytes are hashed as they are, never
-   decoded, so a file that is not UTF-8 keeps every byte (GitLab's API does
-   not return such bytes, so there the change has no identity). Because context
+   decoded, so a file that is not UTF-8 keeps every byte. GitLab's API does
+   not return such bytes as they are: it re-encodes them, drops them or
+   replaces them. Only a replacement (U+FFFD) is detected and refused, so on
+   GitLab two changes that differ only in such bytes can share an identity.
+   Because context
    counts, the same line added elsewhere in a file does not match, and a
    base update that changed the lines next to a hunk does not match either
    (the conservative outcome: re-review). A diff that cannot be read, or is
@@ -169,7 +178,9 @@ pull requests, comments, commits and checks (or statuses) only; on GitLab a
 token with `read_api` (a project access token with the Reporter role is
 enough) is sent as a Bearer token. Other references: `--pr OWNER/REPO#123`,
 or `--pr OWNER/REPO --number 123`; on GitLab `--forge gitlab` with
-`--pr GROUP/SUBGROUP/REPO!67` and `--api-base`. `--forge gitea` when it
+`--pr 'GROUP/SUBGROUP/REPO!67'` (quoted: `!` is special to an interactive
+shell) and `--api-base`; `#N` is refused there, since on GitLab it names an
+issue. `--forge gitea` when it
 cannot be told from the URL; `--api-base` for GitHub Enterprise
 (`https://HOST/api/v3` is assumed from a URL), for a GitLab not served at
 `https://HOST/api/v4` (under a relative URL root, give

@@ -1211,8 +1211,15 @@ class GitLab(unittest.TestCase):
         self.assertEqual({r["status"] for r in reviews}, {"unsatisfiable"})
         self.assertTrue(all("allowlist is required on GitLab" in r["detail"] for r in reviews))
 
+    def test_an_older_gitlab_names_the_merger_in_merged_by(self):
+        self.load("fast_forward")
+        self.mr["merged_by"], self.mr["merge_user"] = self.mr["merge_user"], None
+        code, doc = self.run_vd()
+        self.assertEqual((code, self.check(doc, "merge")["merged_by"]), (0, "maintainer"))
+
     def test_open_and_closed_requests(self):
-        for state, (code, verdict) in {"opened": (4, "pending"), "closed": (3, "not_confirmed")}.items():
+        for state, (code, verdict) in {"opened": (4, "pending"), "locked": (4, "pending"),
+                                       "closed": (3, "not_confirmed")}.items():
             with self.subTest(state):
                 self.load("fast_forward")
                 self.mr.update(state=state, merged_at=None, merge_user=None, merged_by=None)
@@ -1279,9 +1286,34 @@ class GitLab(unittest.TestCase):
         self.assertIn(b"old mode 100644\nnew mode 100755", vd.gitlab_diff(mode))
         rename = [dict(reviewed["diffs"][1], renamed_file=True, new_path="moved.py", diff="")]
         self.assertIn(b"rename from", vd.gitlab_diff(rename), "a pure rename has an identity")
+        before_18_4 = [{k: v for k, v in rename[0].items() if k not in ("too_large", "collapsed")}]
+        with self.assertRaises(ValueError, msg="without too_large, a renamed large file looks like a pure rename"):
+            vd.gitlab_diff(before_18_4)
         for broken in (dict(reviewed["diffs"][1], collapsed=True), dict(reviewed["diffs"][1], diff="")):
             with self.assertRaises(ValueError):
                 vd.gitlab_diff([broken])
+
+    def test_paths_are_quoted_as_git_quotes_them(self):
+        # A path with a newline must not carry a header line of its own: unquoted, "x\nindex A" and
+        # "x\nindex B" would put an index line (dropped by the identity) in the diff, so edits to two
+        # different files would hash alike; and a binary file's notice must never be cut off by a path
+        # holding "\n@@". Such a path, or one with replaced bytes, has no identity at all.
+        def entry(path):
+            return {"old_path": path, "new_path": path, "a_mode": "100644", "b_mode": "100644",
+                    "diff": f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b\n"}
+        binary = dict(entry("x\n@@ y"), diff="Binary files a/x\n@@ y and b/x\n@@ y differ\n")
+        headers_only = dict(entry("x"), diff="--- a/x\n+++ b/x\n", too_large=False)  # text, but no hunk
+        for broken in (entry("x\nindex A"), entry("tab\there"), entry("del\x7f"), entry("caf\ufffd"), binary,
+                       dict(entry("ok"), old_path="was\nhere", renamed_file=True), headers_only):
+            with self.subTest(path=broken["old_path"]), self.assertRaises(ValueError):
+                vd.gitlab_diff([broken])
+        # git's own form (core.quotePath): octal bytes past ASCII, C escapes, plain paths unquoted
+        self.assertEqual(vd.git_path("a/", "caf\u00e9.txt"), '"a/caf\\303\\251.txt"')
+        self.assertEqual(vd.git_path("", 'say "hi"\\'), '"say \\"hi\\"\\\\"')
+        self.assertEqual(vd.git_path("a/", "docs/a b (c).py"), "a/docs/a b (c).py")
+        renamed = dict(entry('new "name"'), old_path="old", renamed_file=True)
+        self.assertIn(b'rename to "new \\"name\\""', vd.gitlab_diff([renamed]))
+        self.assertTrue(vd.gitlab_diff([entry("caf\u00e9.txt")]).startswith(b'diff --git "a/caf\\303\\251.txt"'))
 
     def test_references(self):
         api = "https://gitlab.example.org/api/v4"
@@ -1294,7 +1326,7 @@ class GitLab(unittest.TestCase):
                                       "https://host.example/git/api/v4"),
                          ("gitlab", "https://host.example/git/api/v4", "acme", "widgets", 3), "a relative URL root")
         for bad, forge in (("acme/team/widgets#5", None), ("https://gitlab.example.org/acme/widgets/-/merge_requests/3", "github"),
-                           ("acme/widgets!5", "github"), ("acme/widgets!5", None)):
+                           ("acme/widgets!5", "github"), ("acme/widgets!5", None), ("acme/widgets#5", "gitlab")):
             with self.subTest(bad), self.assertRaises(vd.UsageError):
                 vd.parse_ref(bad, None, forge, None)
         forge = vd.GitLabForge(None, "gitlab", api, "acme/team", "widgets")

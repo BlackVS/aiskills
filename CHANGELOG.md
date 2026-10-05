@@ -24,10 +24,12 @@ content fixes inside existing skills. The current version is in `VERSION`.
     (a fast-forward), reported as `merged_as`.
   - **merged content:** tree equality as a straight compare with no diffs (GitLab
     commits carry no tree id). The patch identity uses diffs rebuilt from the
-    three-dot compare, which hash like GitLab's raw diff. A fast-forward
+    three-dot compare, with paths quoted as git quotes them, which hash like
+    GitLab's raw diff. A fast-forward
     compares from the merge request's base. A change past GitLab's diff
-    limits, or text in which GitLab replaced bytes that are not UTF-8, has no
-    identity.
+    limits, text in which GitLab replaced bytes that are not UTF-8, a path
+    with a control character or replaced bytes, and (before GitLab 18.4) a
+    renamed file sent without text have no identity.
   - **post-merge CI:** the latest pipeline on the merged commit for the target
     branch with source `push`. Only `success` passes. `manual` and running
     pipelines are pending. `failed`, `canceled` and `skipped` fail, since a

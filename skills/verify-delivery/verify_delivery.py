@@ -289,17 +289,33 @@ class GitLabForge(Forge):
         return super().pages(f"/pipelines?sha={sha}&ref={target}&source=push&order_by=id&sort=desc")
 
 
+def git_path(prefix, path):
+    """PREFIX + PATH as git writes it in a diff header: quoted, with C escapes and octal bytes,
+    when it has a control character, a quote, a backslash or a byte past ASCII."""
+    raw = (prefix + path).encode("utf-8")
+    if not any(b < 0x20 or b >= 0x7f or b in b'"\\' for b in raw):
+        return prefix + path
+    named = {7: "\\a", 8: "\\b", 9: "\\t", 10: "\\n", 11: "\\v", 12: "\\f", 13: "\\r", 34: '\\"', 92: "\\\\"}
+    return '"' + "".join(named.get(b) or (f"\\{b:03o}" if b < 0x20 or b >= 0x7f else chr(b)) for b in raw) + '"'
+
+
 def gitlab_diff(diffs):
     """A unified git diff rebuilt from GitLab compare entries: each entry's hunks, under the
-    "diff --git", mode and rename lines git writes. The patch identity of the rebuilt diff equals
-    that of GitLab's raw diff of the same change (checked on gitlab.com). An entry with no hunks
+    "diff --git", mode and rename lines git writes, with paths quoted as git quotes them (a path
+    with a control character, a newline included, or replaced bytes has no identity). The patch
+    identity of the rebuilt diff equals that of GitLab's raw diff of the same change (checked on
+    gitlab.com). An entry with no hunks
     that is not a pure rename or mode change, content GitLab collapsed or found too large, and
     text in which GitLab replaced bytes that are not UTF-8 have no identity (ValueError). A binary
     file's "Binary files ... differ" line is kept, so patch_identity refuses it."""
     lines = []
     for d in diffs:
-        old, new = d.get("old_path"), d.get("new_path")
-        lines.append(f"diff --git a/{old} b/{new}")
+        old, new = d.get("old_path") or "", d.get("new_path") or ""
+        if any(ord(c) < 0x20 or c in "\x7f\ufffd" for c in old + new):
+            # a path over two lines could pass for a header line, and replaced bytes could make two
+            # files one: such a path is not rebuilt at all
+            raise ValueError("a changed file's path has a control character or replaced bytes")
+        lines.append(f"diff --git {git_path('a/', old)} {git_path('b/', new)}")
         if d.get("new_file"):
             lines.append(f"new file mode {d.get('b_mode')}")
         elif d.get("deleted_file"):
@@ -307,11 +323,20 @@ def gitlab_diff(diffs):
         elif d.get("a_mode") != d.get("b_mode"):
             lines += [f"old mode {d.get('a_mode')}", f"new mode {d.get('b_mode')}"]
         if d.get("renamed_file"):
-            lines += [f"rename from {old}", f"rename to {new}"]
+            lines += [f"rename from {git_path('', old)}", f"rename to {git_path('', new)}"]
         text = d.get("diff") or ""
+        # an empty diff is a pure rename or mode change only where GitLab says the file was not too
+        # large: before 18.4 it sends no too_large key, and a large renamed file looks the same
+        pure = "too_large" in d and (d.get("renamed_file") or (d.get("a_mode") != d.get("b_mode")
+                                                              and not (d.get("new_file") or d.get("deleted_file"))))
+        if "\n@@" in "\n" + text:
+            # GitLab's own ---/+++ lines are dropped: the headers above stand for them
+            text = text[("\n" + text).index("\n@@"):]
+        elif text and not pure and not text.startswith("Binary files "):
+            # text without a hunk would hash as an unchanged file
+            raise ValueError(f"GitLab returns a diff of {new} without a hunk")
         if d.get("collapsed") or d.get("too_large"):
             raise ValueError(f"GitLab returns no diff for {new} (collapsed or too large)")
-        pure = d.get("renamed_file") or (d.get("a_mode") != d.get("b_mode") and not (d.get("new_file") or d.get("deleted_file")))
         if not text and not pure:
             raise ValueError(f"GitLab returns no text diff for {new} (an empty file, or content it left out)")
         if "\ufffd" in text:
@@ -350,6 +375,8 @@ def parse_ref(ref, number, forge, api_base):
         owner, repo, num = m.groups()
         if forge != "gitlab" and ("/" in owner or "!" in (ref or "")):
             raise UsageError("only GitLab has subgroups and the !N form: give --forge gitlab")
+        if forge == "gitlab" and "#" in (ref or ""):
+            raise UsageError("on GitLab #N is an issue: give the merge request as GROUP/REPO!N")
         num = int(num) if num else number
         if not num:
             raise UsageError("give the pull request number: owner/repo#N (owner/repo!N on GitLab) or --number N")
