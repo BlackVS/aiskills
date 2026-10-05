@@ -1,0 +1,176 @@
+diff --git a/.gitlab-ci.yml b/.gitlab-ci.yml
+new file mode 100644
+index 8499d963e48940f32fa3a9905340c4882943d3bf..e20cb7e88333096695375b7da8935c2748ada5de
+--- /dev/null
++++ b/.gitlab-ci.yml
+@@ -0,0 +1,16 @@
++line 3c9c1ce382
++line d79cfcff2a
++line 389e8ec86b
++line dd4ff082aa
++line da39a3ee5e
++line 7cf0b34d6d
++line 80cd0d39e8
++line 1fbacb72d3
++line 4bd8d40294
++line 6e79da0fc0
++line da39a3ee5e
++line f3550cbb01
++line 80cd0d39e8
++line 3e3bcba722
++line 4bd8d40294
++line c99970701d
+diff --git a/src/part1.py b/src/part1.py
+index b3efce97009b32508d846e73f7562cf4a8e6fa18..d479b3b63feceb75a0472b1d24daf518b66fe8d4 100644
+--- a/src/part1.py
++++ b/src/part1.py
+@@ -3,7 +3,8 @@
+ line 75e70b2a5b
+ line 3a84e855cd
+ line da39a3ee5e
+-line 506fdcf3f5
++line eb40de8191
++line 91e02d22e5
+ line 1bb0491aea
+ line da39a3ee5e
+ line e5daebb54c
+diff --git a/src/part2.res b/src/part2.res
+index 3ba4364a540c31dd28f13bf751acc9baed8fee84..3fbb28a092a48afb13ce2edf0200b0729d8f9f4b 100644
+--- a/src/part2.res
++++ b/src/part2.res
+@@ -0,0 +1,2 @@
++line 1b64538924
++line 7b52009b64
+diff --git a/docs/a b (c)/part3.py b/docs/a b (c)/part3.py
+index c0e5a158d5829f46fdf637c2df07abe28c1d49f1..ebf1993f4fca3dfa6f2c116688b2b0051add5355 100644
+--- a/docs/a b (c)/part3.py	
++++ b/docs/a b (c)/part3.py	
+@@ -3,7 +3,8 @@
+ line 633d1d965d
+ line 3a84e855cd
+ line 75e70b2a5b
+-line 1bf38f8423
++line eb40de8191
++line 91e02d22e5
+ line da39a3ee5e
+ line 30ad3ae64a
+ line 893a17efb9
+diff --git a/src/part4.py b/src/part4.py
+new file mode 100644
+index 8499d963e48940f32fa3a9905340c4882943d3bf..2143a1ad1147ebfe53c273bb3ef5a36810cc05d6
+--- /dev/null
++++ b/src/part4.py
+@@ -0,0 +1,65 @@
++line 901e487e20
++line da39a3ee5e
++line b332cae55b
++line 225db626da
++line f27ccfd81c
++line 409020dbb9
++line 5757795d86
++line 61c01096aa
++line 83d8e9e427
++line da39a3ee5e
++line 8f97b0412c
++line b5a2143017
++line da39a3ee5e
++line 60f84c1628
++line 3a8608c7e3
++line d009c0f1dc
++line 2f348d206d
++line 4ff447b8ef
++line da39a3ee5e
++line da39a3ee5e
++line 3123837a73
++line f03f332c12
++line ed822a6a2c
++line a3da3fb344
++line 586ae2d0b1
++line cd19c04265
++line da39a3ee5e
++line da39a3ee5e
++line 65b414a74c
++line 7b2b43c5e2
++line d35ad56290
++line db342cc2ca
++line e9a37c9b77
++line 9994a224c9
++line 25530237bf
++line 31a7fe21f4
++line 4fd366eff3
++line 8b28ea6758
++line 4a7773485f
++line b0ca03c52a
++line 7fe6d3ef97
++line 47c607f1ca
++line 0c6e8a0fa9
++line 956dc55d0f
++line c67d3d57a5
++line dc3033d63f
++line 6fc061621a
++line a2637fc6cb
++line 0b34c5c60f
++line b3a6b39bf9
++line c175c8a171
++line d74b8ae711
++line 6f14e6a850
++line f426168592
++line bd4320dab9
++line d60b1c9af5
++line 956dc55d0f
++line c67d3d57a5
++line cff904e80e
++line bd44f14feb
++line 7c1c185980
++line da39a3ee5e
++line da39a3ee5e
++line 0de54afa8d
++line 06eb8840f8
+diff --git a/src/part5.sh b/src/part5.sh
+new file mode 100644
+index 8499d963e48940f32fa3a9905340c4882943d3bf..3d862c3ebfdef07a64602f0e5dab78a7718f641c
+--- /dev/null
++++ b/src/part5.sh
+@@ -0,0 +1,22 @@
++line 71a2c29311
++line 65539638d0
++line 58722d5572
++line f6c6a5f87c
++line 0c9b23aef0
++line ce165b44fe
++line a433238382
++line 0babd17f36
++line f02677e356
++line cb673c9e43
++line eb37718f6d
++line 23cae23259
++line 40dae64c7d
++line 378e4ac622
++line 0973c37fd3
++line ff3fed89b7
++line 832e51be08
++line 5f73b5938c
++line 66650793d7
++line b00f351860
++line 7495358c4e
++line bba2cf51d4
+diff --git a/src/part6.txt b/src/part6.txt
+new file mode 100644
+index 8499d963e48940f32fa3a9905340c4882943d3bf..ea9d7c85d7aad939327d3aad20c75970410764a9
+--- /dev/null
++++ b/src/part6.txt
+@@ -0,0 +1,14 @@
++line e746eadbb8
++line 9f8f0c08a4
++line 53da0cf819
++line eeb2d516fd
++line bc1f289292
++line 2acb0e40d3
++line 3a58cbb9a2
++line df5a698446
++line 286bc781e3
++line ca3128c05a
++line d886ff1c72
++line 6415c74a50
++line 5f6b1e9a14
++line d640c02190

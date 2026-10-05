@@ -1,0 +1,700 @@
+[
+ {
+  "path": "/projects/acme%2Fwidgets/merge_requests/1",
+  "status": 200,
+  "body": {
+   "id": 5005,
+   "iid": 1,
+   "project_id": 1001,
+   "title": "Example merge request 1",
+   "description": "An example change.",
+   "state": "merged",
+   "created_at": "2026-10-05T15:30:16.427Z",
+   "updated_at": "2026-10-05T15:33:38.743Z",
+   "merged_by": {
+    "id": 2002,
+    "username": "project_1001_bot_example",
+    "name": "Example Maintainer",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example.org/uploads/avatar.png",
+    "web_url": "https://gitlab.example.org/project_1001_bot_example"
+   },
+   "merge_user": {
+    "id": 2002,
+    "username": "project_1001_bot_example",
+    "name": "Example Maintainer",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example.org/uploads/avatar.png",
+    "web_url": "https://gitlab.example.org/project_1001_bot_example"
+   },
+   "merged_at": "2026-10-05T15:33:38.453Z",
+   "closed_by": null,
+   "closed_at": null,
+   "target_branch": "master",
+   "source_branch": "feature-1",
+   "user_notes_count": 1,
+   "upvotes": 0,
+   "downvotes": 0,
+   "author": {
+    "id": 2002,
+    "username": "project_1001_bot_example",
+    "name": "Example Maintainer",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example.org/uploads/avatar.png",
+    "web_url": "https://gitlab.example.org/project_1001_bot_example",
+    "bot": true
+   },
+   "assignees": [],
+   "assignee": null,
+   "reviewers": [],
+   "source_project_id": 1001,
+   "target_project_id": 1001,
+   "labels": [],
+   "draft": false,
+   "imported": false,
+   "imported_from": "none",
+   "work_in_progress": false,
+   "milestone": null,
+   "merge_when_pipeline_succeeds": false,
+   "merge_status": "can_be_merged",
+   "detailed_merge_status": "not_open",
+   "merge_after": null,
+   "sha": "4525322bac4b29777da76a99d7e8a437ca725449",
+   "merge_commit_sha": "ab602a752df86a98af3365ff16586f4578221966",
+   "squash_commit_sha": null,
+   "discussion_locked": null,
+   "should_remove_source_branch": true,
+   "force_remove_source_branch": true,
+   "prepared_at": "2026-10-05T15:30:17.615Z",
+   "reference": "!1",
+   "references": {
+    "short": "!1",
+    "relative": "!1",
+    "full": "acme/widgets!1"
+   },
+   "web_url": "https://gitlab.example.org/acme/widgets/-/merge_requests/1",
+   "time_stats": {
+    "time_estimate": 0,
+    "total_time_spent": 0,
+    "human_time_estimate": null,
+    "human_total_time_spent": null
+   },
+   "squash": false,
+   "squash_on_merge": false,
+   "task_completion_status": {
+    "count": 0,
+    "completed_count": 0
+   },
+   "has_conflicts": false,
+   "blocking_discussions_resolved": true,
+   "approvals_before_merge": null,
+   "subscribed": true,
+   "changes_count": "7",
+   "latest_build_started_at": "2026-10-05T15:30:18.227Z",
+   "latest_build_finished_at": "2026-10-05T15:31:01.490Z",
+   "first_deployed_to_production_at": null,
+   "pipeline": {
+    "id": 5006,
+    "iid": 1,
+    "project_id": 1001,
+    "sha": "4525322bac4b29777da76a99d7e8a437ca725449",
+    "ref": "feature-1",
+    "status": "success",
+    "source": "push",
+    "created_at": "2026-10-05T15:30:17.254Z",
+    "updated_at": "2026-10-05T15:31:01.503Z",
+    "web_url": "https://gitlab.example.org/acme/widgets/-/pipelines/5006"
+   },
+   "head_pipeline": {
+    "id": 5006,
+    "iid": 1,
+    "project_id": 1001,
+    "sha": "4525322bac4b29777da76a99d7e8a437ca725449",
+    "ref": "feature-1",
+    "status": "success",
+    "source": "push",
+    "created_at": "2026-10-05T15:30:17.254Z",
+    "updated_at": "2026-10-05T15:31:01.503Z",
+    "web_url": "https://gitlab.example.org/acme/widgets/-/pipelines/5006",
+    "before_sha": "5002",
+    "tag": false,
+    "yaml_errors": null,
+    "user": {
+     "id": 2002,
+     "username": "project_1001_bot_example",
+     "name": "Example Maintainer",
+     "state": "active",
+     "locked": false,
+     "avatar_url": "https://gitlab.example.org/uploads/avatar.png",
+     "web_url": "https://gitlab.example.org/project_1001_bot_example"
+    },
+    "started_at": "2026-10-05T15:30:18.227Z",
+    "finished_at": "2026-10-05T15:31:01.490Z",
+    "committed_at": null,
+    "duration": 41,
+    "queued_duration": null,
+    "coverage": null,
+    "detailed_status": {
+     "icon": "status_success",
+     "text": "Passed",
+     "label": "passed",
+     "group": "success",
+     "tooltip": "passed",
+     "has_details": true,
+     "details_path": "/acme/widgets/-/pipelines/5006",
+     "illustration": null,
+     "favicon": "/assets/ci_favicons/favicon_status_success-8451333011eee8ce9f2ab25dc487fe24a8758c694827a582f17f42b0a90446a2.png"
+    },
+    "archived": false
+   },
+   "diff_refs": {
+    "base_sha": "4c81495eaee4164018ead8e37f4e08d6ae2102f1",
+    "head_sha": "4525322bac4b29777da76a99d7e8a437ca725449",
+    "start_sha": "4c81495eaee4164018ead8e37f4e08d6ae2102f1"
+   },
+   "merge_error": null,
+   "first_contribution": true,
+   "user": {
+    "can_merge": true
+   }
+  }
+ },
+ {
+  "path": "/users/2002",
+  "status": 200,
+  "body": {
+   "id": 2002,
+   "username": "project_1001_bot_example",
+   "name": "Example Maintainer",
+   "state": "active",
+   "locked": false,
+   "avatar_url": "https://gitlab.example.org/uploads/avatar.png",
+   "web_url": "https://gitlab.example.org/project_1001_bot_example",
+   "bot": true
+  }
+ },
+ {
+  "path": "/projects/acme%2Fwidgets/merge_requests/1/notes?sort=asc&order_by=created_at&per_page=100",
+  "status": 200,
+  "body": [
+   {
+    "id": 5007,
+    "type": null,
+    "body": "[claude review] reviewed at head 4525322bac4b29777da76a99d7e8a437ca725449\n\nAn example review.\n\nRISK\nLOW\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n",
+    "author": {
+     "id": 2002,
+     "username": "project_1001_bot_example",
+     "name": "Example Maintainer",
+     "state": "active",
+     "locked": false,
+     "avatar_url": "https://gitlab.example.org/uploads/avatar.png",
+     "web_url": "https://gitlab.example.org/project_1001_bot_example"
+    },
+    "created_at": "2026-10-05T15:31:13.396Z",
+    "updated_at": "2026-10-05T15:31:17.113Z",
+    "system": false,
+    "noteable_id": 5005,
+    "noteable_type": "MergeRequest",
+    "project_id": 1001,
+    "resolvable": false,
+    "confidential": false,
+    "internal": false,
+    "imported": false,
+    "imported_from": "none",
+    "noteable_iid": 1,
+    "commands_changes": {}
+   },
+   {
+    "id": 5008,
+    "type": null,
+    "body": "mentioned in commit ab602a752df86a98af3365ff16586f4578221966",
+    "author": {
+     "id": 2002,
+     "username": "project_1001_bot_example",
+     "name": "Example Maintainer",
+     "state": "active",
+     "locked": false,
+     "avatar_url": "https://gitlab.example.org/uploads/avatar.png",
+     "web_url": "https://gitlab.example.org/project_1001_bot_example"
+    },
+    "created_at": "2026-10-05T15:33:38.691Z",
+    "updated_at": "2026-10-05T15:33:38.693Z",
+    "system": true,
+    "noteable_id": 5005,
+    "noteable_type": "MergeRequest",
+    "project_id": 1001,
+    "resolvable": false,
+    "confidential": false,
+    "internal": false,
+    "imported": false,
+    "imported_from": "none",
+    "noteable_iid": 1,
+    "commands_changes": {}
+   }
+  ]
+ },
+ {
+  "path": "/projects/acme%2Fwidgets/repository/commits/4525322bac4b29777da76a99d7e8a437ca725449",
+  "status": 200,
+  "body": {
+   "id": "4525322bac4b29777da76a99d7e8a437ca725449",
+   "short_id": "4525322b",
+   "created_at": "2026-10-05T15:30:14.000+00:00",
+   "parent_ids": [
+    "4c81495eaee4164018ead8e37f4e08d6ae2102f1"
+   ],
+   "title": "Example change",
+   "message": "Example change\n",
+   "author_name": "Example Maintainer",
+   "author_email": "maintainer@example.org",
+   "authored_date": "2026-10-05T15:30:14.000+00:00",
+   "committer_name": "Example Maintainer",
+   "committer_email": "maintainer@example.org",
+   "committed_date": "2026-10-05T15:30:14.000+00:00",
+   "trailers": {},
+   "extended_trailers": {},
+   "web_url": "https://gitlab.example.org/acme/widgets/-/commit/4525322bac4b29777da76a99d7e8a437ca725449",
+   "stats": {
+    "additions": 123,
+    "deletions": 2,
+    "total": 125
+   },
+   "status": "success",
+   "project_id": 1001,
+   "last_pipeline": {
+    "id": 5006,
+    "iid": 1,
+    "project_id": 1001,
+    "sha": "4525322bac4b29777da76a99d7e8a437ca725449",
+    "ref": "feature-1",
+    "status": "success",
+    "source": "push",
+    "created_at": "2026-10-05T15:30:17.254Z",
+    "updated_at": "2026-10-05T15:31:01.503Z",
+    "web_url": "https://gitlab.example.org/acme/widgets/-/pipelines/5006"
+   }
+  }
+ },
+ {
+  "path": "/projects/acme%2Fwidgets/repository/commits/ab602a752df86a98af3365ff16586f4578221966",
+  "status": 200,
+  "body": {
+   "id": "ab602a752df86a98af3365ff16586f4578221966",
+   "short_id": "ab602a75",
+   "created_at": "2026-10-05T15:33:36.000+00:00",
+   "parent_ids": [
+    "4c81495eaee4164018ead8e37f4e08d6ae2102f1",
+    "4525322bac4b29777da76a99d7e8a437ca725449"
+   ],
+   "title": "Example change",
+   "message": "Example change\n",
+   "author_name": "Example Maintainer",
+   "author_email": "maintainer@example.org",
+   "authored_date": "2026-10-05T15:33:36.000+00:00",
+   "committer_name": "Example Maintainer",
+   "committer_email": "maintainer@example.org",
+   "committed_date": "2026-10-05T15:33:36.000+00:00",
+   "trailers": {},
+   "extended_trailers": {},
+   "web_url": "https://gitlab.example.org/acme/widgets/-/commit/ab602a752df86a98af3365ff16586f4578221966",
+   "stats": {
+    "additions": 123,
+    "deletions": 2,
+    "total": 125
+   },
+   "status": "success",
+   "project_id": 1001,
+   "last_pipeline": {
+    "id": 5009,
+    "iid": 2,
+    "project_id": 1001,
+    "sha": "ab602a752df86a98af3365ff16586f4578221966",
+    "ref": "master",
+    "status": "success",
+    "source": "push",
+    "created_at": "2026-10-05T15:33:39.920Z",
+    "updated_at": "2026-10-05T15:34:23.844Z",
+    "web_url": "https://gitlab.example.org/acme/widgets/-/pipelines/5009"
+   }
+  }
+ },
+ {
+  "path": "/projects/acme%2Fwidgets/repository/compare?from=4525322bac4b29777da76a99d7e8a437ca725449&to=ab602a752df86a98af3365ff16586f4578221966&straight=true",
+  "status": 200,
+  "body": {
+   "commit": {
+    "id": "ab602a752df86a98af3365ff16586f4578221966",
+    "short_id": "ab602a75",
+    "created_at": "2026-10-05T15:33:36.000+00:00",
+    "parent_ids": [
+     "4c81495eaee4164018ead8e37f4e08d6ae2102f1",
+     "4525322bac4b29777da76a99d7e8a437ca725449"
+    ],
+    "title": "Example change",
+    "message": "Example change\n",
+    "author_name": "Example Maintainer",
+    "author_email": "maintainer@example.org",
+    "authored_date": "2026-10-05T15:33:36.000+00:00",
+    "committer_name": "Example Maintainer",
+    "committer_email": "maintainer@example.org",
+    "committed_date": "2026-10-05T15:33:36.000+00:00",
+    "trailers": {},
+    "extended_trailers": {},
+    "web_url": "https://gitlab.example.org/acme/widgets/-/commit/ab602a752df86a98af3365ff16586f4578221966"
+   },
+   "commits": [
+    {
+     "id": "ab602a752df86a98af3365ff16586f4578221966",
+     "short_id": "ab602a75",
+     "created_at": "2026-10-05T15:33:36.000+00:00",
+     "parent_ids": [
+      "4c81495eaee4164018ead8e37f4e08d6ae2102f1",
+      "4525322bac4b29777da76a99d7e8a437ca725449"
+     ],
+     "title": "Example change",
+     "message": "Example change\n",
+     "author_name": "Example Maintainer",
+     "author_email": "maintainer@example.org",
+     "authored_date": "2026-10-05T15:33:36.000+00:00",
+     "committer_name": "Example Maintainer",
+     "committer_email": "maintainer@example.org",
+     "committed_date": "2026-10-05T15:33:36.000+00:00",
+     "trailers": {},
+     "extended_trailers": {},
+     "web_url": "https://gitlab.example.org/acme/widgets/-/commit/ab602a752df86a98af3365ff16586f4578221966"
+    }
+   ],
+   "diffs": [],
+   "compare_timeout": false,
+   "compare_same_ref": false,
+   "web_url": "https://gitlab.example.org/acme/widgets/-/compare/4525322bac4b29777da76a99d7e8a437ca725449..ab602a752df86a98af3365ff16586f4578221966"
+  }
+ },
+ {
+  "path": "/projects/acme%2Fwidgets/pipelines?sha=ab602a752df86a98af3365ff16586f4578221966&ref=master&source=push&order_by=id&sort=desc&per_page=100",
+  "status": 200,
+  "body": [
+   {
+    "id": 5009,
+    "iid": 2,
+    "project_id": 1001,
+    "sha": "ab602a752df86a98af3365ff16586f4578221966",
+    "ref": "master",
+    "status": "success",
+    "source": "push",
+    "created_at": "2026-10-05T15:33:39.920Z",
+    "updated_at": "2026-10-05T15:34:23.844Z",
+    "web_url": "https://gitlab.example.org/acme/widgets/-/pipelines/5009",
+    "name": null
+   }
+  ]
+ },
+ {
+  "path": "/projects/acme%2Fwidgets/repository/compare?from=4c81495eaee4164018ead8e37f4e08d6ae2102f1&to=4525322bac4b29777da76a99d7e8a437ca725449&unidiff=true",
+  "status": 200,
+  "body": {
+   "commit": {
+    "id": "4525322bac4b29777da76a99d7e8a437ca725449",
+    "short_id": "4525322b",
+    "created_at": "2026-10-05T15:30:14.000+00:00",
+    "parent_ids": [
+     "4c81495eaee4164018ead8e37f4e08d6ae2102f1"
+    ],
+    "title": "Example change",
+    "message": "Example change\n",
+    "author_name": "Example Maintainer",
+    "author_email": "maintainer@example.org",
+    "authored_date": "2026-10-05T15:30:14.000+00:00",
+    "committer_name": "Example Maintainer",
+    "committer_email": "maintainer@example.org",
+    "committed_date": "2026-10-05T15:30:14.000+00:00",
+    "trailers": {},
+    "extended_trailers": {},
+    "web_url": "https://gitlab.example.org/acme/widgets/-/commit/4525322bac4b29777da76a99d7e8a437ca725449"
+   },
+   "commits": [
+    {
+     "id": "4525322bac4b29777da76a99d7e8a437ca725449",
+     "short_id": "4525322b",
+     "created_at": "2026-10-05T15:30:14.000+00:00",
+     "parent_ids": [
+      "4c81495eaee4164018ead8e37f4e08d6ae2102f1"
+     ],
+     "title": "Example change",
+     "message": "Example change\n",
+     "author_name": "Example Maintainer",
+     "author_email": "maintainer@example.org",
+     "authored_date": "2026-10-05T15:30:14.000+00:00",
+     "committer_name": "Example Maintainer",
+     "committer_email": "maintainer@example.org",
+     "committed_date": "2026-10-05T15:30:14.000+00:00",
+     "trailers": {},
+     "extended_trailers": {},
+     "web_url": "https://gitlab.example.org/acme/widgets/-/commit/4525322bac4b29777da76a99d7e8a437ca725449"
+    }
+   ],
+   "diffs": [
+    {
+     "diff": "--- /dev/null\n+++ b/.gitlab-ci.yml\n@@ -0,0 +1,16 @@\n+line 3c9c1ce382\n+line d79cfcff2a\n+line 389e8ec86b\n+line dd4ff082aa\n+line da39a3ee5e\n+line 7cf0b34d6d\n+line 80cd0d39e8\n+line 1fbacb72d3\n+line 4bd8d40294\n+line 6e79da0fc0\n+line da39a3ee5e\n+line f3550cbb01\n+line 80cd0d39e8\n+line 3e3bcba722\n+line 4bd8d40294\n+line c99970701d\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": ".gitlab-ci.yml",
+     "old_path": ".gitlab-ci.yml",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- a/src/part1.py\n+++ b/src/part1.py\n@@ -3,7 +3,8 @@\n line 75e70b2a5b\n line 3a84e855cd\n line da39a3ee5e\n-line 506fdcf3f5\n+line eb40de8191\n+line 91e02d22e5\n line 1bb0491aea\n line da39a3ee5e\n line e5daebb54c\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part1.py",
+     "old_path": "src/part1.py",
+     "a_mode": "100644",
+     "b_mode": "100644",
+     "new_file": false,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- a/src/part2.res\n+++ b/src/part2.res\n@@ -0,0 +1,2 @@\n+line 1b64538924\n+line 7b52009b64\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part2.res",
+     "old_path": "src/part2.res",
+     "a_mode": "100644",
+     "b_mode": "100644",
+     "new_file": false,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- a/docs/a b (c)/part3.py\n+++ b/docs/a b (c)/part3.py\n@@ -3,7 +3,8 @@\n line 633d1d965d\n line 3a84e855cd\n line 75e70b2a5b\n-line 1bf38f8423\n+line eb40de8191\n+line 91e02d22e5\n line da39a3ee5e\n line 30ad3ae64a\n line 893a17efb9\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "docs/a b (c)/part3.py",
+     "old_path": "docs/a b (c)/part3.py",
+     "a_mode": "100644",
+     "b_mode": "100644",
+     "new_file": false,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- /dev/null\n+++ b/src/part4.py\n@@ -0,0 +1,65 @@\n+line 901e487e20\n+line da39a3ee5e\n+line b332cae55b\n+line 225db626da\n+line f27ccfd81c\n+line 409020dbb9\n+line 5757795d86\n+line 61c01096aa\n+line 83d8e9e427\n+line da39a3ee5e\n+line 8f97b0412c\n+line b5a2143017\n+line da39a3ee5e\n+line 60f84c1628\n+line 3a8608c7e3\n+line d009c0f1dc\n+line 2f348d206d\n+line 4ff447b8ef\n+line da39a3ee5e\n+line da39a3ee5e\n+line 3123837a73\n+line f03f332c12\n+line ed822a6a2c\n+line a3da3fb344\n+line 586ae2d0b1\n+line cd19c04265\n+line da39a3ee5e\n+line da39a3ee5e\n+line 65b414a74c\n+line 7b2b43c5e2\n+line d35ad56290\n+line db342cc2ca\n+line e9a37c9b77\n+line 9994a224c9\n+line 25530237bf\n+line 31a7fe21f4\n+line 4fd366eff3\n+line 8b28ea6758\n+line 4a7773485f\n+line b0ca03c52a\n+line 7fe6d3ef97\n+line 47c607f1ca\n+line 0c6e8a0fa9\n+line 956dc55d0f\n+line c67d3d57a5\n+line dc3033d63f\n+line 6fc061621a\n+line a2637fc6cb\n+line 0b34c5c60f\n+line b3a6b39bf9\n+line c175c8a171\n+line d74b8ae711\n+line 6f14e6a850\n+line f426168592\n+line bd4320dab9\n+line d60b1c9af5\n+line 956dc55d0f\n+line c67d3d57a5\n+line cff904e80e\n+line bd44f14feb\n+line 7c1c185980\n+line da39a3ee5e\n+line da39a3ee5e\n+line 0de54afa8d\n+line 06eb8840f8\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part4.py",
+     "old_path": "src/part4.py",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- /dev/null\n+++ b/src/part5.sh\n@@ -0,0 +1,22 @@\n+line 71a2c29311\n+line 65539638d0\n+line 58722d5572\n+line f6c6a5f87c\n+line 0c9b23aef0\n+line ce165b44fe\n+line a433238382\n+line 0babd17f36\n+line f02677e356\n+line cb673c9e43\n+line eb37718f6d\n+line 23cae23259\n+line 40dae64c7d\n+line 378e4ac622\n+line 0973c37fd3\n+line ff3fed89b7\n+line 832e51be08\n+line 5f73b5938c\n+line 66650793d7\n+line b00f351860\n+line 7495358c4e\n+line bba2cf51d4\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part5.sh",
+     "old_path": "src/part5.sh",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- /dev/null\n+++ b/src/part6.txt\n@@ -0,0 +1,14 @@\n+line e746eadbb8\n+line 9f8f0c08a4\n+line 53da0cf819\n+line eeb2d516fd\n+line bc1f289292\n+line 2acb0e40d3\n+line 3a58cbb9a2\n+line df5a698446\n+line 286bc781e3\n+line ca3128c05a\n+line d886ff1c72\n+line 6415c74a50\n+line 5f6b1e9a14\n+line d640c02190\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part6.txt",
+     "old_path": "src/part6.txt",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    }
+   ],
+   "compare_timeout": false,
+   "compare_same_ref": false,
+   "web_url": "https://gitlab.example.org/acme/widgets/-/compare/4c81495eaee4164018ead8e37f4e08d6ae2102f1...4525322bac4b29777da76a99d7e8a437ca725449"
+  }
+ },
+ {
+  "path": "/projects/acme%2Fwidgets/repository/compare?from=4c81495eaee4164018ead8e37f4e08d6ae2102f1&to=ab602a752df86a98af3365ff16586f4578221966&unidiff=true",
+  "status": 200,
+  "body": {
+   "commit": {
+    "id": "ab602a752df86a98af3365ff16586f4578221966",
+    "short_id": "ab602a75",
+    "created_at": "2026-10-05T15:33:36.000+00:00",
+    "parent_ids": [
+     "4c81495eaee4164018ead8e37f4e08d6ae2102f1",
+     "4525322bac4b29777da76a99d7e8a437ca725449"
+    ],
+    "title": "Example change",
+    "message": "Example change\n",
+    "author_name": "Example Maintainer",
+    "author_email": "maintainer@example.org",
+    "authored_date": "2026-10-05T15:33:36.000+00:00",
+    "committer_name": "Example Maintainer",
+    "committer_email": "maintainer@example.org",
+    "committed_date": "2026-10-05T15:33:36.000+00:00",
+    "trailers": {},
+    "extended_trailers": {},
+    "web_url": "https://gitlab.example.org/acme/widgets/-/commit/ab602a752df86a98af3365ff16586f4578221966"
+   },
+   "commits": [
+    {
+     "id": "4525322bac4b29777da76a99d7e8a437ca725449",
+     "short_id": "4525322b",
+     "created_at": "2026-10-05T15:30:14.000+00:00",
+     "parent_ids": [
+      "4c81495eaee4164018ead8e37f4e08d6ae2102f1"
+     ],
+     "title": "Example change",
+     "message": "Example change\n",
+     "author_name": "Example Maintainer",
+     "author_email": "maintainer@example.org",
+     "authored_date": "2026-10-05T15:30:14.000+00:00",
+     "committer_name": "Example Maintainer",
+     "committer_email": "maintainer@example.org",
+     "committed_date": "2026-10-05T15:30:14.000+00:00",
+     "trailers": {},
+     "extended_trailers": {},
+     "web_url": "https://gitlab.example.org/acme/widgets/-/commit/4525322bac4b29777da76a99d7e8a437ca725449"
+    },
+    {
+     "id": "ab602a752df86a98af3365ff16586f4578221966",
+     "short_id": "ab602a75",
+     "created_at": "2026-10-05T15:33:36.000+00:00",
+     "parent_ids": [
+      "4c81495eaee4164018ead8e37f4e08d6ae2102f1",
+      "4525322bac4b29777da76a99d7e8a437ca725449"
+     ],
+     "title": "Example change",
+     "message": "Example change\n",
+     "author_name": "Example Maintainer",
+     "author_email": "maintainer@example.org",
+     "authored_date": "2026-10-05T15:33:36.000+00:00",
+     "committer_name": "Example Maintainer",
+     "committer_email": "maintainer@example.org",
+     "committed_date": "2026-10-05T15:33:36.000+00:00",
+     "trailers": {},
+     "extended_trailers": {},
+     "web_url": "https://gitlab.example.org/acme/widgets/-/commit/ab602a752df86a98af3365ff16586f4578221966"
+    }
+   ],
+   "diffs": [
+    {
+     "diff": "--- /dev/null\n+++ b/.gitlab-ci.yml\n@@ -0,0 +1,16 @@\n+line 3c9c1ce382\n+line d79cfcff2a\n+line 389e8ec86b\n+line dd4ff082aa\n+line da39a3ee5e\n+line 7cf0b34d6d\n+line 80cd0d39e8\n+line 1fbacb72d3\n+line 4bd8d40294\n+line 6e79da0fc0\n+line da39a3ee5e\n+line f3550cbb01\n+line 80cd0d39e8\n+line 3e3bcba722\n+line 4bd8d40294\n+line c99970701d\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": ".gitlab-ci.yml",
+     "old_path": ".gitlab-ci.yml",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- a/src/part1.py\n+++ b/src/part1.py\n@@ -3,7 +3,8 @@\n line 75e70b2a5b\n line 3a84e855cd\n line da39a3ee5e\n-line 506fdcf3f5\n+line eb40de8191\n+line 91e02d22e5\n line 1bb0491aea\n line da39a3ee5e\n line e5daebb54c\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part1.py",
+     "old_path": "src/part1.py",
+     "a_mode": "100644",
+     "b_mode": "100644",
+     "new_file": false,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- a/src/part2.res\n+++ b/src/part2.res\n@@ -0,0 +1,2 @@\n+line 1b64538924\n+line 7b52009b64\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part2.res",
+     "old_path": "src/part2.res",
+     "a_mode": "100644",
+     "b_mode": "100644",
+     "new_file": false,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- a/docs/a b (c)/part3.py\n+++ b/docs/a b (c)/part3.py\n@@ -3,7 +3,8 @@\n line 633d1d965d\n line 3a84e855cd\n line 75e70b2a5b\n-line 1bf38f8423\n+line eb40de8191\n+line 91e02d22e5\n line da39a3ee5e\n line 30ad3ae64a\n line 893a17efb9\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "docs/a b (c)/part3.py",
+     "old_path": "docs/a b (c)/part3.py",
+     "a_mode": "100644",
+     "b_mode": "100644",
+     "new_file": false,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- /dev/null\n+++ b/src/part4.py\n@@ -0,0 +1,65 @@\n+line 901e487e20\n+line da39a3ee5e\n+line b332cae55b\n+line 225db626da\n+line f27ccfd81c\n+line 409020dbb9\n+line 5757795d86\n+line 61c01096aa\n+line 83d8e9e427\n+line da39a3ee5e\n+line 8f97b0412c\n+line b5a2143017\n+line da39a3ee5e\n+line 60f84c1628\n+line 3a8608c7e3\n+line d009c0f1dc\n+line 2f348d206d\n+line 4ff447b8ef\n+line da39a3ee5e\n+line da39a3ee5e\n+line 3123837a73\n+line f03f332c12\n+line ed822a6a2c\n+line a3da3fb344\n+line 586ae2d0b1\n+line cd19c04265\n+line da39a3ee5e\n+line da39a3ee5e\n+line 65b414a74c\n+line 7b2b43c5e2\n+line d35ad56290\n+line db342cc2ca\n+line e9a37c9b77\n+line 9994a224c9\n+line 25530237bf\n+line 31a7fe21f4\n+line 4fd366eff3\n+line 8b28ea6758\n+line 4a7773485f\n+line b0ca03c52a\n+line 7fe6d3ef97\n+line 47c607f1ca\n+line 0c6e8a0fa9\n+line 956dc55d0f\n+line c67d3d57a5\n+line dc3033d63f\n+line 6fc061621a\n+line a2637fc6cb\n+line 0b34c5c60f\n+line b3a6b39bf9\n+line c175c8a171\n+line d74b8ae711\n+line 6f14e6a850\n+line f426168592\n+line bd4320dab9\n+line d60b1c9af5\n+line 956dc55d0f\n+line c67d3d57a5\n+line cff904e80e\n+line bd44f14feb\n+line 7c1c185980\n+line da39a3ee5e\n+line da39a3ee5e\n+line 0de54afa8d\n+line 06eb8840f8\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part4.py",
+     "old_path": "src/part4.py",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- /dev/null\n+++ b/src/part5.sh\n@@ -0,0 +1,22 @@\n+line 71a2c29311\n+line 65539638d0\n+line 58722d5572\n+line f6c6a5f87c\n+line 0c9b23aef0\n+line ce165b44fe\n+line a433238382\n+line 0babd17f36\n+line f02677e356\n+line cb673c9e43\n+line eb37718f6d\n+line 23cae23259\n+line 40dae64c7d\n+line 378e4ac622\n+line 0973c37fd3\n+line ff3fed89b7\n+line 832e51be08\n+line 5f73b5938c\n+line 66650793d7\n+line b00f351860\n+line 7495358c4e\n+line bba2cf51d4\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part5.sh",
+     "old_path": "src/part5.sh",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    },
+    {
+     "diff": "--- /dev/null\n+++ b/src/part6.txt\n@@ -0,0 +1,14 @@\n+line e746eadbb8\n+line 9f8f0c08a4\n+line 53da0cf819\n+line eeb2d516fd\n+line bc1f289292\n+line 2acb0e40d3\n+line 3a58cbb9a2\n+line df5a698446\n+line 286bc781e3\n+line ca3128c05a\n+line d886ff1c72\n+line 6415c74a50\n+line 5f6b1e9a14\n+line d640c02190\n",
+     "collapsed": false,
+     "too_large": false,
+     "new_path": "src/part6.txt",
+     "old_path": "src/part6.txt",
+     "a_mode": "0",
+     "b_mode": "100644",
+     "new_file": true,
+     "renamed_file": false,
+     "deleted_file": false,
+     "generated_file": null
+    }
+   ],
+   "compare_timeout": false,
+   "compare_same_ref": false,
+   "web_url": "https://gitlab.example.org/acme/widgets/-/compare/4c81495eaee4164018ead8e37f4e08d6ae2102f1...ab602a752df86a98af3365ff16586f4578221966"
+  }
+ }
+]
