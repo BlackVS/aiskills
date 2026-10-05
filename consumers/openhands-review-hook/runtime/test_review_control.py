@@ -178,7 +178,9 @@ class PolicyTests(unittest.TestCase):
                     unread.append(None)  # open, nothing waiting
         server = HTTPServer(('127.0.0.1', 0), Peek)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-        body = b'{' + b' ' * (32 << 10) + b'}'  # more than the handler's read buffer takes with the headers
+        # more than the handler's read buffer takes with the headers (io.DEFAULT_BUFFER_SIZE), with a rest
+        # that stays within the drain's bound, whatever the Python's default buffer size
+        body = b'{' + b' ' * (io.DEFAULT_BUFFER_SIZE + review_control.MAX_DRAIN // 2) + b'}'
         def refused(headers):
             raw = socket.create_connection(('127.0.0.1', server.server_port), timeout=10)
             try:
