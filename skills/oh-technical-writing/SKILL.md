@@ -82,6 +82,10 @@ Do not use contrastive "not just X, but Y" constructions. State the full point d
 
 Shortness comes from removing low-value content, not from clipping sentences. Keep articles, verbs, and the words needed to express the mechanism clearly. Replace strings of abstract nouns with a concrete actor and action.
 
+## Persisted text
+
+These rules apply to the text you persist as much as to chat: what you send to a write tool (task fields, comments, documents, memories) and the Markdown you save. Shorten it by cutting, as "Cut without compressing" describes. Never shorten it by joining words, dropping grammar or writing slash-delimited fragments, even under time, token or context pressure, or after compaction. Code, identifiers, paths, hashes and quoted evidence stay exact. Check it with the "Final pass" below before you send it. Where aimem is installed, its `writing_rule` tool gives the full rule for persisted text, built on this guide.
+
 ## End only when a conclusion helps
 
 Add a bottom line only when the answer weighs a real decision. State the recommendation and the condition that would change it in one plain sentence.

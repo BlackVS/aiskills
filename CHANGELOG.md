@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.7] - 2026-10-05
+
+### Changed
+- oh-technical-writing: a short "Persisted text" section says the guide
+  applies equally to text sent to write tools and to saved Markdown. That text
+  is shortened by cutting, never by compressing, even under pressure or after
+  compaction, and code, identifiers, paths, hashes and quoted evidence stay
+  exact. Where aimem is installed, its `writing_rule` tool gives the full rule
+  for persisted text. The section points to "Cut without compressing" and
+  "Final pass" instead of restating them, and reads correctly without aimem
+  (#49).
+
 ## [1.31.6] - 2026-10-05
 
 ### Fixed
