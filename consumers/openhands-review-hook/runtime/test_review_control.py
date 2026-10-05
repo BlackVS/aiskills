@@ -571,6 +571,18 @@ class RunnerTests(unittest.TestCase):
                                           'review was posted'), reason)
         self.assertIn('watch read failed, the deadline has passed: owner/repo#1: TimeoutError', self.logs)
 
+    def test_the_deadline_always_takes_a_last_look(self):
+        # the comments read succeeds, the conversation read then fails, and the review is posted
+        # before the deadline: the last look finds it (#64 item 10)
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def canvas_down():
+            raise TimeoutError()
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_app=canvas_down, comment_after_calls=2)
+        self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)))
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_app=canvas_down)
+        self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
+
     def test_a_resumed_run_past_its_deadline_looks_at_the_comments(self):
         # the receiver restarted after the deadline: the watch never runs, the deadline still looks once
         late = self.record(deadline=time.time() - 60)
@@ -780,7 +792,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
     def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None,
-                  bot=None, reviewer='hands-bot', fail=None):
+                  bot=None, reviewer='hands-bot', fail=None, on_label=None):
         """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
         to its change's patch identity, or is an exception the identity lookup raises.
         `reviewer` is the login whose reviews the patch check trusts (`bot` the receiver's)."""
@@ -806,7 +818,11 @@ class RunnerTests(unittest.TestCase):
             return next(v for k, v in identities.items() if sha.startswith(k))
         with tempfile.TemporaryDirectory() as temp:
             prompt = Path(temp) / 'prompt'; prompt.write_text('model={model} label={label}')
-            runner = Runner(api, app, lambda *args: labels.append(args), lambda p: (p, p), fail or (lambda *args: failures.append(args)),
+            def set_label(*args):
+                if on_label:
+                    on_label()
+                labels.append(args)
+            runner = Runner(api, app, set_label, lambda p: (p, p), fail or (lambda *args: failures.append(args)),
                             log=logs.append, timeout=10, sleep=lambda _: None, llm_ref=lambda name: None,
                             problems=lambda s: {}, note=lambda *args: notes.append(args), change_identity=identity,
                             bot=bot, reviewer=reviewer)
@@ -832,6 +848,32 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn('[hands-bot review] reviewed at head', text, 'the note is never a review')
         self.assertEqual(labels[-2:], [('owner/repo', 1, 'hands-reviewing', False), ('owner/repo', 1, 'hands-reviewed', True)])
         self.assertIn(f'review not repeated: owner/repo#1 head={HEAD} patch unchanged since {old[:12]}', logs)
+
+    def test_a_posted_verdict_note_always_ends_the_request(self):
+        # the PR has been told no new review runs: a label swap that fails after the note never
+        # starts one (#64 item 11)
+        old = 'b' * 40
+        comments, same = [self.review_comment(old)], {old: 'same', HEAD: 'same'}
+        starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_label=self.raising_once(TimeoutError()))
+        self.assertEqual((starts, failures, len(notes)), ([], [], 1))
+        self.assertEqual(labels[-2:], [('owner/repo', 1, 'hands-reviewing', False), ('owner/repo', 1, 'hands-reviewed', True)],
+                         'a transient error is tried again')
+        self.assertIn(f'review not repeated: owner/repo#1 head={HEAD} patch unchanged since {old}', logs)
+        tries = []
+        def down():
+            tries.append(1); raise TimeoutError()
+        refused = self.raising_once(self.http_error(403))
+        def refused_once():
+            tries.append(1); refused()
+        for name, hook, error, attempts in (('the forge stays down', down, 'TimeoutError', 3),
+                                            ('a write refused for good', refused_once, 'HTTPError', 1)):
+            with self.subTest(name):
+                tries.clear()
+                starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_label=hook)
+                self.assertEqual((starts, failures, len(notes)), ([], [], 1), 'no review starts, no failure is reported')
+                self.assertEqual(len(tries), attempts, 'a transient error is tried three times in all, a refusal once')
+                self.assertIn(f'previous verdict stands, not labelled done: owner/repo#1: {error}', logs)
+                self.assertFalse(any(line.startswith('review not repeated') for line in logs))
 
     def test_a_request_is_reviewed_afresh_unless_the_newest_verdict_covers_the_same_patch(self):
         old, older = 'b' * 40, 'c' * 40

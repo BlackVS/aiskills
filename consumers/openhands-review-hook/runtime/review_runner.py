@@ -28,7 +28,7 @@ def transient(error):
 
 def retried(call, attempts=3, delay=1.0, sleep=time.sleep):
     """CALL's result, trying again after a transient error (1 s, then 2 s by default): for
-    reads only, since a write that timed out may still have happened."""
+    reads and idempotent writes only, since a write that timed out may still have happened."""
     for attempt in range(attempts):
         try:
             return call()
@@ -378,7 +378,8 @@ class Runner:
         """True when the newest review is of an earlier head whose change has the patch
         identity of the change at `head`: the review would be repeated on the same patch.
         Says so on the PR, names both heads and both identities, and labels the request done
-        without starting a conversation. The note is not a review: it never starts with the
+        without starting a conversation; once the note is posted the request ends, even if the
+        labels cannot be swapped (logged). The note is not a review: it never starts with the
         review marker line, so a delivery check cannot count it. A PR that moved off `head` or
         closed while the identities were compared fails the request as stale (True: handled),
         never completes it. Only reviews by the trusted reviewer login count, so a comment
@@ -411,13 +412,21 @@ class Runner:
             self.note(repo, num, f'patch unchanged since {old}; previous verdict stands ({verdict}). The change at head '
                                  f'{head} has patch identity {now}, the same as at the reviewed head {old} ({was}), so no '
                                  'new review was run. A fresh review on this head: add `review-this:<profile>`.')
-            self.set_label(repo, num, self.working, False)
-            self.set_label(repo, num, self.done, True)
-            self.log(f'review not repeated: {repo}#{num} head={head} patch unchanged since {old}')
-            return True
         except Exception as error:  # forge answers may carry details: the type only
             self.log(f'patch check skipped: {repo}#{num}: {type(error).__name__}')
             return self.failure_reported  # a failure it reported (even one that raised) ends the request
+        # The PR has been told no new review runs: from here the request ends whatever the forge
+        # does. Both label writes are idempotent, so a transient error is tried again.
+        def swap():
+            self.set_label(repo, num, self.working, False)
+            self.set_label(repo, num, self.done, True)
+        try:
+            retried(swap, sleep=self.sleep)
+        except Exception as error:
+            self.log(f'previous verdict stands, not labelled done: {repo}#{num}: {type(error).__name__}')
+            return True
+        self.log(f'review not repeated: {repo}#{num} head={head} patch unchanged since {old}')
+        return True
 
     def _watched(self, repo, num, read, what='watch read', then='retrying at the next poll'):
         """READ's answer, or MISSED after a transient error (logged as WHAT, then THEN). The
@@ -551,13 +560,11 @@ class Runner:
                                     'attempt': attempt, 'conversation': conv_id, 'started': started, 'deadline': ends})
             deadline = time.monotonic() + max(0.0, ends - time.time())
             posted = False  # a review is on the PR: the deadline must not call it missing
-            missed = True  # no successful look at the comments yet: the deadline looks once more
             comments_read = lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}')
             while time.monotonic() < deadline:
                 self.sleep(self.poll)
                 comments = self._watched(repo, num, comments_read)
-                missed = comments is MISSED
-                if missed:
+                if comments is MISSED:
                     continue
                 if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
                     posted = True
@@ -572,8 +579,7 @@ class Runner:
                     # The agent posts, then finishes: one fresh look at the comments before
                     # calling it a miss, so the next iteration can complete normally.
                     comments = self._watched(repo, num, comments_read)
-                    missed = comments is MISSED
-                    if missed:
+                    if comments is MISSED:
                         continue  # still finished at the next poll: looked at again then
                     if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
                         posted = True
@@ -611,7 +617,7 @@ class Runner:
                 self.fail(repo, num, reason + suffix)
                 return
             else:
-                if missed and not posted:  # never looked, or the last look failed: a review may be there
+                if not posted:  # one last look: a review may have been posted since the last read, or that read failed
                     comments = self._watched(repo, num, comments_read, then='the deadline has passed')
                     if comments is MISSED:  # unknown, not missing: never invite a second review blindly
                         self.fail(repo, num, f'the forge could not be reached at the {self.timeout // 60}-minute deadline '

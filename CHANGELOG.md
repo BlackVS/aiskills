@@ -9,6 +9,19 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.31.9] - 2026-10-05
+
+### Fixed
+- hands consumer: the watch always takes one last look at the PR comments at
+  its deadline unless a review was already seen. Before, it looked only when
+  the last comments read had failed, so a review posted after a good comments
+  read and a failed conversation read was reported as missing (#64 item 10).
+- hands consumer: once the "previous verdict stands" note is posted, the
+  request ends. A transient error in the label swap after the note is tried
+  again (three attempts in all), and a swap that still fails is logged. Before,
+  any error there started a full review on a PR just told that no new review
+  would run (#64 item 11).
+
 ## [1.31.8] - 2026-10-05
 
 ### Changed
