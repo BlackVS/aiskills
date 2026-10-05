@@ -274,7 +274,8 @@ class Runner:
                  llm_ref=profile_llm_ref, problems=settings_problems, runs=None, note=None,
                  change_identity=None, reviewer=None):
         self.api, self.app_api, self.set_label = api, app_api, set_label
-        self.profile_info, self.fail, self.log = profile_info, fail, log
+        self.profile_info, self.log = profile_info, log
+        self._report_failure, self.failure_reported = fail, False
         self.runs = runs  # a RunStore, or None to keep nothing across restarts
         self.note = note  # note(repo, num, text): a PR comment that is not a review, or None
         # change_identity(repo, base, head): the patch identity of the PR's change at `head`
@@ -291,18 +292,36 @@ class Runner:
         self.working, self.done = working, done
         self.timeout, self.poll, self.sleep = timeout, poll, sleep
 
+    def fail(self, repo, num, reason):
+        """Report the request as failed on the PR, attempted once per request: it is marked
+        first, so a report whose comment was posted before something raised never gets a
+        second one, whichever path calls this again. A report that raises is logged as
+        possibly missing from the PR, then the error goes on as before."""
+        if self.failure_reported:
+            self.log(f'failure already reported, not again: {repo}#{num}')
+            return
+        self.failure_reported = True
+        try:
+            self._report_failure(repo, num, reason)
+        except Exception as error:
+            self.log(f'failure report raised, may not be on the PR: {repo}#{num}: {type(error).__name__}')
+            raise
+
     def run(self, repo, num, title, label, selected, prompt_file, workspaces, resume=None):
         """One review. `resume` is a record from the RunStore: the conversation
         it names is watched instead of a new one being started."""
+        self.failure_reported = False
         try:
             self._run(repo, num, title, label, selected, prompt_file, workspaces, resume)
         except Exception as error:
             # Provider/API errors may contain credentials or operator details.
             self.log(f'review failed: {repo}#{num}: {type(error).__name__}')
+            if self.failure_reported:  # already said on the PR: never a second failure comment
+                return
             try:
                 self.fail(repo, num, 'review service could not complete the request; inspect the service locally')
-            except Exception as failed:  # the forge that failed may fail the report too: never kill the thread
-                self.log(f'failure not reported: {repo}#{num}: {type(failed).__name__}')
+            except Exception:  # the forge that failed may fail the report too (fail() logged it): never kill the thread
+                pass
         finally:
             if self.runs:
                 self.runs.clear(repo, num)
@@ -311,12 +330,14 @@ class Runner:
         self.run(record['repo'], record['num'], record.get('title', ''), record['label'],
                  record['profile'], prompt_file, workspaces, resume=record)
 
-    def _complete(self, repo, num, head, profile, conv_id=None, switch=None):
+    def _complete(self, repo, num, head, profile, conv_id=None, switch=None, last=False):
         """Label a posted review done; True once handled. False when the forge could not be
         reached for it (a transient error, logged): the watch tries again at the next poll, so
         a review that is on the PR is never failed for a brief outage. Both label writes are
-        idempotent: the removal is guarded by a read of the labels, and adding is a set union."""
-        current = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/pulls/{num}'))
+        idempotent: the removal is guarded by a read of the labels, and adding is a set union.
+        LAST: the try at the deadline, after which nothing is tried again."""
+        then = 'the deadline has passed' if last else 'retrying at the next poll'
+        current = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/pulls/{num}'), then=then)
         if current is MISSED:
             return False
         if current.get('state') != 'open' or current['head']['sha'] != head:
@@ -325,7 +346,7 @@ class Runner:
         def swap():
             self.set_label(repo, num, self.working, False)
             self.set_label(repo, num, self.done, True)
-        if self._watched(repo, num, swap, 'label swap') is MISSED:
+        if self._watched(repo, num, swap, 'label swap', then) is MISSED:
             return False
         self.log(f'review done: {repo}#{num} profile={profile}')
         if switch and conv_id:
@@ -396,18 +417,18 @@ class Runner:
             return True
         except Exception as error:  # forge answers may carry details: the type only
             self.log(f'patch check skipped: {repo}#{num}: {type(error).__name__}')
-            return False
+            return self.failure_reported  # a failure it reported (even one that raised) ends the request
 
-    def _watched(self, repo, num, read, what='watch read'):
-        """READ's answer, or MISSED after a transient error (logged as WHAT). The conversation
-        runs on whether or not one call reaches the forge or Canvas, so the watch tries again
-        at the next poll; only its deadline ends it. Any other error is raised."""
+    def _watched(self, repo, num, read, what='watch read', then='retrying at the next poll'):
+        """READ's answer, or MISSED after a transient error (logged as WHAT, then THEN). The
+        conversation runs on whether or not one call reaches the forge or Canvas, so the watch
+        tries again at the next poll; only its deadline ends it. Any other error is raised."""
         try:
             return read()
         except Exception as error:
             if not transient(error):
                 raise
-            self.log(f'{what} failed, retrying at the next poll: {repo}#{num}: {type(error).__name__}')
+            self.log(f'{what} failed, {then}: {repo}#{num}: {type(error).__name__}')
             return MISSED
 
     def _start(self, repo, num, label, selected):
@@ -530,10 +551,13 @@ class Runner:
                                     'attempt': attempt, 'conversation': conv_id, 'started': started, 'deadline': ends})
             deadline = time.monotonic() + max(0.0, ends - time.time())
             posted = False  # a review is on the PR: the deadline must not call it missing
+            missed = True  # no successful look at the comments yet: the deadline looks once more
+            comments_read = lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}')
             while time.monotonic() < deadline:
                 self.sleep(self.poll)
-                comments = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}'))
-                if comments is MISSED:
+                comments = self._watched(repo, num, comments_read)
+                missed = comments is MISSED
+                if missed:
                     continue
                 if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
                     posted = True
@@ -547,8 +571,9 @@ class Runner:
                 if state == 'finished':
                     # The agent posts, then finishes: one fresh look at the comments before
                     # calling it a miss, so the next iteration can complete normally.
-                    comments = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}'))
-                    if comments is MISSED:
+                    comments = self._watched(repo, num, comments_read)
+                    missed = comments is MISSED
+                    if missed:
                         continue  # still finished at the next poll: looked at again then
                     if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
                         posted = True
@@ -586,8 +611,16 @@ class Runner:
                 self.fail(repo, num, reason + suffix)
                 return
             else:
+                if missed and not posted:  # never looked, or the last look failed: a review may be there
+                    comments = self._watched(repo, num, comments_read, then='the deadline has passed')
+                    if comments is MISSED:  # unknown, not missing: never invite a second review blindly
+                        self.fail(repo, num, f'the forge could not be reached at the {self.timeout // 60}-minute deadline '
+                                             'to see whether the review was posted; look at the pull request before '
+                                             'requesting another review')
+                        return
+                    posted = any(valid_review(c, self.marker, head, self.bot) for c in comments or [])
                 if posted:  # the forge kept failing the label swap: one last try, then say what happened
-                    if self._complete(repo, num, head, profile, conv_id, switch):
+                    if self._complete(repo, num, head, profile, conv_id, switch, last=True):
                         return
                     # Not a failure: the review stands. A note (no retry advice, never a review), not fail().
                     self.log(f'review posted, not labelled done: {repo}#{num} the forge was unreachable until the deadline')

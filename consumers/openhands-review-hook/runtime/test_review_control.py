@@ -490,6 +490,73 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)), 'the last try at the deadline completes it')
         # with nothing posted, the deadline still says "no review posted": test_timeout_does_not_retry
 
+    def test_a_missed_last_look_is_taken_again_at_the_deadline(self):
+        # one watch iteration whose comment read fails, then the deadline (#64 item 2)
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        down = TimeoutError('The read operation timed out')
+        # the review was posted during the outage: the look at the deadline finds it and completes
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_comments=self.raising_at(1, down),
+                                                comment_after_calls=2)
+        self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)))
+        # nothing posted: the look at the deadline says so, as before
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_comments=self.raising_at(1, down))
+        self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
+        # the forge is still down at the deadline: unknown, not missing
+        def always_down():
+            raise down
+        starts, labels, failures = self.execute(quota=False, clock=clock(), on_comments=always_down)
+        [(_, _, reason)] = failures
+        self.assertTrue(reason.startswith('the forge could not be reached at the 0-minute deadline to see whether the '
+                                          'review was posted'), reason)
+        self.assertIn('watch read failed, the deadline has passed: owner/repo#1: TimeoutError', self.logs)
+
+    def test_a_resumed_run_past_its_deadline_looks_at_the_comments(self):
+        # the receiver restarted after the deadline: the watch never runs, the deadline still looks once
+        late = self.record(deadline=time.time() - 60)
+        starts, labels, failures = self.execute(quota=False, completed_first=True, resume=late)
+        self.assertEqual((starts, failures, labels[-1]), ([], [], ('owner/repo', 1, 'hands-reviewed', True)),
+                         'the review posted while the receiver was down is labelled done')
+        starts, labels, failures = self.execute(quota=False, resume=self.record(deadline=time.time() - 60))
+        self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
+
+    def test_a_failure_is_reported_once(self):
+        # the report's comment is posted, then something raises: no second "could not complete" (#64 item 6)
+        failures = []
+        def fail(*args):
+            failures.append(args)
+            raise ValueError('after the comment was posted')
+        self.execute(quota=False, finished=True, fail=fail)  # "finished without posting", then the raise
+        self.assertEqual([f[-1].split(' (')[0] for f in failures], ['the review conversation finished without posting a review'])
+        self.assertIn('review failed: owner/repo#1: ValueError', self.logs)
+        self.assertIn('failure report raised, may not be on the PR: owner/repo#1: ValueError', self.logs)
+
+    def test_a_report_that_fails_before_the_pr_says_so_in_the_log(self):
+        # the forge is still down at the deadline, and the report itself fails: one attempt, and
+        # the log says the report may not be on the PR (so the operator looks)
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def down():
+            raise TimeoutError()
+        attempts = []
+        def fail(*args):
+            attempts.append(args); raise TimeoutError()
+        self.execute(quota=False, clock=clock(), on_comments=down, fail=fail)
+        self.assertEqual(len(attempts), 1, 'attempted once')
+        self.assertEqual(self.logs[-2:], ['failure report raised, may not be on the PR: owner/repo#1: TimeoutError',
+                                          'review failed: owner/repo#1: TimeoutError'])
+
+    def test_the_last_swap_at_the_deadline_says_it_is_the_last(self):
+        # no "retrying at the next poll" when there is no next poll (#64 item 8)
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def always_down():
+            raise TimeoutError()
+        self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
+        swaps = [line for line in self.logs if line.startswith('label swap failed')]
+        self.assertEqual(swaps, ['label swap failed, retrying at the next poll: owner/repo#1: TimeoutError',
+                                 'label swap failed, the deadline has passed: owner/repo#1: TimeoutError'])
+
     def test_a_label_swap_refused_for_good_still_fails(self):
         starts, labels, failures = self.execute(quota=False, completed_first=True, on_label=self.raising_at(1, self.http_error(403)))
         self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
@@ -506,7 +573,8 @@ class RunnerTests(unittest.TestCase):
             raise TimeoutError('The read operation timed out')  # the forge that failed is still down
         starts, labels, failures = self.execute(quota=False, on_comments=self.raising_once(self.http_error(404)),
                                                 comment_after_calls=2, fail=fail)  # returns: nothing raised
-        self.assertEqual(self.logs[-2:], ['review failed: owner/repo#1: HTTPError', 'failure not reported: owner/repo#1: TimeoutError'])
+        self.assertEqual(self.logs[-2:], ['review failed: owner/repo#1: HTTPError',
+                                          'failure report raised, may not be on the PR: owner/repo#1: TimeoutError'])
 
     def test_only_reads_are_retried_and_only_after_transient_errors(self):
         from review_runner import retried, transient
@@ -652,7 +720,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
     def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None,
-                  bot=None, reviewer='hands-bot'):
+                  bot=None, reviewer='hands-bot', fail=None):
         """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
         to its change's patch identity, or is an exception the identity lookup raises.
         `reviewer` is the login whose reviews the patch check trusts (`bot` the receiver's)."""
@@ -678,7 +746,7 @@ class RunnerTests(unittest.TestCase):
             return next(v for k, v in identities.items() if sha.startswith(k))
         with tempfile.TemporaryDirectory() as temp:
             prompt = Path(temp) / 'prompt'; prompt.write_text('model={model} label={label}')
-            runner = Runner(api, app, lambda *args: labels.append(args), lambda p: (p, p), lambda *args: failures.append(args),
+            runner = Runner(api, app, lambda *args: labels.append(args), lambda p: (p, p), fail or (lambda *args: failures.append(args)),
                             log=logs.append, timeout=10, sleep=lambda _: None, llm_ref=lambda name: None,
                             problems=lambda s: {}, note=lambda *args: notes.append(args), change_identity=identity,
                             bot=bot, reviewer=reviewer)
@@ -780,6 +848,28 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual([f[-1] for f in failures], ['the pull request changed or closed; request a fresh review'])
                 self.assertNotIn(('owner/repo', 1, 'hands-reviewed', True), labels)
 
+    def test_a_stale_report_in_the_patch_check_that_raises_ends_the_request(self):
+        # the PR moves during the comparison and the stale report raises: the patch check's own catch
+        # must not let the request run on into a second report or a conversation (#67's external review)
+        old, attempts = 'b' * 40, []
+        def fail(*args):
+            attempts.append(args); raise TimeoutError()
+        moved = {'state': 'open', 'head': {'sha': 'd' * 40}, 'base': {'ref': 'main'}}
+        starts, labels, failures, notes, logs, asked = self.unchanged([self.review_comment(old)], {old: 'same', HEAD: 'same'},
+                                                                      later=moved, fail=fail)
+        self.assertEqual([a[-1] for a in attempts], ['the pull request changed or closed; request a fresh review'])
+        self.assertEqual((starts, notes), ([], []))
+        self.assertIn('failure report raised, may not be on the PR: owner/repo#1: TimeoutError', logs)
+        self.assertNotIn('failure already reported, not again: owner/repo#1', logs, 'the request ended at the patch check')
+
+    def test_a_second_failure_report_is_never_sent(self):
+        from review_runner import Runner
+        reports, logs = [], []
+        runner = Runner(None, None, None, None, lambda *args: reports.append(args), log=logs.append)
+        runner.fail('owner/repo', 1, 'first'); runner.fail('owner/repo', 1, 'second')
+        self.assertEqual([r[-1] for r in reports], ['first'])
+        self.assertIn('failure already reported, not again: owner/repo#1', logs)
+
     def test_patch_identity_is_verify_deliverys(self):
         import importlib.util
         from review_runner import patch_identity
@@ -836,9 +926,10 @@ class RunnerTests(unittest.TestCase):
         starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record(head='c' * 40))
         self.assertEqual(starts, []); self.assertFalse(labels)  # the PR moved during the restart
         self.assertIn('changed or closed', failures[-1][2])
+        # the recorded deadline had passed: no watch, but the deadline still looks once (1.31.5), so the
+        # review posted meanwhile is labelled done (test_a_resumed_run_past_its_deadline_looks_at_the_comments)
         starts, labels, failures = self.execute(quota=False, completed_first=True, resume=self.record(deadline=time.time() - 1))
-        self.assertEqual(starts, []); self.assertFalse(labels)  # the recorded deadline had passed
-        self.assertIn('no review posted within', failures[-1][2])
+        self.assertEqual((starts, failures, labels[-1]), ([], [], ('owner/repo', 1, 'hands-reviewed', True)))
         # the recorded deadline rules, not the restarted service's WATCH_MINUTES: a timeout of 0 here still watches
         starts, labels, failures = self.execute(quota=False, completed_first=True, timeout=True, resume=self.record(deadline=time.time() + 100))
         self.assertEqual(starts, []); self.assertTrue(labels); self.assertFalse(failures)
