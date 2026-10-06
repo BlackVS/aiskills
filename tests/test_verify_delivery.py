@@ -783,20 +783,49 @@ class Verify:
         code, doc = self.run_vd()
         self.assertIn("name the full 40-digit SHA", self.check(doc, "tree_equality")["detail"])
 
+    def local_review(self):
+        return next(c for c in self.comments() if c["body"].startswith("[oh-code-review"))
+
     def test_a_short_sha_at_the_final_head_needs_the_full_sha(self):
         # a commit made to share the reviewed head's abbreviation, force-pushed after the review,
-        # would inherit it (#75): this forge keeps no list of heads to rule that out
-        local = next(c for c in self.comments() if c["body"].startswith("[oh-code-review"))
-        local["body"] = local["body"].replace(HEAD, HEAD[:7])
+        # would inherit it (#75): this forge keeps no list of heads to rule that out, so such a
+        # review of the head is never READY
+        self.local_review()["body"] = self.local_review()["body"].replace(HEAD, HEAD[:7])
         code, doc = self.run_vd()
-        same = self.check(doc, "tree_equality")
-        self.assertEqual((code, same["status"]), (3, "failed"))
-        self.assertIn("name the full 40-digit SHA", same["detail"])
+        reviewed = self.check(doc, "reviewed_head")
+        local = {r["review"]: r for r in reviewed["reviews"]}["local"]
+        self.assertEqual((code, reviewed["status"], local["status"], local["at_final_head"]), (3, "failed", "not_ready", True))
+        self.assertIn("name the full 40-digit SHA, or pass --accept-short-head-sha", local["detail"])
         self.assertNotIn("evidence", doc)
-        self.assertEqual(self.check(doc, "reviewed_head")["short_head_sha"], "checked")
+        self.assertEqual(reviewed["short_head_sha"], "checked")
         code, doc = self.run_vd("--accept-short-head-sha")  # reviews posted before 1.32.1, on request
         self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
         self.assertEqual(self.check(doc, "reviewed_head")["short_head_sha"], "accepted")
+
+    def test_a_newer_short_sha_review_of_the_head_still_supersedes(self):
+        # READY at the full head, then RETURN_TO_IMPLEMENTATION naming the head by a short SHA:
+        # the newer verdict stands, as it did before #75
+        full = self.local_review()
+        later = (vd.when(full["created_at"]) + datetime.timedelta(minutes=5)).isoformat()
+        self.comments().append({**full, "id": 77, "created_at": later, "updated_at": later,
+                                "body": full["body"].replace("READY_FOR_HUMAN_MERGE", "RETURN_TO_IMPLEMENTATION")
+                                .replace(HEAD, HEAD[:7])})
+        code, doc = self.run_vd()
+        local = {r["review"]: r for r in self.check(doc, "reviewed_head")["reviews"]}["local"]
+        self.assertEqual((code, local["status"], local["sha"]), (3, "not_ready", HEAD[:7]))
+        self.comments()[-1]["body"] = full["body"].replace(HEAD, HEAD[:7])  # and a newer short READY cannot count
+        code, doc = self.run_vd()
+        self.assertEqual(code, 3)
+
+    def test_the_opt_in_covers_only_an_abbreviation_of_the_final_head(self):
+        # --accept-short-head-sha never makes a review of another head count for the final one
+        self.reviewed_only_at_older_head()
+        c = next(c for c in self.comments() if OLD in c["body"])
+        c["body"] = c["body"].replace(OLD, OLD[:7])
+        code, doc = self.run_vd("--accept-short-head-sha")
+        external = {r["review"]: r for r in self.check(doc, "reviewed_head")["reviews"]}["external"]
+        self.assertEqual((code, external["at_final_head"], external["sha"]), (3, False, OLD[:7]))
+        self.assertIn("name the full 40-digit SHA", self.check(doc, "tree_equality")["detail"])
 
     # ---- who posted the review
     def external_at_head(self):
@@ -1279,24 +1308,30 @@ class GitLab(unittest.TestCase):
         head = self.mr["sha"]
         note = self.fake.body("/merge_requests/3/notes")[0]
         note["body"] = note["body"].replace(head, head[:8])
-        code, doc = self.run_vd()  # no versions list: not taken for the head
-        self.assertEqual(code, 3)
-        self.assertIn("keeps no list of a pull request's past heads", self.check(doc, "tree_equality")["detail"])
+        def external(doc):
+            return {r["review"]: r for r in self.check(doc, "reviewed_head")["reviews"]}["external"]
+        code, doc = self.run_vd()  # no versions list: a review of the head that cannot count
+        self.assertEqual((code, external(doc)["status"]), (3, "not_ready"))
+        self.assertIn("abbreviated SHA", external(doc)["detail"])
         versions, commits = [{"id": 1, "head_commit_sha": head}], [{"id": head}]
         self.fake.overrides["/merge_requests/3/versions"] = lambda req: Response(200, json.dumps(versions).encode())
         self.fake.overrides["/merge_requests/3/commits"] = lambda req: Response(200, json.dumps(commits).encode())
         code, doc = self.run_vd()
         self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
-        self.assertTrue(self.check(doc, "reviewed_head")["reviews"][1]["at_final_head"])
+        self.assertEqual((external(doc)["status"], external(doc)["at_final_head"]), ("ready", True))
         versions.insert(0, {"id": 0, "head_commit_sha": head[:8] + "2" * 32})  # the reviewed head, pushed away
         code, doc = self.run_vd()
-        self.assertEqual(code, 3, "the head is not the only commit with that abbreviation")
+        self.assertEqual((code, external(doc)["status"]), (3, "not_ready"), "the head is not the only commit with that abbreviation")
         self.fake.overrides["/merge_requests/3/versions"] = lambda req: (_ for _ in ()).throw(
             urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, io.BytesIO(b"")))
-        code, doc = self.run_vd()  # the heads cannot be read now: pending, with every check still reported
-        self.assertEqual((code, doc["verdict"]), (4, "pending"))
+        code, doc = self.run_vd()  # the heads cannot be read now: pending (retry), every check still reported
+        self.assertEqual((code, external(doc)["status"], self.check(doc, "reviewed_head")["status"]), (4, "pending", "pending"),
+                         "the unsatisfiable local review is not needed for --required-reviews 1")
+        self.assertIn("could not be read now", external(doc)["detail"])
+        note["body"] = note["body"].replace("READY_FOR_HUMAN_MERGE", "RETURN_TO_IMPLEMENTATION")
+        code, doc = self.run_vd()  # a retry cannot make it READY: failed, not pending
+        self.assertEqual((code, external(doc)["status"]), (3, "not_ready"))
         self.assertEqual([c["name"] for c in doc["checks"]], ["reviewed_head", "merge", "tree_equality", "post_merge_ci"])
-        self.assertIn("heads could not be read", self.check(doc, "tree_equality")["detail"])
 
     def test_a_system_note_never_counts_as_a_review(self):
         # GitLab writes system notes itself; one shaped like a review is still not a review

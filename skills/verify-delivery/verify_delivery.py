@@ -453,8 +453,9 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
     the merged change to be that head's change (a base-only update keeps a review valid).
     The author is checked first: an untrusted comment never counts and never displaces one.
     A review names the final head by its full SHA, or by an abbreviation SHORT_AT_HEAD(sha)
-    accepts (#75); any other abbreviation the head starts with counts as naming another head,
-    so a commit made to share it never inherits the review."""
+    accepts (#75). Any other abbreviation the head starts with is a review of the head that is
+    never READY: a commit made to share it never inherits a review, and a newer such review still
+    supersedes an earlier one of the head."""
     authors = authors or {}
     reviews, ignored = [], []
     for name, pattern in specs:
@@ -478,13 +479,18 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
                 ignored.append({"review": name, "reason": "posted after the merge", "sha": sha, "url": c["url"]})
             elif when(merged_at) and when(c.get("updated_at")) and when(c["updated_at"]) > when(merged_at):
                 ignored.append({"review": name, "reason": "edited after the merge", "sha": sha, "url": c["url"]})
-            elif sha == head or (head.startswith(sha) and short_at_head and short_at_head(sha)):
-                latest = (c, sha)
+            elif sha == head:
+                latest = (c, sha, False)
+            elif head.startswith(sha):
+                known = short_at_head(sha) if short_at_head else False
+                # True: it names the head; False: a review of the head that cannot count (never READY,
+                # and it still supersedes); None: whether it can could not be read now
+                latest = (c, sha, False if known else "unreadable" if known is None else True)
             else:
                 older.append((c, sha))
         at_final = latest is not None
         if not at_final and older:
-            latest = older.pop()
+            latest = (*older.pop(), False)
         for c, sha in older:
             ignored.append({"review": name, "sha": sha, "url": c["url"],
                             "reason": "names an older or different head" if at_final else "superseded by a later review"})
@@ -497,10 +503,18 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
             reviews.append({"review": name, "status": "missing", "author_rule": rule,
                             "detail": "no review by a trusted author names a head of this pull request"})
             continue
-        c, sha = latest
-        ready = bool(verdict_re.search(c["body"] or ""))
-        reviews.append({"review": name, "status": "ready" if ready else "not_ready", "author_rule": rule, "sha": sha,
-                        "at_final_head": at_final, "url": c["url"], "author": c["author"], "created_at": c["created_at"]})
+        c, sha, abbreviated = latest
+        ready = bool(verdict_re.search(c["body"] or "")) and not abbreviated
+        entry = {"review": name, "status": "ready" if ready else "not_ready", "author_rule": rule, "sha": sha,
+                 "at_final_head": at_final, "url": c["url"], "author": c["author"], "created_at": c["created_at"]}
+        if abbreviated == "unreadable" and verdict_re.search(c["body"] or ""):  # READY if it names the head
+            entry.update(status="pending", detail=f"names the final head by the abbreviated SHA {sha}, and the pull "
+                                                  "request's heads could not be read now to tell it apart (retry later)")
+        elif abbreviated is True or abbreviated == "unreadable":
+            entry["detail"] = (f"names the final head by the abbreviated SHA {sha}, which a commit made to share it "
+                               "could carry as well: name the full 40-digit SHA, or pass --accept-short-head-sha "
+                               "for a review posted before 1.32.1")
+        reviews.append(entry)
     ready = sum(r["status"] == "ready" for r in reviews)
     return ready, reviews, ignored
 
@@ -596,8 +610,8 @@ def verify(args, forge, kind, number):
             return True
         try:
             listed = heads()
-        except Unavailable:  # taken as another head: the content check then says the heads are unreadable
-            return False
+        except Unavailable:
+            return None  # unknown for now: the review is pending
         if listed is None:
             return False
         versions, everything = listed
@@ -606,8 +620,9 @@ def verify(args, forge, kind, number):
                                             kind, args.review_authors, args.trust_any_author,
                                             short_at_head)
     unsatisfiable = any(r["status"] == "unsatisfiable" for r in reviews)
-    status = ("passed" if ready >= args.required_reviews else "failed" if unsatisfiable
-              else "pending" if not merged and pr.get("state") == "open" else "failed")
+    waiting = sum(r["status"] == "pending" for r in reviews)  # could still turn READY on a retry
+    status = ("passed" if ready >= args.required_reviews else "pending" if ready + waiting >= args.required_reviews
+              else "failed" if unsatisfiable else "pending" if not merged and pr.get("state") == "open" else "failed")
     reviewed_heads = sorted({head if r["at_final_head"] else r["sha"] for r in reviews if r["status"] == "ready"})
     checks.append({"name": "reviewed_head", "status": status, "head_sha": head, "head_url": head_url,
                    "reviewed_heads": reviewed_heads,

@@ -16,8 +16,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
   head by its full SHA (#75). Before, any abbreviation the head started with
   did, so a commit made to share it and force-pushed after the review
   inherited the review. On GitLab an abbreviation still counts when the
-  versions show the head as the one commit sharing it. Elsewhere it is taken
-  as naming another head, and the content check asks for the full SHA.
+  versions show the head as the one commit sharing it. Elsewhere such a review
+  of the head is never READY, and it still supersedes an earlier review of the
+  head (a newer RETURN_TO_IMPLEMENTATION is never hidden). A READY one is
+  pending while GitLab's heads cannot be read.
   `--accept-short-head-sha` (new) accepts it anyway, for reviews posted before
   1.32.1, and the output reports `short_head_sha`. The test fixtures' local
   review names the head in full.

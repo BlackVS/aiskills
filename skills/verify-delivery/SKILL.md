@@ -33,11 +33,15 @@ All four must pass for the verdict `confirmed`:
    there a review of an older head fails: re-review at the final head. `reviewed_heads` lists the heads the READY reviews name.
    A review counts for the final head when it names it by its full SHA. An
    abbreviation the head starts with counts only on GitLab, where the
-   versions show the head as the one commit sharing it; elsewhere a commit
+   versions show the head as the one commit sharing it. Elsewhere a commit
    made to share it, force-pushed after the review, would inherit the review,
-   so it is taken as naming another head (and fails as below).
-   `--accept-short-head-sha` accepts it anyway, for reviews posted before the
-   formats asked for the full SHA; the output reports `short_head_sha`.
+   so such a review of the head is never READY (`not_ready`, with the reason).
+   As the latest review of the head it still supersedes an earlier one, so a
+   newer RETURN_TO_IMPLEMENTATION is never hidden by an older READY. When
+   GitLab's heads cannot be read, a READY one is `pending` (the check is
+   pending while such reviews could still make up the required count). `--accept-short-head-sha`
+   accepts it anyway, for reviews posted before the formats asked for the
+   full SHA; the output reports `short_head_sha`.
    An older head must be named by its full 40-digit SHA on GitHub and Gitea:
    an abbreviated one would resolve to a branch or tag of that name first,
    and their commit lists lose a head that was force-pushed away, so a commit
