@@ -18,7 +18,7 @@ review-this  →  hands-reviewing  →  hands-reviewed
 2. hands swaps it to **`hands-reviewing`** when it picks the PR up (seconds
    on a webhook-driven site, up to a couple of minutes on a polling one).
 3. hands posts ONE comment starting with `[hands-bot review] reviewed at head
-   <sha>` and lands **`hands-reviewed`**. The comment ends with a signature
+   <full-sha>` and lands **`hands-reviewed`**. The comment ends with a signature
    line naming the model that produced it.
 
 Failures are never silent: if the review could not run, a

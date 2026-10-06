@@ -31,6 +31,15 @@ All four must pass for the verdict `confirmed`:
    from the compare API with `?output=diff`, which Gitea serves from 1.27; an
    older Gitea answers JSON (or, before 1.22, has no compare endpoint), and
    there a review of an older head fails: re-review at the final head. `reviewed_heads` lists the heads the READY reviews name.
+   An older head must be named by its full 40-digit SHA on GitHub and Gitea:
+   an abbreviated one would resolve to a branch or tag of that name first,
+   and their commit lists lose a head that was force-pushed away, so a commit
+   made to share the abbreviation could stand alone there. The check then
+   fails: name the full SHA, or re-review at the final head. On GitLab an
+   abbreviated SHA is expanded to the head of a version (GitLab keeps one for
+   each push while the merge request is open, a force-push included), and
+   only when nothing else among the versions and the commits matches it; no
+   match, more than one, or no versions list fails the same way.
    On GitLab the comments are the merge request's notes; system notes are
    skipped, and approvals carry no text, so they are not reviews. Resolving a
    resolvable note after the merge moves its `updated_at`, so it then reads as
@@ -39,7 +48,7 @@ All four must pass for the verdict `confirmed`:
    trusts**; the author is checked first, so an untrusted comment never
    counts and never displaces a trusted one, even when it is newer. By default
    two reviews are required, both in the `oh-code-review` comment format
-   (`[<reviewer> review] reviewed at head <sha>`, then `VERDICT` /
+   (`[<reviewer> review] reviewed at head <full-sha>`, then `VERDICT` /
    `READY_FOR_HUMAN_MERGE`):
    - `local`: the pre-merge `oh-code-review` review at level high (or max,
      ultra);
@@ -66,7 +75,8 @@ All four must pass for the verdict `confirmed`:
    token's account is a bot). That flag needs a token; without it the type is
    `unknown`, which is not a person. GitLab's merged commit is the merge
    commit, else the squash commit (a fast-forward squash), else the head itself
-   (a fast-forward merge); `merged_as` says which.
+   (a fast-forward merge, also when GitLab reports the head as the merge
+   commit); `merged_as` says which.
    `--merger NAME` restricts who may merge; `--allow-bot-merge` accepts bots.
 3. **Merged content = reviewed content** (the `tree_equality` check), for
    every head a READY review names (`reviewed` lists each with its result).

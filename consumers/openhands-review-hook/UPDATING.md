@@ -71,6 +71,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.32.1 | The prompt asks for the head's full 40-digit SHA in the review marker line (the receiver already appended that ask), so `verify-delivery` can carry a review of an older head over a base-only update on GitHub and Gitea. Re-render the prompt (`render.py`) and install it; no service restart. |
 | 1.31.9 | At the watch deadline, the comments are always looked at once more unless a review was already seen, and a posted "previous verdict stands" note always ends the request, even when the label swap after it fails. Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.31.6 | `review-control` reads the rest of a refused request body (at most 64 KiB or 1 s) before closing, so a client does not lose the refusal to a connection reset (for a body within that bound). Deploy `review_control.py` and restart `review-control` while idle. |
 | 1.31.5 | At the watch deadline, a review hidden by a forge outage is looked for once more instead of being reported as missing, and a request never gets a second failure comment. Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |

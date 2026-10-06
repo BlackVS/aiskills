@@ -9,6 +9,30 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.32.1] - 2026-10-05
+
+### Fixed
+- verify-delivery: a review of an older head that names an abbreviated SHA no
+  longer has that SHA sent to the forge as it is (#73). Git resolves a ref
+  before an abbreviated object name, so a branch or tag of that name took its
+  place. On GitHub and Gitea such a review now fails the content check: name
+  the older head by its full 40-digit SHA, or re-review at the final head.
+  Their commit lists lose a head that was force-pushed away, so a commit made
+  to share the abbreviation could not be told apart there. On GitLab the
+  abbreviation is expanded to the head of a version (one per push while the
+  merge request is open), and only when nothing else among the versions and
+  the commits matches it. No match, more than one, or no versions list
+  fails. A full SHA is unchanged.
+- verify-delivery docs: a GitLab merge commit equal to the head reads as a
+  fast-forward.
+
+### Changed
+- oh-code-review and the hands review prompt: the review comment's first line
+  names the head by its full 40-digit SHA (`reviewed at head <full-sha>`), so
+  `verify-delivery` can carry a review of an older head over a base-only
+  update on every forge. The hands receiver already asked for the full head;
+  the prompt said "short" (re-render it, see `UPDATING.md`).
+
 ## [1.32.0] - 2026-10-05
 
 ### Added

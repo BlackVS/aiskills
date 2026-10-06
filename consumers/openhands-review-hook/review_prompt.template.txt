@@ -43,7 +43,7 @@ Steps:
 5) Post it as ONE comment on PR {num}: write the review to review.md, then run
    @@POST_COMMAND@@
    The comment must START with:
-   {marker} reviewed at head <short-sha-of-pr-head>
+   {marker} reviewed at head <full-40-digit-sha-of-pr-head>
    When stating any wall-clock time, always append "UTC" - your clock and all
    forge timestamps are UTC, but readers are in another timezone.
    Never print any token, and never include it in comments, logs or files.
