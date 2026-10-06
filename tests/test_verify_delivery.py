@@ -1328,9 +1328,13 @@ class GitLab(unittest.TestCase):
         self.assertEqual((code, external(doc)["status"], self.check(doc, "reviewed_head")["status"]), (4, "pending", "pending"),
                          "the unsatisfiable local review is not needed for --required-reviews 1")
         self.assertIn("could not be read now", external(doc)["detail"])
+        code, doc = self.run_vd("--required-reviews", "2", "--review-author", "local=maintainer")
+        self.assertEqual((code, self.check(doc, "reviewed_head")["status"]), (3, "failed"),
+                         "a pending review that cannot make up the count is no reason to wait")
         note["body"] = note["body"].replace("READY_FOR_HUMAN_MERGE", "RETURN_TO_IMPLEMENTATION")
         code, doc = self.run_vd()  # a retry cannot make it READY: failed, not pending
         self.assertEqual((code, external(doc)["status"]), (3, "not_ready"))
+        self.assertNotIn("detail", external(doc), "the opt-in would not change a RETURN_TO_IMPLEMENTATION")
         self.assertEqual([c["name"] for c in doc["checks"]], ["reviewed_head", "merge", "tree_equality", "post_merge_ci"])
 
     def test_a_system_note_never_counts_as_a_review(self):

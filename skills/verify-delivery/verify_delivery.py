@@ -510,7 +510,7 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
         if abbreviated == "unreadable" and verdict_re.search(c["body"] or ""):  # READY if it names the head
             entry.update(status="pending", detail=f"names the final head by the abbreviated SHA {sha}, and the pull "
                                                   "request's heads could not be read now to tell it apart (retry later)")
-        elif abbreviated is True or abbreviated == "unreadable":
+        elif (abbreviated is True or abbreviated == "unreadable") and verdict_re.search(c["body"] or ""):
             entry["detail"] = (f"names the final head by the abbreviated SHA {sha}, which a commit made to share it "
                                "could carry as well: name the full 40-digit SHA, or pass --accept-short-head-sha "
                                "for a review posted before 1.32.1")
