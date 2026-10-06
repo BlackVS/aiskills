@@ -227,7 +227,7 @@ class Verify:
     def test_custom_review_pattern(self):
         self.comments().append({"id": 5, "user": {"login": "qa"}, "created_at": "2026-09-27T13:20:00Z",
                                 "html_url": "https://example.invalid/c/5",
-                                "body": f"QA passed at {HEAD[:10]}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n"})
+                                "body": f"QA passed at {HEAD}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n"})
         code, doc = self.run_vd("--review", r"qa=QA passed at (?P<sha>[0-9a-f]{7,40})", authors=["--review-author", "qa=qa"])
         self.assertEqual((code, doc["verdict"]), (0, "confirmed"))
         self.assertEqual([r["review"] for r in self.check(doc, "reviewed_head")["reviews"]], ["qa"])
@@ -783,6 +783,21 @@ class Verify:
         code, doc = self.run_vd()
         self.assertIn("name the full 40-digit SHA", self.check(doc, "tree_equality")["detail"])
 
+    def test_a_short_sha_at_the_final_head_needs_the_full_sha(self):
+        # a commit made to share the reviewed head's abbreviation, force-pushed after the review,
+        # would inherit it (#75): this forge keeps no list of heads to rule that out
+        local = next(c for c in self.comments() if c["body"].startswith("[oh-code-review"))
+        local["body"] = local["body"].replace(HEAD, HEAD[:7])
+        code, doc = self.run_vd()
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((code, same["status"]), (3, "failed"))
+        self.assertIn("name the full 40-digit SHA", same["detail"])
+        self.assertNotIn("evidence", doc)
+        self.assertEqual(self.check(doc, "reviewed_head")["short_head_sha"], "checked")
+        code, doc = self.run_vd("--accept-short-head-sha")  # reviews posted before 1.32.1, on request
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        self.assertEqual(self.check(doc, "reviewed_head")["short_head_sha"], "accepted")
+
     # ---- who posted the review
     def external_at_head(self):
         return next(c for c in self.comments() if c["body"].startswith("[example-bot") and HEAD in c["body"])
@@ -1258,6 +1273,30 @@ class GitLab(unittest.TestCase):
         code, doc = self.run_vd()
         self.assertEqual(code, 3)
         self.assertIn("matches more than one commit", self.check(doc, "tree_equality")["detail"])
+
+    def test_a_short_sha_at_the_final_head_counts_when_the_versions_make_it_unique(self):
+        self.load("fast_forward")
+        head = self.mr["sha"]
+        note = self.fake.body("/merge_requests/3/notes")[0]
+        note["body"] = note["body"].replace(head, head[:8])
+        code, doc = self.run_vd()  # no versions list: not taken for the head
+        self.assertEqual(code, 3)
+        self.assertIn("keeps no list of a pull request's past heads", self.check(doc, "tree_equality")["detail"])
+        versions, commits = [{"id": 1, "head_commit_sha": head}], [{"id": head}]
+        self.fake.overrides["/merge_requests/3/versions"] = lambda req: Response(200, json.dumps(versions).encode())
+        self.fake.overrides["/merge_requests/3/commits"] = lambda req: Response(200, json.dumps(commits).encode())
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        self.assertTrue(self.check(doc, "reviewed_head")["reviews"][1]["at_final_head"])
+        versions.insert(0, {"id": 0, "head_commit_sha": head[:8] + "2" * 32})  # the reviewed head, pushed away
+        code, doc = self.run_vd()
+        self.assertEqual(code, 3, "the head is not the only commit with that abbreviation")
+        self.fake.overrides["/merge_requests/3/versions"] = lambda req: (_ for _ in ()).throw(
+            urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, io.BytesIO(b"")))
+        code, doc = self.run_vd()  # the heads cannot be read now: pending, with every check still reported
+        self.assertEqual((code, doc["verdict"]), (4, "pending"))
+        self.assertEqual([c["name"] for c in doc["checks"]], ["reviewed_head", "merge", "tree_equality", "post_merge_ci"])
+        self.assertIn("heads could not be read", self.check(doc, "tree_equality")["detail"])
 
     def test_a_system_note_never_counts_as_a_review(self):
         # GitLab writes system notes itself; one shaped like a review is still not a review

@@ -842,18 +842,18 @@ class RunnerTests(unittest.TestCase):
 
     def test_a_request_on_an_unchanged_patch_keeps_the_previous_verdict(self):
         old = 'b' * 40
-        comments = [{'body': 'discussion'}, self.review_comment(old[:12], 'RETURN_TO_IMPLEMENTATION'), {'body': 'after it'}]
-        starts, labels, failures, notes, logs, asked = self.unchanged(comments, {old[:12]: 'same', HEAD: 'same'})
+        comments = [{'body': 'discussion'}, self.review_comment(old, 'RETURN_TO_IMPLEMENTATION'), {'body': 'after it'}]
+        starts, labels, failures, notes, logs, asked = self.unchanged(comments, {old: 'same', HEAD: 'same'})
         self.assertEqual(starts, [], 'no conversation is started')
         self.assertEqual(failures, [])
-        self.assertEqual(asked, [('owner/repo', 'main', old[:12]), ('owner/repo', 'main', HEAD)])
+        self.assertEqual(asked, [('owner/repo', 'main', old), ('owner/repo', 'main', HEAD)])
         [(repo, num, text)] = notes
-        self.assertTrue(text.startswith(f'patch unchanged since {old[:12]}; previous verdict stands (RETURN_TO_IMPLEMENTATION)'))
-        for named in (HEAD, old[:12], 'patch identity same', '(same)', 'review-this:<profile>'):
+        self.assertTrue(text.startswith(f'patch unchanged since {old}; previous verdict stands (RETURN_TO_IMPLEMENTATION)'))
+        for named in (HEAD, old, 'patch identity same', '(same)', 'review-this:<profile>'):
             self.assertIn(named, text)
         self.assertNotIn('[hands-bot review] reviewed at head', text, 'the note is never a review')
         self.assertEqual(labels[-2:], [('owner/repo', 1, 'hands-reviewing', False), ('owner/repo', 1, 'hands-reviewed', True)])
-        self.assertIn(f'review not repeated: owner/repo#1 head={HEAD} patch unchanged since {old[:12]}', logs)
+        self.assertIn(f'review not repeated: owner/repo#1 head={HEAD} patch unchanged since {old}', logs)
 
     def test_a_posted_verdict_note_always_ends_the_request(self):
         # the PR has been told no new review runs: a label swap that fails after the note never
@@ -891,6 +891,7 @@ class RunnerTests(unittest.TestCase):
             'identity unavailable': ([self.review_comment(old)], ValueError('the change includes a binary file')),
             'a note is not a review': ([{'body': f'⚠️ [hands-bot review] note: patch unchanged since {old}'}], {old: 'same', HEAD: 'same'}),
             'no verdict line': ([{'body': f'[hands-bot review] reviewed at head {old}\n\nnothing else'}], {old: 'same', HEAD: 'same'}),
+            'an abbreviated reviewed head': ([self.review_comment(old[:12])], {old[:12]: 'same', HEAD: 'same'}),  # #75
         }
         for name, (comments, identities) in cases.items():
             with self.subTest(name):
@@ -1292,6 +1293,11 @@ class RunnerTests(unittest.TestCase):
     def test_completion_requires_head_and_verdict(self):
         self.assertFalse(valid_review({'body': '[hands-bot review] failed'}, '[hands-bot review]', HEAD))
         self.assertFalse(valid_review({'body': '[hands-bot review] reviewed at head bbbbbbb\nVERDICT\nREADY_FOR_HUMAN_MERGE'}, '[hands-bot review]', HEAD))
+        # only the full head counts: an abbreviation could name a commit made to share it (#75)
+        self.assertFalse(valid_review({'body': f'[hands-bot review] reviewed at head {HEAD[:12]}\nVERDICT\nREADY_FOR_HUMAN_MERGE'},
+                                      '[hands-bot review]', HEAD))
+        self.assertTrue(valid_review({'body': f'[hands-bot review] reviewed at head {HEAD}\nVERDICT\nREADY_FOR_HUMAN_MERGE'},
+                                     '[hands-bot review]', HEAD))
         self.assertFalse(valid_review({'body': f'[hands-bot review] reviewed at head {HEAD}\nVERDICT\nREVIEW_COULD_NOT_RUN'}, '[hands-bot review]', HEAD))
 
 

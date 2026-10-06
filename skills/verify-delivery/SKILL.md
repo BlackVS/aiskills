@@ -31,6 +31,13 @@ All four must pass for the verdict `confirmed`:
    from the compare API with `?output=diff`, which Gitea serves from 1.27; an
    older Gitea answers JSON (or, before 1.22, has no compare endpoint), and
    there a review of an older head fails: re-review at the final head. `reviewed_heads` lists the heads the READY reviews name.
+   A review counts for the final head when it names it by its full SHA. An
+   abbreviation the head starts with counts only on GitLab, where the
+   versions show the head as the one commit sharing it; elsewhere a commit
+   made to share it, force-pushed after the review, would inherit the review,
+   so it is taken as naming another head (and fails as below).
+   `--accept-short-head-sha` accepts it anyway, for reviews posted before the
+   formats asked for the full SHA; the output reports `short_head_sha`.
    An older head must be named by its full 40-digit SHA on GitHub and Gitea:
    an abbreviated one would resolve to a branch or tag of that name first,
    and their commit lists lose a head that was force-pushed away, so a commit
@@ -211,6 +218,7 @@ Options for the checks:
 | `--verdict-pattern REGEX` | a `VERDICT` line followed by `READY_FOR_HUMAN_MERGE` | What makes a review READY. |
 | `--merger NAME` (repeatable) | anyone | Allowlist of accounts that may merge. Compared case-insensitively. |
 | `--bot-account NAME` (repeatable) | none | Treat this account as a bot. Compared case-insensitively. |
+| `--accept-short-head-sha` | off | Accept a review that names the final head by an abbreviated SHA (posted before 1.32.1), skipping GitLab's uniqueness check too; reported as `"short_head_sha": "accepted"`. |
 | `--allow-bot-merge` | off | Accept a merge by a bot or app. |
 | `--known-flaky NAME` (repeatable) | none | Report this check's failure as `failed: known flaky` (still not confirmed). |
 

@@ -52,8 +52,8 @@ value is `block('astra-high', 'astra')`).
   trigger time — the site B fork passes `label` since 2026-09-13 for this reason.
 
 The posted comment must START with `{marker} reviewed at head <sha>`, with the
-head's full 40-digit SHA; the receiver keys completion on that line (7 to 40
-digits match), and `verify-delivery` carries a review of an older head over a
+head's full 40-digit SHA; the receiver counts the review only when that line
+names the head by its full SHA, and `verify-delivery` carries a review of an older head over a
 base-only update on GitHub and Gitea only by its full SHA. Nothing else in the prompt is load-bearing for it.
 
 ## Install / update on a site

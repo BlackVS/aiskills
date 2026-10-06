@@ -9,6 +9,23 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-10-06
+
+### Changed
+- verify-delivery: a review counts for the final head when it names the
+  head by its full SHA (#75). Before, any abbreviation the head started with
+  did, so a commit made to share it and force-pushed after the review
+  inherited the review. On GitLab an abbreviation still counts when the
+  versions show the head as the one commit sharing it. Elsewhere it is taken
+  as naming another head, and the content check asks for the full SHA.
+  `--accept-short-head-sha` (new) accepts it anyway, for reviews posted before
+  1.32.1, and the output reports `short_head_sha`. The test fixtures' local
+  review names the head in full.
+- hands consumer: the receiver counts a review of the head only when its
+  marker line names the head by its full SHA (#75). It reviews afresh when the
+  newest review names its head by an abbreviated SHA, rather than send it to
+  the compare (#64 item 14). The prompt asks for the full SHA since 1.32.1.
+
 ## [1.32.1] - 2026-10-05
 
 ### Fixed
