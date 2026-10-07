@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import review_policy
 from review_control import Handler
-from review_runner import Runner, RunStore, limit_error, valid_review, config_error, recovered_head, switched, next_page
+from review_runner import Runner, RunStore, limit_error, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
 
 HEAD = 'a' * 40
 QUOTA = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'ACPPromptError',
@@ -400,7 +400,8 @@ class RunnerTests(unittest.TestCase):
                 finished=False, comment_after_calls=None, clock=None,
                 primary='codex-astra', fallback='claude-opus', secondary=None, llm_refs=None, explicit=False,
                 profile_info=None, prompt_text='model={model} label={label}', runs=None, resume=None, on_comments=None, usage_id=None,
-                break_after_completion=None, fail=None, on_app=None, on_events=None, on_pulls=None, on_label=None):
+                break_after_completion=None, fail=None, on_app=None, on_events=None, on_pulls=None, on_label=None,
+                short_review=False):
         starts, labels, failures, calls = [], [], [], {'comments': 0}
         self.notes = notes = []
         def note(*args):
@@ -415,6 +416,8 @@ class RunnerTests(unittest.TestCase):
             calls['comments'] += 1
             if on_comments:
                 on_comments()
+            if short_review:  # the head named by an abbreviation only: no review of it (#75)
+                return [{'body': f'[hands-bot review] reviewed at head {HEAD[:12]}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
             if comment_after_calls is not None and calls['comments'] >= comment_after_calls:
                 return [{'body': f'[hands-bot review] reviewed at head {HEAD}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
             if len(starts) == 2 and not both_fail or completed_first:
@@ -597,6 +600,32 @@ class RunnerTests(unittest.TestCase):
                          'the review posted while the receiver was down is labelled done')
         starts, labels, failures = self.execute(quota=False, resume=self.record(deadline=time.time() - 60))
         self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
+
+    def test_a_review_naming_an_abbreviated_head_is_named_as_the_cause(self):
+        # #64 item 15: since #75 such a comment is no review of the head; the failure says why
+        _, _, failures = self.execute(quota=False, finished=True, short_review=True)
+        [(_, _, reason)] = failures
+        self.assertTrue(reason.startswith('the review conversation finished without a review of the full head'), reason)
+        self.assertIn('names the head by an abbreviated SHA', reason)
+        self.assertIn('1.32.1', reason)
+        _, _, failures = self.execute(quota=False, short_review=True, resume=self.record(deadline=time.time() - 60))
+        self.assertTrue(failures[-1][-1].startswith('no review of the full head posted within'), failures)
+        self.assertIn('check that the installed prompt is from aiskills 1.32.1 or later', failures[-1][-1])
+
+    def test_only_the_bots_abbreviation_of_this_head_is_named(self):
+        short = {'user': {'login': 'hands-bot'}, 'body': f'[hands-bot review] reviewed at head {HEAD[:12]}\nVERDICT\nREADY_FOR_HUMAN_MERGE'}
+        self.assertTrue(abbreviated_review([short], '[hands-bot review]', HEAD, 'hands-bot'))
+        self.assertFalse(abbreviated_review([short], '[hands-bot review]', HEAD, 'someone-else'), 'another login')
+        self.assertFalse(abbreviated_review([short], '[hands-bot review]', 'c' * 40, 'hands-bot'), 'another head')
+        self.assertFalse(abbreviated_review([dict(short, body=short['body'].replace(HEAD[:12], HEAD))],
+                                            '[hands-bot review]', HEAD, 'hands-bot'), 'the full head is a review')
+
+    def test_a_refused_read_at_the_deadline_fails_as_the_service(self):
+        # #64 item 13: a non-transient error on the last look is not a missing review
+        def refused():
+            raise self.http_error(403)
+        _, _, failures = self.execute(quota=False, on_comments=refused, resume=self.record(deadline=time.time() - 60))
+        self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
 
     def test_a_failure_is_reported_once(self):
         # the report's comment is posted, then something raises: no second "could not complete" (#64 item 6)
@@ -798,7 +827,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
     def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None,
-                  bot=None, reviewer='hands-bot', fail=None, on_label=None):
+                  bot=None, reviewer='hands-bot', fail=None, on_label=None, on_note=None, on_comments=None, on_sleep=None):
         """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
         to its change's patch identity, or is an exception the identity lookup raises.
         `reviewer` is the login whose reviews the patch check trusts (`bot` the receiver's)."""
@@ -811,6 +840,8 @@ class RunnerTests(unittest.TestCase):
                     return later
                 return {'state': 'open', 'head': {'sha': head}, 'base': {'ref': 'main'}}
             if path == '/repos/owner/repo/issues/1/comments':
+                if on_comments:
+                    on_comments()
                 return comments
             return [{'body': f'[hands-bot review] reviewed at head {head}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
         def app(path, data=None):
@@ -829,8 +860,8 @@ class RunnerTests(unittest.TestCase):
                     on_label()
                 labels.append(args)
             runner = Runner(api, app, set_label, lambda p: (p, p), fail or (lambda *args: failures.append(args)),
-                            log=logs.append, timeout=10, sleep=lambda _: None, llm_ref=lambda name: None,
-                            problems=lambda s: {}, note=lambda *args: notes.append(args), change_identity=identity,
+                            log=logs.append, timeout=10, sleep=on_sleep or (lambda _: None), llm_ref=lambda name: None,
+                            problems=lambda s: {}, note=on_note or (lambda *args: notes.append(args)), change_identity=identity,
                             bot=bot, reviewer=reviewer)
             with patch('review_runner.read_settings', return_value={'primary': 'codex-astra', 'secondary': None, 'fallback': None}):
                 runner.run('owner/repo', 1, 'title', label, selected, str(prompt), '/tmp/reviews')
@@ -880,6 +911,42 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(len(tries), attempts, 'a transient error is tried three times in all, a refusal once')
                 self.assertIn(f'previous verdict stands, not labelled done: owner/repo#1: {error}', logs)
                 self.assertFalse(any(line.startswith('review not repeated') for line in logs))
+
+    def test_a_note_whose_answer_was_lost_is_looked_for_before_a_review_runs(self):
+        # #64 item 12: the note's POST times out; it may still have been posted, and a review after
+        # it would contradict it, so the comments are read back first
+        old = 'b' * 40
+        same = {old: 'same', HEAD: 'same'}
+        comments = [self.review_comment(old)]
+        def landed(repo, num, text):
+            comments.append({'body': '⚠️ [hands-bot review] note: ' + text})
+            raise TimeoutError('the answer was lost')
+        slept = []
+        starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_note=landed, on_sleep=slept.append)
+        self.assertEqual((starts, failures), ([], []), 'it was posted: the request ends as noted, no review')
+        self.assertIn(NOTE_SETTLE, slept, 'the forge is given a moment to store the POST before the read-back')
+        self.assertEqual(labels[-1], ('owner/repo', 1, 'hands-reviewed', True))
+        comments[:] = [self.review_comment(old)]
+        def lost(repo, num, text):
+            raise TimeoutError('never reached the forge')
+        starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_note=lost)
+        self.assertEqual(([s['agent_profile_id'] for s in starts], failures), (['codex-astra'], []), 'not posted: reviewed')
+        self.assertIn('patch check skipped: owner/repo#1: the note was not posted (TimeoutError)', logs)
+
+    def test_a_note_that_cannot_be_confirmed_ends_the_request_with_a_failure(self):
+        old = 'b' * 40
+        reads = []
+        def comments_then_down():
+            reads.append(1)
+            if len(reads) > 1:
+                raise TimeoutError('down')
+        def lost(repo, num, text):
+            raise TimeoutError('down')
+        starts, labels, failures, notes, logs, _ = self.unchanged(
+            [self.review_comment(old)], {old: 'same', HEAD: 'same'}, on_note=lost, on_comments=comments_then_down)
+        self.assertEqual(starts, [], 'never a review that could contradict a posted note')
+        [(_, _, reason)] = failures
+        self.assertIn('see whether it was posted', reason)
 
     def test_a_request_is_reviewed_afresh_unless_the_newest_verdict_covers_the_same_patch(self):
         old, older = 'b' * 40, 'c' * 40

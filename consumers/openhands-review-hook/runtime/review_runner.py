@@ -15,6 +15,7 @@ from review_policy import read_settings, profile_llm_ref, settings_problems
 from reasoning_profiles import block as reasoning_block
 
 
+NOTE_SETTLE = 5  # seconds before a lost note's POST is looked for: the forge may still be storing it
 MISSED = object()  # a watch read that failed transiently: try again at the next poll
 
 
@@ -117,6 +118,23 @@ def valid_review(comment, marker, head, bot=None):
     match = re.match(re.escape(marker) + r' reviewed at head ([0-9a-f]{7,40})\b', body)
     return bool(match and match[1] == head.lower() and
                 re.search(r'^VERDICT\s*\n(?:READY_FOR_HUMAN_MERGE|RETURN_TO_IMPLEMENTATION)\b', body, re.M))
+
+
+def abbreviated_review(comments, marker, head, bot=None):
+    """Whether a comment by BOT names HEAD in its marker line by an abbreviation only: since #75 such
+    a comment is no review of the head, so a run that ends without one says why."""
+    for comment in comments or []:
+        if bot and comment.get('user', {}).get('login') != bot:
+            continue
+        match = re.match(re.escape(marker) + r' reviewed at head ([0-9a-f]{7,39})\b', comment.get('body', ''))
+        if match and head.lower().startswith(match[1]):
+            return True
+    return False
+
+
+ABBREVIATED = ('; a comment names the head by an abbreviated SHA, which is not taken as a review of it: '
+               'check that the installed prompt is from aiskills 1.32.1 or later (it asks for the full SHA), '
+               'then re-add the label')
 
 
 def review_verdict(comment, marker, bot=None):
@@ -387,7 +405,9 @@ class Runner:
         never completes it. Only reviews by the trusted reviewer login count, so a comment
         that merely looks like a review never stands for one. Anything unexpected (no
         trusted login, no diff, a binary change, a forge error) gives False, and the request
-        is reviewed."""
+        is reviewed, except a transient error on the note itself: its POST may have landed, so
+        the comments are read back, and when they cannot be read the request fails (True)
+        rather than risk a review that contradicts a posted note."""
         if not self.change_identity or not self.note:
             return False
         try:
@@ -414,9 +434,26 @@ class Runner:
             if current.get('state') != 'open' or current['head']['sha'] != head:
                 self.fail(repo, num, 'the pull request changed or closed; request a fresh review')
                 return True
-            self.note(repo, num, f'patch unchanged since {old}; previous verdict stands ({verdict}). The change at head '
-                                 f'{head} has patch identity {now}, the same as at the reviewed head {old} ({was}), so no '
-                                 'new review was run. A fresh review on this head: add `review-this:<profile>`.')
+            text = (f'patch unchanged since {old}; previous verdict stands ({verdict}). The change at head '
+                    f'{head} has patch identity {now}, the same as at the reviewed head {old} ({was}), so no '
+                    'new review was run. A fresh review on this head: add `review-this:<profile>`.')
+            try:
+                self.note(repo, num, text)
+            except Exception as error:
+                if not transient(error):
+                    raise
+                # The POST may have reached the forge though its answer did not: look before deciding,
+                # since a note is not idempotent and a review after it would contradict it.
+                landed = self._noted(repo, num, text)
+                if landed is None:
+                    self.log(f'previous verdict note unconfirmed: {repo}#{num}: {type(error).__name__}')
+                    self.fail(repo, num, 'the forge could not be reached to post the "previous verdict stands" note or to '
+                                         'see whether it was posted; look at the pull request, and re-add the label if no '
+                                         'such note is there')
+                    return True
+                if not landed:
+                    self.log(f'patch check skipped: {repo}#{num}: the note was not posted ({type(error).__name__})')
+                    return False
         except Exception as error:  # forge answers may carry details: the type only
             self.log(f'patch check skipped: {repo}#{num}: {type(error).__name__}')
             return self.failure_reported  # a failure it reported (even one that raised) ends the request
@@ -432,6 +469,19 @@ class Runner:
             return True
         self.log(f'review not repeated: {repo}#{num} head={head} patch unchanged since {old}')
         return True
+
+    def _noted(self, repo, num, text):
+        """Whether the PR carries a comment with TEXT (a note whose POST got no answer); None when the
+        comments cannot be read either (the receivers' api() already retries a read). The forge may
+        still be storing a POST whose answer was lost, so the read waits a moment first; a note that
+        lands even later than that is the one case left where a review can follow it."""
+        self.sleep(NOTE_SETTLE)
+        try:
+            comments = self.api(f'/repos/{repo}/issues/{num}/comments')
+            return any(text in (c.get('body') or '') for c in comments or [])
+        except Exception as error:
+            self.log(f'note read-back failed: {repo}#{num}: {type(error).__name__}')
+            return None
 
     def _watched(self, repo, num, read, what='watch read', then='retrying at the next poll'):
         """READ's answer, or MISSED after a transient error (logged as WHAT, then THEN). The
@@ -594,6 +644,10 @@ class Runner:
                             return
                         continue
                     self.log(f'review finished without posting: {repo}#{num} conversation={conv_id}')
+                    if abbreviated_review(comments, self.marker, head, self.bot):
+                        self.fail(repo, num, f'the review conversation finished without a review of the full head '
+                                             f'(conversation {conv_id})' + ABBREVIATED)
+                        return
                     self.fail(repo, num, f'the review conversation finished without posting a review (conversation {conv_id}); '
                               'inspect it in Canvas, then re-add the label')
                     return
@@ -643,6 +697,9 @@ class Runner:
                                                  'hand; no new review is needed.')
                     except Exception as error:  # still unreachable: the log line above says what to do
                         self.log(f'posted review not marked: {repo}#{num}: {type(error).__name__}')
+                    return
+                if abbreviated_review(comments, self.marker, head, self.bot):
+                    self.fail(repo, num, f'no review of the full head posted within {self.timeout // 60} minutes' + ABBREVIATED)
                     return
                 self.fail(repo, num, f'no review posted within {self.timeout // 60} minutes; no automatic retry')
                 return
