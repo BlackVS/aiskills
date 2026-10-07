@@ -71,6 +71,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.33.4 | A request whose start fails on a label change (a forge error) no longer blocks later requests on that PR until a restart. Deploy `review_hook.py` and `github_review_poller.py`, then restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.33.3 | A review posted while the forge was down until its deadline is labelled done at the next receiver start (journal: `review done (posted before the restart)`) instead of being failed by restart recovery, and a run resumed after its deadline starts the fallback after a quota error. Deploy `review_runner.py`, `review_hook.py` and `github_review_poller.py`, then restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.33.2 | A TLS certificate that fails verification ends a review run at once (logged as `review failed … URLError`), instead of the watch polling into it until its deadline; when the forge's own certificate is at fault, the PR keeps `hands-reviewing` and needs a look by hand. Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.33.1 | A "previous verdict stands" note whose POST got no answer is looked for before a review runs, and a run whose only review comment abbreviates the head says so in its failure. Deploy `review_runner.py`, restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |

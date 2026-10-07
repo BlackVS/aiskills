@@ -325,12 +325,20 @@ def trigger(repo, num, title):
     if not RUNS.clear(repo, num):
         log(f"run state not updated for the new request: {repo}#{num} a held review may label it done after a restart")
     log(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}")
-    for l, _ in requested:
-        set_label(repo, num, l, False)
-    set_label(repo, num, L_DONE, False)
-    set_label(repo, num, L_WORKING, True)
-    threading.Thread(target=run_review, args=(repo, num, title, label, profile),
-                     daemon=True).start()
+    try:
+        for l, _ in requested:
+            set_label(repo, num, l, False)
+        set_label(repo, num, L_DONE, False)
+        set_label(repo, num, L_WORKING, True)
+        threading.Thread(target=run_review, args=(repo, num, title, label, profile),
+                         daemon=True).start()
+    except Exception as e:
+        # No run started: release the PR, or every later request on it is ignored
+        # until a restart (#64 item 16). Logged here, not raised: the poll goes on
+        # to the other PRs, so one PR that keeps failing never holds them up.
+        with lock:
+            in_flight.discard(key)
+        log(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
 
 
 def recover_stale(resumed=()):
