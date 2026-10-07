@@ -332,12 +332,13 @@ def trigger(repo, num, title):
         set_label(repo, num, L_WORKING, True)
         threading.Thread(target=run_review, args=(repo, num, title, label, profile),
                          daemon=True).start()
-    except Exception:
+    except Exception as e:
         # No run started: release the PR, or every later request on it is ignored
-        # until a restart (#64 item 16). The error is logged by the poll loop.
+        # until a restart (#64 item 16). Logged here, not raised: the poll goes on
+        # to the other PRs, so one PR that keeps failing never holds them up.
         with lock:
             in_flight.discard(key)
-        raise
+        log(f"review start failed: {repo}#{num}: {type(e).__name__}")
 
 
 def recover_stale(resumed=()):

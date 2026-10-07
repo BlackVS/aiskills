@@ -123,6 +123,8 @@ class AdapterTests(unittest.TestCase):
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(success,output)
+            if refused:
+                self.assertIn('review start failed: owner/repo#1: HTTPError', output)
             self.assertEqual([s['agent_profile_id'] for s in starts],['codex-astra','claude-opus'])
             self.assertFalse(failures); self.assertFalse(errors)
             self.assertEqual(labels,{'hands-reviewed'})

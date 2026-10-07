@@ -329,12 +329,12 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=run_review,
                              args=(repo, num, pr.get('title', ''), label, profile),
                              daemon=True).start()
-        except Exception:
+        except Exception as e:
             # No run started: release the PR, or every later request on it is ignored
-            # until a restart (#64 item 16). The error is logged by do_POST.
+            # until a restart (#64 item 16).
             with lock:
                 in_flight.discard(key)
-            raise
+            print(f"review start failed: {repo}#{num}: {type(e).__name__}", flush=True)
 
 
 recover_stale(resume_runs())

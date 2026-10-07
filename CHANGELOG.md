@@ -15,9 +15,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
 - hands consumer: a request whose start fails (the forge refuses a label
   change before the run begins) no longer leaves its PR claimed until the
   receiver restarts (#64 item 16). Before, every later request on that PR
-  was ignored. Now the PR is released and the error logged, so the next
-  request runs. A request label already removed by then has to be added
-  again.
+  was ignored. Now the PR is released and the failure logged (`review start
+  failed`), so the next request runs. Ask again by adding the request label
+  (on Gitea, remove it first if it is still there); on GitHub the poll then
+  goes on to the other PRs instead of stopping at the one that failed.
 
 ## [1.33.3] - 2026-10-07
 
