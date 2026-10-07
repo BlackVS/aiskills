@@ -21,7 +21,7 @@ content fixes inside existing skills. The current version is in `VERSION`.
   retried.
 - hands consumer docs: AUTO-REVIEWS.md says how long a review is watched, and
   that retried forge reads can carry a watch a few minutes past its deadline
-  in the worst case (#64 item 4).
+  in the worst case, longer when a read spans many pages (#64 item 4).
 
 ## [1.33.1] - 2026-10-07
 

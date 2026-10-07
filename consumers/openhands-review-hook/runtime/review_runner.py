@@ -37,8 +37,9 @@ def retried(call, attempts=3, delay=1.0, sleep=time.sleep):
     """CALL's result, trying again after a transient error (1 s, then 2 s by default): for
     reads and idempotent writes only, since a write that timed out may still have happened.
     The receivers read with a 20 s timeout, so one retried read can take up to 3 x 20 s + 3 s
-    (per page), and a watch iteration makes several reads after its deadline check: a watch
-    can end a few minutes past its deadline in the worst case (#64 item 4)."""
+    per page, a paged read retries each page on its own, and a watch iteration makes several
+    reads after its deadline check: a watch can end a few minutes past its deadline in the
+    worst case, longer when a read spans many pages (#64 item 4)."""
     for attempt in range(attempts):
         try:
             return call()
