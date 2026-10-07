@@ -597,6 +597,20 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual((starts, failures, labels, store.load()), ([], [], [('owner/repo', 1, 'hands-reviewing', False)], []))
             # a new request drops the held run at the receiver, before its labels change:
             # test_adapters' run_restart(boundary=True)
+        # a run store that cannot be written: never claimed as kept, and the run is cleared as usual
+        class Unwritable(RunStore):
+            def _write(self, runs):
+                self.log('run state not saved: runs.json: OSError'); return False
+        with tempfile.TemporaryDirectory() as temp:
+            store = Unwritable(Path(temp) / 'runs.json', log=lambda line: None)
+            cleared = []
+            store.clear = lambda repo, num: cleared.append((repo, num)) or True
+            starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(),
+                                                    on_label=always_down, runs=store)
+            self.assertEqual(failures, [])
+            self.assertNotIn('posted review kept for the next start: owner/repo#1', self.logs)
+            self.assertIn('posted review not kept: owner/repo#1; add `hands-reviewed` by hand', self.logs)
+            self.assertEqual(cleared, [('owner/repo', 1)], 'nothing held: the run is cleared at its end')
         # without a run store nothing is kept, and the forge stays unreachable: logged, nothing raised or said
         starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
         self.assertEqual((failures, self.notes), ([], []))
