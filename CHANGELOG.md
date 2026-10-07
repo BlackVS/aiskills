@@ -9,6 +9,24 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.1] - 2026-10-07
+
+### Fixed
+- hands consumer: a "previous verdict stands" note whose POST got no answer
+  no longer starts a full review on a PR it may already have told no review
+  would run (#64 item 12). The runner reads the comments back first:
+  - **The note is there:** the request ends as noted.
+  - **It is not there:** the request is reviewed.
+  - **The comments cannot be read either:** the request fails, and the
+    failure asks for a look at the PR before the label is re-added.
+- hands consumer: when the conversation finishes, or the deadline passes,
+  while a bot comment names the head by an abbreviated SHA, the failure says
+  so. Since 1.33.0 such a comment is no review of the head. The failure names
+  the prompt of 1.32.1 or later as the fix, instead of saying that no review
+  was posted (#64 item 15).
+- hands consumer tests: a refused (non-transient) comments read at the
+  deadline is pinned as a service failure, not a missing review (#64 item 13).
+
 ## [1.33.0] - 2026-10-06
 
 ### Changed
