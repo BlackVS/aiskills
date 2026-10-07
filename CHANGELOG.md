@@ -9,6 +9,16 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.4] - 2026-10-07
+
+### Fixed
+- hands consumer: a request whose start fails (the forge refuses a label
+  change before the run begins) no longer leaves its PR claimed until the
+  receiver restarts (#64 item 16). Before, every later request on that PR
+  was ignored. Now the PR is released and the error logged, so the next
+  request runs. A request label already removed by then has to be added
+  again.
+
 ## [1.33.3] - 2026-10-07
 
 ### Fixed

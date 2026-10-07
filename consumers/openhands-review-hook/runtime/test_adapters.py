@@ -18,12 +18,15 @@ from pathlib import Path
 
 
 class AdapterTests(unittest.TestCase):
-    def run_adapter(self, github):
+    def run_adapter(self, github, refused=False):
+        """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
+        forge first answers 503 to setting hands-reviewing, so no run starts; the request is put back
+        and must run then: the failed start released the PR (#64 item 16)."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = {'review-this'}
         starts, failures, errors = [], [], []
-        done = threading.Event()
+        done, refusal = threading.Event(), threading.Event()
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_GET(self): self.handle_request()
@@ -39,6 +42,9 @@ class AdapterTests(unittest.TestCase):
                     result = {'items': items}
                 elif path == '/forge/repos/issues/search': result = []
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}}
+                elif refused and not refusal.is_set() and self.command == 'POST' and path.endswith('/issues/1/labels') \
+                        and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
+                    refusal.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif path == '/forge/repos/owner/repo/issues/1/labels':
                     if self.command == 'POST':
                         labels.update(body['labels'] if github else (names[i-1] for i in body['labels']))
@@ -93,16 +99,25 @@ class AdapterTests(unittest.TestCase):
                 REVIEW_RUNS_DIR=str(root), PYTHONUNBUFFERED='1')
             script = 'github_review_poller.py' if github else 'review_hook.py'
             proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name(script))],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+            def request():
+                if github:
+                    return  # the poller finds the request label on its own
+                body = json.dumps({'action':'label_updated','repository':{'full_name':'owner/repo'},'pull_request':{'number':1,'title':'test','labels':[{'name':'review-this'}]}}).encode()
+                hook = urllib.request.Request(f'http://127.0.0.1:{hook_port}/hooks/gitea',data=body,
+                    headers={'X-Gitea-Signature':hmac.new(b'test-only',body,hashlib.sha256).hexdigest()})
+                for _ in range(40):
+                    try:
+                        with urllib.request.urlopen(hook,timeout=2) as response: self.assertEqual(response.status,204)
+                        break
+                    except urllib.error.URLError: time.sleep(.05)
             try:
-                if not github:
-                    body = json.dumps({'action':'label_updated','repository':{'full_name':'owner/repo'},'pull_request':{'number':1,'title':'test','labels':[{'name':'review-this'}]}}).encode()
-                    request = urllib.request.Request(f'http://127.0.0.1:{hook_port}/hooks/gitea',data=body,
-                        headers={'X-Gitea-Signature':hmac.new(b'test-only',body,hashlib.sha256).hexdigest()})
-                    for _ in range(40):
-                        try:
-                            with urllib.request.urlopen(request,timeout=2) as response: self.assertEqual(response.status,204)
-                            break
-                        except urllib.error.URLError: time.sleep(.05)
+                request()
+                if refused:
+                    self.assertTrue(refusal.wait(12), 'the request never reached the label change')
+                    time.sleep(.5)  # the failed start unwinds
+                    self.assertEqual(starts, [])
+                    labels.discard('hands-reviewing'); labels.add('review-this')  # the user asks again
+                    request()
                 success = done.wait(12)
             finally:
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
@@ -296,6 +311,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_github_adapter_quota_fallback(self): self.run_adapter(True)
     def test_gitea_adapter_quota_fallback(self): self.run_adapter(False)
+    def test_github_adapter_runs_a_request_after_a_failed_start(self): self.run_adapter(True, refused=True)
+    def test_gitea_adapter_runs_a_request_after_a_failed_start(self): self.run_adapter(False, refused=True)
 
     def run_restart(self, github, held=False, down=False, boundary=False, broken=False):
         """The receiver is killed while a review conversation runs and started again:
