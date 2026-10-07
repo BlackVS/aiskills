@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.2] - 2026-10-07
+
+### Fixed
+- hands consumer: a TLS certificate that fails verification is no longer
+  treated as a transient error (#64 item 3). Before, a watch that met it
+  polled into it for its whole window. Now the run ends at once and is logged,
+  and a receiver's read is not retried for it. When the forge's own
+  certificate is at fault, the failure cannot be posted to the PR either
+  (it keeps `hands-reviewing`). A refused or dropped connection is still
+  retried.
+- hands consumer docs: AUTO-REVIEWS.md says how long a review is watched, and
+  that retried forge reads can carry a watch a few minutes past its deadline
+  in the worst case, longer when a read spans many pages (#64 item 4).
+
 ## [1.33.1] - 2026-10-07
 
 ### Fixed

@@ -328,6 +328,17 @@ comment is already posted for the current head, failed otherwise. The Canvas
 container is different: restarting it ends every conversation, so keep that
 restart for an idle moment.
 
+A review is watched until its deadline (`WATCH_MINUTES`, 45 by default). A
+forge read that fails transiently is tried up to three times in all, each
+with a 20-second timeout (per page: a read of a long comment list fetches
+several pages, each retried on its own), and one poll makes several reads, so
+a watch can end a few minutes past its deadline in the worst case, longer on
+a PR with many pages of comments. A TLS certificate that
+fails verification is not retried, since waiting does not fix it: the run
+ends at once and is logged (`review failed … URLError`). When it is the
+forge's own certificate, the failure comment and the label change cannot be
+posted either, so the PR keeps `hands-reviewing` and needs a look by hand.
+
 If the control service did not exist before this installation, stop and disable
 it during rollback; otherwise restore its previous unit. After restoring the
 proxy configuration, validate it before reloading Caddy. Reload systemd and
