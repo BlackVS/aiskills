@@ -394,6 +394,8 @@ class Runner:
         if self.runs and self.runs.save(dict(record, posted=True)):
             self.held = True
             self.log(f'posted review kept for the next start: {record["repo"]}#{record["num"]}')
+        elif self.runs:  # the run state write failed (logged): label it by hand
+            self.log(f'posted review not kept: {record["repo"]}#{record["num"]}; add `{self.done}` by hand')
 
     def _label_posted(self, record):
         """After a restart: label done the review a held run posted. Nothing is said on the PR, which
@@ -412,8 +414,8 @@ class Runner:
             self.set_label(repo, num, self.done, True)
         except Exception as error:
             if transient(error):
-                self.log(f'posted review label swap failed, kept for the next start: {repo}#{num}: {type(error).__name__}')
-                self._hold_posted(record)
+                self.log(f'posted review label swap failed: {repo}#{num}: {type(error).__name__}')
+                self._hold_posted(record)  # logs whether it is kept for the next start
             else:
                 self.log(f'posted review not labelled: {repo}#{num}: {type(error).__name__}')
             return

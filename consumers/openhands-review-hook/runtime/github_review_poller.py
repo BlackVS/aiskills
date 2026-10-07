@@ -321,11 +321,9 @@ def trigger(repo, num, title):
         in_flight.add(key)
     # A posted review held for the next start (#64 item 7) belongs to an older request: it goes
     # before this request's labels change, so a restart in between cannot answer this request with it.
+    # The run state is never a reason to hold up a review: when it cannot be updated, say so and go on.
     if not RUNS.clear(repo, num):
-        log(f"review deferred: {repo}#{num} the run state cannot be read")
-        with lock:
-            in_flight.discard(key)
-        return
+        log(f"run state not updated for the new request: {repo}#{num} a held review may label it done after a restart")
     log(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}")
     for l, _ in requested:
         set_label(repo, num, l, False)
