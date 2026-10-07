@@ -344,10 +344,6 @@ class Runner:
         it names is watched instead of a new one being started."""
         self.failure_reported, self.held = False, False
         try:
-            if self.runs and not resume:
-                # A posted review held for the next start (#64 item 7) is an older request's: it
-                # must not answer this one if the receiver restarts before this run is recorded.
-                self.runs.clear(repo, num)
             self._run(repo, num, title, label, selected, prompt_file, workspaces, resume)
         except Exception as error:
             # Provider/API errors may contain credentials or operator details.

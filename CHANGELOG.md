@@ -17,8 +17,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
   "could not run" failure after a late receiver restart (#64 item 7). When
   `hands-reviewing` cannot be removed either, the run stays in the run state
   file marked as posted. The next start of the receiver labels the review done
-  without a new conversation or a PR comment; a new request on the PR drops
-  it first. Restart recovery leaves every PR whose run the service resumed
+  without a new conversation or a PR comment. A new request on the PR drops
+  it before the request's labels change; while the run state file cannot be
+  read, the request waits (logged as `review deferred`) with its label kept.
+  Restart recovery leaves every PR whose run the service resumed
   alone, even once that run has ended.
 - hands consumer: a run resumed after its deadline reads its conversation once
   before it ends (#64 item 9). A quota or rate-limit error while the receiver

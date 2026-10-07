@@ -315,6 +315,13 @@ class Handler(BaseHTTPRequestHandler):
             if key in in_flight:
                 return
             in_flight.add(key)
+        # A posted review held for the next start (#64 item 7) belongs to an older request: it goes
+        # before this request's labels change, so a restart in between cannot answer this request with it.
+        if not RUNS.clear(repo, num):
+            print(f"review deferred: {repo}#{num} the run state cannot be read", flush=True)
+            with lock:
+                in_flight.discard(key)
+            return
         print(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}", flush=True)
         for l, _ in requested:
             set_label(repo, num, l, False)

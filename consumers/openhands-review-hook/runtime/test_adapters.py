@@ -297,7 +297,7 @@ class AdapterTests(unittest.TestCase):
     def test_github_adapter_quota_fallback(self): self.run_adapter(True)
     def test_gitea_adapter_quota_fallback(self): self.run_adapter(False)
 
-    def run_restart(self, github, held=False, down=False):
+    def run_restart(self, github, held=False, down=False, boundary=False):
         """The receiver is killed while a review conversation runs and started again:
         the restarted service watches the same conversation, and its stale-label
         recovery leaves that PR alone. HELD: the service starts with a run on disk whose
@@ -305,10 +305,13 @@ class AdapterTests(unittest.TestCase):
         item 7): it is labelled done, and the recovery, which no longer sees that review
         in its window, leaves the PR alone instead of calling the run lost. DOWN: the forge still
         refuses label writes at that start: the run is kept again, and recovery still leaves the PR
-        alone (on GitHub the live labels no longer tell it so)."""
+        alone (on GitHub the live labels no longer tell it so). BOUNDARY: such a held run is on
+        disk when a new request arrives: it is gone before the request's labels change, so a
+        restart from then on cannot answer the new request with the older review."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed']
-        labels = {'hands-reviewing'} if held else {'review-this'}
+        labels = {'hands-reviewing'} if held else set() if boundary else {'review-this'}
+        at_working = []  # the run state file as the request's working label is set
         starts, failures, errors = [], [], []
         posted, done, searched, attempted = threading.Event(), threading.Event(), threading.Event(), threading.Event()
         def stale():
@@ -341,6 +344,8 @@ class AdapterTests(unittest.TestCase):
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}}
                 elif path == '/forge/repos/owner/repo/issues/1/labels':
                     if self.command == 'POST':
+                        if boundary and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
+                            at_working.append(runs_file.read_text() if runs_file.is_file() else '')
                         labels.update(body['labels'] if github else (names[i-1] for i in body['labels']))
                         if 'hands-reviewed' in labels: done.set()
                     result = [{'name': n, 'id': names.index(n)+1} for n in labels]
@@ -417,6 +422,14 @@ class AdapterTests(unittest.TestCase):
                 return
             proc = start(); outputs = []
             try:
+                if boundary:  # once the service is up, an older run's posted review is held, then a request comes
+                    self.assertTrue(wait_for(searched.is_set), 'the service never ran its recovery')
+                    now = time.time()
+                    runs_file.write_text(json.dumps({'owner/repo#1': {
+                        'repo': 'owner/repo', 'num': 1, 'title': 'test', 'label': 'review-this', 'profile': 'codex-astra',
+                        'choices': ['codex-astra'], 'reading': None, 'head': head, 'since': '2026-01-01T00:00:00Z',
+                        'attempt': 0, 'conversation': 'conv-0', 'started': now - 7200, 'deadline': now - 4500, 'posted': True}}))
+                    labels.add('review-this')
                 if not github:
                     body = json.dumps({'action':'label_updated','repository':{'full_name':'owner/repo'},'pull_request':{'number':1,'title':'test','labels':[{'name':'review-this'}]}}).encode()
                     request = urllib.request.Request(f'http://127.0.0.1:{hook_port}/hooks/gitea',data=body,
@@ -456,11 +469,16 @@ class AdapterTests(unittest.TestCase):
             self.assertFalse(failures); self.assertFalse(errors)
             self.assertEqual(labels, {'hands-reviewed'})
             self.assertEqual(json.loads(runs_file.read_text()), {})  # nothing left to resume
+            if boundary:
+                self.assertEqual(len(at_working), 1, at_working)
+                self.assertNotIn('posted', at_working[0], 'the held run outlived the new request\'s label change')
 
     def test_github_adapter_resumes_after_restart(self): self.run_restart(True)
     def test_gitea_adapter_resumes_after_restart(self): self.run_restart(False)
     def test_github_adapter_labels_a_held_posted_review_at_start(self): self.run_restart(True, held=True)
     def test_gitea_adapter_labels_a_held_posted_review_at_start(self): self.run_restart(False, held=True)
+    def test_github_adapter_drops_a_held_review_before_a_new_request(self): self.run_restart(True, boundary=True)
+    def test_gitea_adapter_drops_a_held_review_before_a_new_request(self): self.run_restart(False, boundary=True)
     def test_github_adapter_keeps_a_held_review_while_the_forge_is_down(self): self.run_restart(True, held=True, down=True)
     def test_gitea_adapter_keeps_a_held_review_while_the_forge_is_down(self): self.run_restart(False, held=True, down=True)
 

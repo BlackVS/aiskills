@@ -595,13 +595,8 @@ class RunnerTests(unittest.TestCase):
             store.save(moved)
             starts, labels, failures = self.execute(quota=False, resume=moved, runs=store)
             self.assertEqual((starts, failures, labels, store.load()), ([], [], [('owner/repo', 1, 'hands-reviewing', False)], []))
-            # a new request on the PR drops the held run before anything else: a restart before the new
-            # run is recorded must not label the new request done with the older review
-            store.save(held); seen = []
-            starts, labels, failures = self.execute(quota=False, completed_first=True, runs=store,
-                                                    on_pulls=lambda: seen.append(store.load()))
-            self.assertEqual((seen[0], failures, store.load()), ([], [], []))
-            self.assertEqual(len(starts), 1, 'the new request is reviewed')
+            # a new request drops the held run at the receiver, before its labels change:
+            # test_adapters' run_restart(boundary=True)
         # without a run store nothing is kept, and the forge stays unreachable: logged, nothing raised or said
         starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
         self.assertEqual((failures, self.notes), ([], []))
@@ -883,8 +878,8 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual([s['agent_profile_id'] for s in starts], ['claude-opus'], 'the restart starts the one fallback')
 
     def test_no_fallback_when_the_run_state_cannot_be_read_before_it(self):
-        # the run state cannot be read before the fallback (read 3: clearing the primary's record; read 1
-        # is the clear of a held run as the request starts) nor at the end of the run (read 4), while the file stays intact: that is no proof the
+        # the run state cannot be read before the fallback (read 2: clearing the primary's record)
+        # nor at the end of the run (read 3), while the file stays intact: that is no proof the
         # record is gone, so no fallback starts and the primary's record survives; after a restart
         # with readable storage, the resumed record starts the one fallback and the state is cleared
         real = Path.read_text
@@ -892,7 +887,7 @@ class RunnerTests(unittest.TestCase):
         def flaky(path, *args, **kwargs):
             if path.name == 'runs.json':
                 reads['n'] += 1
-                if reads['n'] in (3, 4):
+                if reads['n'] in (2, 3):
                     raise OSError(5, 'Input/output error')
             return real(path, *args, **kwargs)
         logs = []
@@ -900,7 +895,7 @@ class RunnerTests(unittest.TestCase):
             store = RunStore(Path(temp) / 'runs.json', log=logs.append)
             with patch.object(Path, 'read_text', flaky):
                 starts, labels, failures = self.execute(runs=store)
-            self.assertEqual(reads['n'], 4, 'the clear at the start, save, the clear before the fallback, the clear at the end')
+            self.assertEqual(reads['n'], 3, 'save, the clear before the fallback, the clear at the end')
             self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra'], 'no fallback conversation')
             self.assertIn('the fallback was not started because the run state could not be updated', failures[-1][-1])
             self.assertEqual(logs.count('run state unreadable: runs.json: OSError'), 2)
