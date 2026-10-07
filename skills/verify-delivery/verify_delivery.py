@@ -445,12 +445,17 @@ FORMAL_REVIEW = ("a formal pull-request review, not a comment: only comments cou
                  "can be edited without a recorded edit time; post the review as a comment on the pull request")
 
 
-def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", authors=None, trust_any=False):
+def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", authors=None, trust_any=False,
+                  short_at_head=None):
     """Each configured review must be READY_FOR_HUMAN_MERGE in the latest comment by an author the
     repository trusts, posted before the merge. The latest one naming the final head counts; with
     none, the latest one naming an older head does, and the merged-content check then requires
     the merged change to be that head's change (a base-only update keeps a review valid).
-    The author is checked first: an untrusted comment never counts and never displaces one."""
+    The author is checked first: an untrusted comment never counts and never displaces one.
+    A review names the final head by its full SHA, or by an abbreviation SHORT_AT_HEAD(sha)
+    accepts (#75). Any other abbreviation the head starts with is a review of the head that is
+    never READY: a commit made to share it never inherits a review, and a newer such review still
+    supersedes an earlier one of the head."""
     authors = authors or {}
     reviews, ignored = [], []
     for name, pattern in specs:
@@ -474,13 +479,18 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
                 ignored.append({"review": name, "reason": "posted after the merge", "sha": sha, "url": c["url"]})
             elif when(merged_at) and when(c.get("updated_at")) and when(c["updated_at"]) > when(merged_at):
                 ignored.append({"review": name, "reason": "edited after the merge", "sha": sha, "url": c["url"]})
+            elif sha == head:
+                latest = (c, sha, False)
             elif head.startswith(sha):
-                latest = (c, sha)
+                known = short_at_head(sha) if short_at_head else False
+                # True: it names the head; False: a review of the head that cannot count (never READY,
+                # and it still supersedes); None: whether it can could not be read now
+                latest = (c, sha, False if known else "unreadable" if known is None else True)
             else:
                 older.append((c, sha))
         at_final = latest is not None
         if not at_final and older:
-            latest = older.pop()
+            latest = (*older.pop(), False)
         for c, sha in older:
             ignored.append({"review": name, "sha": sha, "url": c["url"],
                             "reason": "names an older or different head" if at_final else "superseded by a later review"})
@@ -493,10 +503,18 @@ def check_reviews(items, head, merged_at, specs, verdict_re, kind="github", auth
             reviews.append({"review": name, "status": "missing", "author_rule": rule,
                             "detail": "no review by a trusted author names a head of this pull request"})
             continue
-        c, sha = latest
-        ready = bool(verdict_re.search(c["body"] or ""))
-        reviews.append({"review": name, "status": "ready" if ready else "not_ready", "author_rule": rule, "sha": sha,
-                        "at_final_head": at_final, "url": c["url"], "author": c["author"], "created_at": c["created_at"]})
+        c, sha, abbreviated = latest
+        ready = bool(verdict_re.search(c["body"] or "")) and not abbreviated
+        entry = {"review": name, "status": "ready" if ready else "not_ready", "author_rule": rule, "sha": sha,
+                 "at_final_head": at_final, "url": c["url"], "author": c["author"], "created_at": c["created_at"]}
+        if abbreviated == "unreadable" and verdict_re.search(c["body"] or ""):  # READY if it names the head
+            entry.update(status="pending", detail=f"names the final head by the abbreviated SHA {sha}, and the pull "
+                                                  "request's heads could not be read now to tell it apart (retry later)")
+        elif (abbreviated is True or abbreviated == "unreadable") and verdict_re.search(c["body"] or ""):
+            entry["detail"] = (f"names the final head by the abbreviated SHA {sha}, which a commit made to share it "
+                               "could carry as well: name the full 40-digit SHA, or pass --accept-short-head-sha "
+                               "for a review posted before 1.32.1")
+        reviews.append(entry)
     ready = sum(r["status"] == "ready" for r in reviews)
     return ready, reviews, ignored
 
@@ -584,15 +602,32 @@ def verify(args, forge, kind, number):
               for r in forge.pages(f"/pulls/{number}/reviews")]
     head_commit = (forge.get_or_none(f"/git/commits/{head}") if head else None) or {}
     head_url = head_commit.get("html_url") or ""
+    heads = once(lambda: forge.pull_heads(number))
+    def short_at_head(sha):
+        """Whether an abbreviation of the final head names it: only on request, or where the forge
+        keeps every head and nothing else shares the abbreviation (GitLab's versions)."""
+        if args.accept_short_head_sha:
+            return True
+        try:
+            listed = heads()
+        except Unavailable:
+            return None  # unknown for now: the review is pending
+        if listed is None:
+            return False
+        versions, everything = listed
+        return head in versions and {s for s in everything if s.startswith(sha)} == {head}
     ready, reviews, ignored = check_reviews(items, head, merged_at, args.reviews, args.verdict,
-                                            kind, args.review_authors, args.trust_any_author)
+                                            kind, args.review_authors, args.trust_any_author,
+                                            short_at_head)
     unsatisfiable = any(r["status"] == "unsatisfiable" for r in reviews)
-    status = ("passed" if ready >= args.required_reviews else "failed" if unsatisfiable
-              else "pending" if not merged and pr.get("state") == "open" else "failed")
+    waiting = sum(r["status"] == "pending" for r in reviews)  # could still turn READY on a retry
+    status = ("passed" if ready >= args.required_reviews else "pending" if ready + waiting >= args.required_reviews
+              else "failed" if unsatisfiable else "pending" if not merged and pr.get("state") == "open" else "failed")
     reviewed_heads = sorted({head if r["at_final_head"] else r["sha"] for r in reviews if r["status"] == "ready"})
     checks.append({"name": "reviewed_head", "status": status, "head_sha": head, "head_url": head_url,
                    "reviewed_heads": reviewed_heads,
                    "author_check": "disabled" if args.trust_any_author else "enabled",
+                   "short_head_sha": "accepted" if args.accept_short_head_sha else "checked",
                    "required": args.required_reviews, "ready": ready, "reviews": reviews, "ignored": ignored})
 
     # 2. merge
@@ -642,7 +677,6 @@ def verify(args, forge, kind, number):
     else:
         same_tree = bool(t_head) and t_head == t_merge
         rebase = once(lambda: rebase_base(forge, number, head, merge_commit))
-    heads = once(lambda: forge.pull_heads(number))
     results = [merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase,
                               pr.get("merged_base"), heads)
                for reviewed in (reviewed_heads or [head])]
@@ -705,7 +739,7 @@ def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, me
     heads: sent as it is, a branch or tag of that name would take its place (#73). A full SHA
     always names the commit."""
     result = {"reviewed_head": reviewed, "rule": None}
-    final = bool(head) and head.startswith(reviewed)
+    final = bool(head) and reviewed == head  # reviewed_heads names a review of the final head by the full head
     if final and same_tree:
         return {**result, "status": "passed", "rule": "tree_equality"}
     if not final and len(reviewed) < 40:
@@ -716,7 +750,7 @@ def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, me
                     "detail": f"the review names an abbreviated SHA, and the pull request's heads could not be read ({e})"}
         if listed is None:
             return {**result, "status": "failed",
-                    "detail": f"the review names the older head by the abbreviated SHA {reviewed}, and this forge keeps "
+                    "detail": f"the review names a head by the abbreviated SHA {reviewed}, and this forge keeps "
                               "no list of a pull request's past heads to expand it from (a branch or tag, or a commit "
                               "made to share the abbreviation, could take its place): name the full 40-digit SHA, or "
                               "re-review at the final head"}
@@ -914,6 +948,8 @@ def build_parser():
                    help="an account whose comments may give review NAME; replaces the default for NAME, repeatable")
     p.add_argument("--trust-any-author", action="store_true",
                    help="accept a review from any author (only where just trusted accounts can comment); reported")
+    p.add_argument("--accept-short-head-sha", action="store_true",
+                   help="accept a review naming the final head by an abbreviated SHA (reviews posted before 1.32.1); reported")
     p.add_argument("--allow-bot-merge", action="store_true", help="accept a merge by a bot or app account")
     p.add_argument("--merger", action="append", default=[], help="allowlist of accounts that may merge, repeatable")
     p.add_argument("--bot-account", action="append", default=[], help="treat this account as a bot, repeatable")

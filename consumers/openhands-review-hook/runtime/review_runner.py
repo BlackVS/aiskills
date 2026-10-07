@@ -109,11 +109,13 @@ def switched(conversation, deep_ref):
 
 
 def valid_review(comment, marker, head, bot=None):
+    """A review of HEAD: the marker line names HEAD by its full SHA (#75). An abbreviation the head
+    merely starts with could name another commit made to share it, pushed after the review."""
     if bot and comment.get('user', {}).get('login') != bot:
         return False
     body = comment.get('body', '')
     match = re.match(re.escape(marker) + r' reviewed at head ([0-9a-f]{7,40})\b', body)
-    return bool(match and head.startswith(match[1]) and
+    return bool(match and match[1] == head.lower() and
                 re.search(r'^VERDICT\s*\n(?:READY_FOR_HUMAN_MERGE|RETURN_TO_IMPLEMENTATION)\b', body, re.M))
 
 
@@ -401,6 +403,9 @@ class Runner:
             if not reviews or head.startswith(reviews[-1][0]):
                 return False  # nothing reviewed yet, or a request to review the same head again
             old, verdict = reviews[-1]
+            if len(old) != 40:  # an abbreviation could name a branch or tag in the compare: review afresh
+                self.log(f'patch check skipped: {repo}#{num}: the newest review names its head by an abbreviated SHA')
+                return False
             base = self.api(f'/repos/{repo}/pulls/{num}')['base']['ref']
             was, now = self.change_identity(repo, base, old), self.change_identity(repo, base, head)
             if was != now:
