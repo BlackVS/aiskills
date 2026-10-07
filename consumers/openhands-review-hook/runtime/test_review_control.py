@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import review_policy
 from review_control import Handler
-from review_runner import Runner, RunStore, limit_error, valid_review, config_error, recovered_head, switched, next_page
+from review_runner import Runner, RunStore, limit_error, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
 
 HEAD = 'a' * 40
 QUOTA = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'ACPPromptError',
@@ -610,6 +610,15 @@ class RunnerTests(unittest.TestCase):
         self.assertIn('1.32.1', reason)
         _, _, failures = self.execute(quota=False, short_review=True, resume=self.record(deadline=time.time() - 60))
         self.assertTrue(failures[-1][-1].startswith('no review of the full head posted within'), failures)
+        self.assertIn('check that the installed prompt is from aiskills 1.32.1 or later', failures[-1][-1])
+
+    def test_only_the_bots_abbreviation_of_this_head_is_named(self):
+        short = {'user': {'login': 'hands-bot'}, 'body': f'[hands-bot review] reviewed at head {HEAD[:12]}\nVERDICT\nREADY_FOR_HUMAN_MERGE'}
+        self.assertTrue(abbreviated_review([short], '[hands-bot review]', HEAD, 'hands-bot'))
+        self.assertFalse(abbreviated_review([short], '[hands-bot review]', HEAD, 'someone-else'), 'another login')
+        self.assertFalse(abbreviated_review([short], '[hands-bot review]', 'c' * 40, 'hands-bot'), 'another head')
+        self.assertFalse(abbreviated_review([dict(short, body=short['body'].replace(HEAD[:12], HEAD))],
+                                            '[hands-bot review]', HEAD, 'hands-bot'), 'the full head is a review')
 
     def test_a_refused_read_at_the_deadline_fails_as_the_service(self):
         # #64 item 13: a non-transient error on the last look is not a missing review
@@ -818,7 +827,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(store.load(), [], 'and nothing is left to resume after it')
 
     def unchanged(self, comments, identities, head=HEAD, label='review-this', selected='codex-astra', later=None,
-                  bot=None, reviewer='hands-bot', fail=None, on_label=None, on_note=None, on_comments=None):
+                  bot=None, reviewer='hands-bot', fail=None, on_label=None, on_note=None, on_comments=None, on_sleep=None):
         """A request on `head` with these PR comments; `identities` maps a head (or its prefix)
         to its change's patch identity, or is an exception the identity lookup raises.
         `reviewer` is the login whose reviews the patch check trusts (`bot` the receiver's)."""
@@ -851,7 +860,7 @@ class RunnerTests(unittest.TestCase):
                     on_label()
                 labels.append(args)
             runner = Runner(api, app, set_label, lambda p: (p, p), fail or (lambda *args: failures.append(args)),
-                            log=logs.append, timeout=10, sleep=lambda _: None, llm_ref=lambda name: None,
+                            log=logs.append, timeout=10, sleep=on_sleep or (lambda _: None), llm_ref=lambda name: None,
                             problems=lambda s: {}, note=on_note or (lambda *args: notes.append(args)), change_identity=identity,
                             bot=bot, reviewer=reviewer)
             with patch('review_runner.read_settings', return_value={'primary': 'codex-astra', 'secondary': None, 'fallback': None}):
@@ -912,8 +921,10 @@ class RunnerTests(unittest.TestCase):
         def landed(repo, num, text):
             comments.append({'body': '⚠️ [hands-bot review] note: ' + text})
             raise TimeoutError('the answer was lost')
-        starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_note=landed)
+        slept = []
+        starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_note=landed, on_sleep=slept.append)
         self.assertEqual((starts, failures), ([], []), 'it was posted: the request ends as noted, no review')
+        self.assertIn(NOTE_SETTLE, slept, 'the forge is given a moment to store the POST before the read-back')
         self.assertEqual(labels[-1], ('owner/repo', 1, 'hands-reviewed', True))
         comments[:] = [self.review_comment(old)]
         def lost(repo, num, text):

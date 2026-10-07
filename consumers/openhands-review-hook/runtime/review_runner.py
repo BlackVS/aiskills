@@ -133,7 +133,8 @@ def abbreviated_review(comments, marker, head, bot=None):
 
 
 ABBREVIATED = ('; a comment names the head by an abbreviated SHA, which is not taken as a review of it: '
-               'install the prompt of aiskills 1.32.1 or later (it asks for the full SHA), then re-add the label')
+               'check that the installed prompt is from aiskills 1.32.1 or later (it asks for the full SHA), '
+               'then re-add the label')
 
 
 def review_verdict(comment, marker, bot=None):
@@ -697,7 +698,7 @@ class Runner:
                     except Exception as error:  # still unreachable: the log line above says what to do
                         self.log(f'posted review not marked: {repo}#{num}: {type(error).__name__}')
                     return
-                if abbreviated_review(comments if comments is not MISSED else [], self.marker, head, self.bot):
+                if abbreviated_review(comments, self.marker, head, self.bot):
                     self.fail(repo, num, f'no review of the full head posted within {self.timeout // 60} minutes' + ABBREVIATED)
                     return
                 self.fail(repo, num, f'no review posted within {self.timeout // 60} minutes; no automatic retry')

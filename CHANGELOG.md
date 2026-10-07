@@ -21,9 +21,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
     failure asks for a look at the PR before the label is re-added.
 - hands consumer: when the conversation finishes, or the deadline passes,
   while a bot comment names the head by an abbreviated SHA, the failure says
-  so. Since 1.33.0 such a comment is no review of the head. The failure names
-  the prompt of 1.32.1 or later as the fix, instead of saying that no review
-  was posted (#64 item 15).
+  so. Since 1.33.0 such a comment is no review of the head. The failure asks
+  to check that the installed prompt is from 1.32.1 or later, instead of
+  saying that no review was posted (#64 item 15).
 - hands consumer tests: a refused (non-transient) comments read at the
   deadline is pinned as a service failure, not a missing review (#64 item 13).
 
