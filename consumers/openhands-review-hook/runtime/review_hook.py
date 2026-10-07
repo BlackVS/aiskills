@@ -231,18 +231,23 @@ def run_review(repo, num, title, label, profile, resume=None):
 
 def resume_runs():
     """On service start, re-attach a watcher to every run recorded before the
-    restart; its conversation kept running in Canvas meanwhile."""
+    restart; its conversation kept running in Canvas meanwhile. Returns the
+    PRs resumed: their runs label them, so restart recovery leaves them alone
+    even once a run has ended (one holding a posted review ends at once)."""
+    resumed = set()
     for record in RUNS.load():
         repo, num = record["repo"], record["num"]
+        resumed.add((repo, num))
         with lock:
             in_flight.add((repo, num))
         print(f"review resume: {repo}#{num} conversation={record['conversation']}", flush=True)
         threading.Thread(target=run_review,
                          args=(repo, num, record.get("title", ""), record["label"], record["profile"], record),
                          daemon=True).start()
+    return resumed
 
 
-def recover_stale():
+def recover_stale(resumed=()):
     """On service start, clear L_WORKING left over from a lost run."""
     try:
         res = api(
@@ -255,8 +260,8 @@ def recover_stale():
             repo = issue["repository"]["full_name"]
             num = issue["number"]
             with lock:
-                resumed = (repo, num) in in_flight
-            if resumed:
+                running = (repo, num) in in_flight
+            if running or (repo, num) in resumed:
                 continue  # its watcher was re-attached by resume_runs()
             # A run whose review was already posted only lost its label swap.
             if recovered_head(api, repo, num, MARKER, BOT_NAME, WATCH_SECONDS):
@@ -310,6 +315,11 @@ class Handler(BaseHTTPRequestHandler):
             if key in in_flight:
                 return
             in_flight.add(key)
+        # A posted review held for the next start (#64 item 7) belongs to an older request: it goes
+        # before this request's labels change, so a restart in between cannot answer this request with it.
+        # The run state is never a reason to hold up a review: when it cannot be updated, say so and go on.
+        if not RUNS.clear(repo, num):
+            print(f"run state not updated for the new request: {repo}#{num} a held review may label it done after a restart", flush=True)
         print(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}", flush=True)
         for l, _ in requested:
             set_label(repo, num, l, False)
@@ -320,6 +330,5 @@ class Handler(BaseHTTPRequestHandler):
                          daemon=True).start()
 
 
-resume_runs()
-recover_stale()
+recover_stale(resume_runs())
 HTTPServer(("127.0.0.1", int(os.environ.get("HOOK_PORT", "8081"))), Handler).serve_forever()

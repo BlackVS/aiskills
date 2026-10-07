@@ -221,7 +221,9 @@ class RunStore:
     instead of failing the request.
 
     A record is written once the conversation exists and removed when the run
-    ends either way. The file is never a reason to fail a review: a write that
+    ends either way, with one exception: a run whose review is posted but whose
+    `working` label could not be removed is kept, marked `posted`, until the
+    next start labels it done or a new request on the PR replaces it. The file is never a reason to fail a review: a write that
     fails is logged and the run goes on unrecorded (a restart then treats it
     as before: recovered if its comment is already posted, failed otherwise).
     The one exception is the fallback: it starts only after the previous
@@ -340,7 +342,7 @@ class Runner:
     def run(self, repo, num, title, label, selected, prompt_file, workspaces, resume=None):
         """One review. `resume` is a record from the RunStore: the conversation
         it names is watched instead of a new one being started."""
-        self.failure_reported = False
+        self.failure_reported, self.held = False, False
         try:
             self._run(repo, num, title, label, selected, prompt_file, workspaces, resume)
         except Exception as error:
@@ -353,7 +355,7 @@ class Runner:
             except Exception:  # the forge that failed may fail the report too (fail() logged it): never kill the thread
                 pass
         finally:
-            if self.runs:
+            if self.runs and not self.held:
                 self.runs.clear(repo, num)
 
     def resume(self, record, prompt_file, workspaces):
@@ -382,6 +384,42 @@ class Runner:
         if switch and conv_id:
             self._verify_switch(repo, num, profile, conv_id, switch)
         return True
+
+    def _hold_posted(self, record):
+        """Keep the run on disk, marked posted, when its review is on the PR but `working` could not be
+        removed: the label would otherwise outlive the watch window that restart recovery looks back
+        over, and recovery would then call the review missing and invite a second one (#64 item 7).
+        The next start of the receiver labels it done (`_label_posted`); a later request on the PR
+        replaces or clears the record, since there is one per PR."""
+        if self.runs and self.runs.save(dict(record, posted=True)):
+            self.held = True
+            self.log(f'posted review kept for the next start: {record["repo"]}#{record["num"]}')
+        elif self.runs:  # the run state write failed (logged): label it by hand
+            self.log(f'posted review not kept: {record["repo"]}#{record["num"]}; add `{self.done}` by hand')
+
+    def _label_posted(self, record):
+        """After a restart: label done the review a held run posted. Nothing is said on the PR, which
+        has the review and was never told otherwise. The run's labels are still its own: a later
+        request replaces or clears the record. A PR that moved or closed meanwhile loses `working`
+        only, since the review is not of its head. A forge that is still unreachable keeps the record
+        for the next start; any other error is logged, never reported as a failed review."""
+        repo, num, head = record['repo'], record['num'], record['head']
+        try:
+            current = self.api(f'/repos/{repo}/pulls/{num}')
+            if current.get('state') != 'open' or current['head']['sha'] != head:
+                self.set_label(repo, num, self.working, False)
+                self.log(f'posted review is stale, not labelled done: {repo}#{num} the pull request changed or closed')
+                return
+            self.set_label(repo, num, self.working, False)
+            self.set_label(repo, num, self.done, True)
+        except Exception as error:
+            if transient(error):
+                self.log(f'posted review label swap failed: {repo}#{num}: {type(error).__name__}')
+                self._hold_posted(record)  # logs whether it is kept for the next start
+            else:
+                self.log(f'posted review not labelled: {repo}#{num}: {type(error).__name__}')
+            return
+        self.log(f'review done (posted before the restart): {repo}#{num} profile={record["profile"]}')
 
     def _verify_switch(self, repo, num, profile, conv_id, switch):
         """Combined mode signs the review with the primary's model; say so on the
@@ -545,6 +583,9 @@ class Runner:
         return choices, reading, head, since
 
     def _run(self, repo, num, title, label, selected, prompt_file, workspaces, resume=None):
+        if resume and resume.get('posted'):
+            self._label_posted(resume)
+            return
         if resume:
             # The choices, head and window were fixed when the run started; the
             # settings file is not re-read, so a save during the restart
@@ -598,7 +639,7 @@ class Runner:
                 self.fail(repo, num, 'the pull request changed or closed; request a fresh review')
                 return
             if resume and attempt == resume['attempt']:
-                conv_id, ends = resume['conversation'], resume['deadline']
+                conv_id, ends, record = resume['conversation'], resume['deadline'], resume
                 self.log(f'review resumed: {repo}#{num} head={head} profile={profile} attempt={attempt + 1} conversation={conv_id}')
             else:
                 if attempt and self.runs and not self.runs.clear(repo, num):
@@ -619,15 +660,22 @@ class Runner:
                 ends = started + self.timeout  # the attempt's deadline, fixed here: a restart keeps it whatever WATCH_MINUTES says then
                 self.log(f'review attempt: {repo}#{num} head={head} profile={profile}'
                          + (f' start={start} agent-settings={start}' if switch else '') + f' attempt={attempt + 1} conversation={conv_id}')
+                record = {'repo': repo, 'num': num, 'title': title, 'label': label, 'profile': profile,
+                          'choices': choices, 'reading': reading, 'head': head, 'since': since,
+                          'attempt': attempt, 'conversation': conv_id, 'started': started, 'deadline': ends}
                 if self.runs:
-                    self.runs.save({'repo': repo, 'num': num, 'title': title, 'label': label, 'profile': profile,
-                                    'choices': choices, 'reading': reading, 'head': head, 'since': since,
-                                    'attempt': attempt, 'conversation': conv_id, 'started': started, 'deadline': ends})
+                    self.runs.save(record)
             deadline = time.monotonic() + max(0.0, ends - time.time())
             posted = False  # a review is on the PR: the deadline must not call it missing
             comments_read = lambda: self.api(f'/repos/{repo}/issues/{num}/comments?since={since}')
-            while time.monotonic() < deadline:
-                self.sleep(self.poll)
+            # Resumed past its deadline (the receiver was down for it): the watch looks once, without
+            # waiting, so a conversation that finished or hit a quota error meanwhile is still read (#64 item 9).
+            overdue = bool(resume) and attempt == resume['attempt'] and time.monotonic() >= deadline
+            while overdue or time.monotonic() < deadline:
+                if overdue:
+                    overdue = False
+                else:
+                    self.sleep(self.poll)
                 comments = self._watched(repo, num, comments_read)
                 if comments is MISSED:
                     continue
@@ -701,11 +749,16 @@ class Runner:
                     self.log(f'review posted, not labelled done: {repo}#{num} the forge was unreachable until the deadline')
                     try:
                         self.set_label(repo, num, self.working, False)
+                    except Exception as error:  # still unreachable: keep the run so a restart labels it (#64 item 7)
+                        self.log(f'posted review not marked: {repo}#{num}: {type(error).__name__}')
+                        self._hold_posted(record)
+                        return
+                    try:
                         if self.note:
                             self.note(repo, num, f'the review above is posted, but the forge could not be reached to label '
                                                  f'it done within {self.timeout // 60} minutes. It stands: add `{self.done}` by '
                                                  'hand; no new review is needed.')
-                    except Exception as error:  # still unreachable: the log line above says what to do
+                    except Exception as error:  # the log line above says what to do
                         self.log(f'posted review not marked: {repo}#{num}: {type(error).__name__}')
                     return
                 if abbreviated_review(comments, self.marker, head, self.bot):

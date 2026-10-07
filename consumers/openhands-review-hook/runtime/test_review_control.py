@@ -401,7 +401,7 @@ class RunnerTests(unittest.TestCase):
                 primary='codex-astra', fallback='claude-opus', secondary=None, llm_refs=None, explicit=False,
                 profile_info=None, prompt_text='model={model} label={label}', runs=None, resume=None, on_comments=None, usage_id=None,
                 break_after_completion=None, fail=None, on_app=None, on_events=None, on_pulls=None, on_label=None,
-                short_review=False):
+                short_review=False, status=None):
         starts, labels, failures, calls = [], [], [], {'comments': 0}
         self.notes = notes = []
         def note(*args):
@@ -434,7 +434,7 @@ class RunnerTests(unittest.TestCase):
                 raise OSError('canvas down')
             if on_app:
                 on_app()
-            info = {'execution_status': 'finished' if finished else 'error'}
+            info = {'execution_status': status or ('finished' if finished else 'error')}
             if usage_id:
                 info['agent'] = {'llm': {'usage_id': usage_id}}
             return info  # usage_id None: a server without the field
@@ -559,6 +559,64 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual((failures, labels[-1]), ([], ('owner/repo', 1, 'hands-reviewed', True)), 'the last try at the deadline completes it')
         # with nothing posted, the deadline still says "no review posted": test_timeout_does_not_retry
 
+    def test_a_posted_review_left_on_working_is_kept_for_the_next_start(self):
+        # #64 item 7: the forge is down from the swap to the end, so hands-reviewing stays; the run is
+        # kept, marked posted, instead of leaving the PR to a recovery that looks back one window only
+        def clock():
+            return iter([0, 0] + [100] * 20).__next__
+        def always_down():
+            raise TimeoutError()
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp) / 'runs.json')
+            starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(),
+                                                    on_label=always_down, runs=store)
+            self.assertEqual((failures, self.notes), ([], []))
+            [held] = store.load()
+            self.assertEqual((held['posted'], held['head'], held['conversation']), (True, HEAD, '1'))
+            self.assertIn('posted review kept for the next start: owner/repo#1', self.logs)
+            # the next start: labelled done, no conversation, nothing said on the PR, the record gone
+            starts, labels, failures = self.execute(quota=False, resume=held, runs=store)
+            self.assertEqual((starts, failures, self.notes), ([], [], []))
+            self.assertEqual(labels, [('owner/repo', 1, 'hands-reviewing', False), ('owner/repo', 1, 'hands-reviewed', True)])
+            self.assertIn('review done (posted before the restart): owner/repo#1 profile=codex-astra', self.logs)
+            self.assertEqual(store.load(), [])
+            # the forge is still down at that start: kept again, for the start after
+            store.save(held)
+            starts, labels, failures = self.execute(quota=False, resume=held, runs=store, on_label=always_down)
+            self.assertEqual((starts, failures), ([], []))
+            self.assertEqual([r.get('posted') for r in store.load()], [True])
+            # a refusal is no outage: logged, the record dropped, still never a failure comment
+            starts, labels, failures = self.execute(quota=False, resume=held, runs=store,
+                                                    on_label=self.raising_once(self.http_error(403)))
+            self.assertEqual((starts, failures, store.load()), ([], [], []))
+            self.assertIn('posted review not labelled: owner/repo#1: HTTPError', self.logs)
+            # the PR moved meanwhile: the review is not of its head, so hands-reviewing goes and nothing more
+            moved = dict(held, head='c' * 40)
+            store.save(moved)
+            starts, labels, failures = self.execute(quota=False, resume=moved, runs=store)
+            self.assertEqual((starts, failures, labels, store.load()), ([], [], [('owner/repo', 1, 'hands-reviewing', False)], []))
+            # a new request drops the held run at the receiver, before its labels change:
+            # test_adapters' run_restart(boundary=True)
+        # a run store that cannot be written: never claimed as kept, and the run is cleared as usual
+        class Unwritable(RunStore):
+            def _write(self, runs):
+                self.log('run state not saved: runs.json: OSError'); return False
+        with tempfile.TemporaryDirectory() as temp:
+            store = Unwritable(Path(temp) / 'runs.json', log=lambda line: None)
+            cleared = []
+            store.clear = lambda repo, num: cleared.append((repo, num)) or True
+            starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(),
+                                                    on_label=always_down, runs=store)
+            self.assertEqual(failures, [])
+            self.assertNotIn('posted review kept for the next start: owner/repo#1', self.logs)
+            self.assertIn('posted review not kept: owner/repo#1; add `hands-reviewed` by hand', self.logs)
+            self.assertEqual(cleared, [('owner/repo', 1)], 'nothing held: the run is cleared at its end')
+        # without a run store nothing is kept, and the forge stays unreachable: logged, nothing raised or said
+        starts, labels, failures = self.execute(quota=False, completed_first=True, clock=clock(), on_label=always_down)
+        self.assertEqual((failures, self.notes), ([], []))
+        self.assertNotIn('posted review kept for the next start: owner/repo#1', self.logs)
+        self.assertIn('posted review not marked: owner/repo#1: TimeoutError', self.logs)
+
     def test_a_missed_last_look_is_taken_again_at_the_deadline(self):
         # one watch iteration whose comment read fails, then the deadline (#64 item 2)
         def clock():
@@ -598,8 +656,23 @@ class RunnerTests(unittest.TestCase):
         starts, labels, failures = self.execute(quota=False, completed_first=True, resume=late)
         self.assertEqual((starts, failures, labels[-1]), ([], [], ('owner/repo', 1, 'hands-reviewed', True)),
                          'the review posted while the receiver was down is labelled done')
-        starts, labels, failures = self.execute(quota=False, resume=self.record(deadline=time.time() - 60))
+        starts, labels, failures = self.execute(quota=False, status='running', resume=self.record(deadline=time.time() - 60))
         self.assertTrue(failures[-1][-1].startswith('no review posted within'), failures)
+
+    def test_a_resumed_run_past_its_deadline_reads_the_conversation_once(self):
+        # #64 item 9: what happened to the conversation while the receiver was down still decides
+        late = lambda **kw: self.record(deadline=time.time() - 60, **kw)
+        # a quota error: the configured fallback starts, on a fresh deadline, and completes
+        starts, labels, failures = self.execute(resume=late(), comment_after_calls=2)
+        self.assertEqual(([s['agent_profile_id'] for s in starts], failures), (['claude-opus'], []))
+        self.assertEqual(labels[-1], ('owner/repo', 1, 'hands-reviewed', True))
+        # finished without posting: said as such, not as a timeout
+        starts, labels, failures = self.execute(quota=False, finished=True, resume=late())
+        self.assertEqual(starts, [])
+        self.assertTrue(failures[-1][-1].startswith('the review conversation finished without posting a review (conversation kept)'), failures)
+        # the fallback attempt itself hit the limit: no second fallback
+        starts, labels, failures = self.execute(resume=late(attempt=1, profile='claude-opus', conversation='second'))
+        self.assertEqual(starts, []); self.assertIn('the single fallback also failed', failures[-1][2])
 
     def test_a_review_naming_an_abbreviated_head_is_named_as_the_cause(self):
         # #64 item 15: since #75 such a comment is no review of the head; the failure says why
@@ -608,7 +681,7 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(reason.startswith('the review conversation finished without a review of the full head'), reason)
         self.assertIn('names the head by an abbreviated SHA', reason)
         self.assertIn('1.32.1', reason)
-        _, _, failures = self.execute(quota=False, short_review=True, resume=self.record(deadline=time.time() - 60))
+        _, _, failures = self.execute(quota=False, short_review=True, status='running', resume=self.record(deadline=time.time() - 60))
         self.assertTrue(failures[-1][-1].startswith('no review of the full head posted within'), failures)
         self.assertIn('check that the installed prompt is from aiskills 1.32.1 or later', failures[-1][-1])
 
