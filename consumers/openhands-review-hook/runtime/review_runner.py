@@ -4,6 +4,7 @@ import http.client
 import json
 import os
 import re
+import ssl
 import threading
 import time
 import urllib.error
@@ -21,15 +22,23 @@ MISSED = object()  # a watch read that failed transiently: try again at the next
 
 def transient(error):
     """A forge or Canvas error worth trying again: a timeout, a refused or dropped connection,
-    a broken response, or an HTTP 5xx or 429. Any other HTTP status is an answer."""
+    a broken response, or an HTTP 5xx or 429. Any other HTTP status is an answer, and a
+    certificate that fails verification is a setup fault, not an outage: the run ends at once
+    instead of polling into it for its whole window (#64 item 3)."""
     if isinstance(error, urllib.error.HTTPError):
         return error.code >= 500 or error.code == 429
+    if isinstance(getattr(error, 'reason', None), ssl.SSLCertVerificationError) or \
+            isinstance(error, ssl.SSLCertVerificationError):
+        return False
     return isinstance(error, (OSError, http.client.HTTPException))
 
 
 def retried(call, attempts=3, delay=1.0, sleep=time.sleep):
     """CALL's result, trying again after a transient error (1 s, then 2 s by default): for
-    reads and idempotent writes only, since a write that timed out may still have happened."""
+    reads and idempotent writes only, since a write that timed out may still have happened.
+    The receivers read with a 20 s timeout, so one retried read can take up to 3 x 20 s + 3 s
+    (per page), and a watch iteration makes several reads after its deadline check: a watch
+    can end a few minutes past its deadline in the worst case (#64 item 4)."""
     for attempt in range(attempts):
         try:
             return call()

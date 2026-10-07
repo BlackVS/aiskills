@@ -627,6 +627,15 @@ class RunnerTests(unittest.TestCase):
         _, _, failures = self.execute(quota=False, on_comments=refused, resume=self.record(deadline=time.time() - 60))
         self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
 
+    def test_a_certificate_failure_during_the_watch_fails_at_once(self):
+        # not polled into for the whole window, as a transient error would be (#64 item 3)
+        import ssl
+        def bad_cert():
+            raise urllib.error.URLError(ssl.SSLCertVerificationError(1, 'certificate verify failed'))
+        _, _, failures = self.execute(quota=False, on_comments=bad_cert)
+        self.assertEqual([f[-1] for f in failures], ['review service could not complete the request; inspect the service locally'])
+        self.assertNotIn('watch read failed, retrying at the next poll: owner/repo#1: URLError', self.logs)
+
     def test_a_failure_is_reported_once(self):
         # the report's comment is posted, then something raises: no second "could not complete" (#64 item 6)
         failures = []
@@ -688,6 +697,18 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(all(transient(e) for e in (TimeoutError(), ConnectionResetError(), urllib.error.URLError('x'),
                                                    http.client.IncompleteRead(b''), self.http_error(500), self.http_error(429))))
         self.assertFalse(any(transient(e) for e in (self.http_error(404), self.http_error(403), ValueError(), KeyError())))
+        # a certificate that fails verification is a setup fault: never retried, raw or wrapped (#64 item 3)
+        import ssl
+        bad_cert = ssl.SSLCertVerificationError(1, 'certificate verify failed')
+        self.assertFalse(transient(bad_cert))
+        self.assertFalse(transient(urllib.error.URLError(bad_cert)))
+        self.assertTrue(transient(urllib.error.URLError(ConnectionRefusedError(111, 'refused'))), 'a refused connection is')
+        cert_calls = []
+        def cert_down():
+            cert_calls.append(1); raise urllib.error.URLError(bad_cert)
+        with self.assertRaises(urllib.error.URLError):
+            retried(cert_down, sleep=lambda _: None)
+        self.assertEqual(len(cert_calls), 1, 'tried once')
         sleeps, calls = [], []
         def flaky():
             calls.append(1)
