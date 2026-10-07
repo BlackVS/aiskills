@@ -18,17 +18,18 @@ from pathlib import Path
 
 
 class AdapterTests(unittest.TestCase):
-    def run_adapter(self, github, refused=False, blocked=False):
+    def run_adapter(self, github, refused=False, blocked=False, stuck=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
         label is taken off again; the request is put back
         and must run then: the failed start released the PR (#64 item 16). BLOCKED (GitHub): another
-        PR, listed first, keeps failing its start on every poll; the request still runs."""
+        PR, listed first, keeps failing its start on every poll; the request still runs. STUCK (with
+        REFUSED): taking hands-reviewing off fails too; that is logged and the PR is still released."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = {'review-this'}
         starts, failures, errors = [], [], []
-        done, refusal = threading.Event(), threading.Event()
+        done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_GET(self): self.handle_request()
@@ -50,6 +51,9 @@ class AdapterTests(unittest.TestCase):
                     if self.command == 'POST':  # PR 2's start is refused on every poll
                         refusal.set(); self.send_response(403); self.send_header('Content-Length', '0'); self.end_headers(); return
                     result = [{'name': 'review-this', 'id': 1}]
+                elif stuck and refusal.is_set() and not cleanup.is_set() and self.command == 'DELETE' \
+                        and path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
+                    cleanup.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif refused and not refusal.is_set() and self.command == 'POST' and path.endswith('/issues/1/labels') \
                         and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
                     # the write is stored, its answer lost: hands-reviewing is set with no run behind it
@@ -126,7 +130,10 @@ class AdapterTests(unittest.TestCase):
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
                     time.sleep(.5)  # the failed start unwinds
                     self.assertEqual(starts, [])
-                    self.assertNotIn('hands-reviewing', labels, 'the failed start takes hands-reviewing off again (#64 item 17)')
+                    if stuck:  # the forge refused that too: the label stays, the PR is released all the same
+                        self.assertTrue(cleanup.is_set()); self.assertIn('hands-reviewing', labels)
+                    else:
+                        self.assertNotIn('hands-reviewing', labels, 'the failed start takes hands-reviewing off again (#64 item 17)')
                     labels.add('review-this')  # the user asks again
                     request()
                 success = done.wait(12)
@@ -136,6 +143,8 @@ class AdapterTests(unittest.TestCase):
             self.assertTrue(success,output)
             if refused:
                 self.assertIn('review start failed: owner/repo#1: HTTPError 503', output)
+            if stuck:
+                self.assertIn('working label not removed: owner/repo#1: HTTPError 503', output)
             if blocked:
                 self.assertIn('review start failed: owner/repo#2: HTTPError 403', output)
             self.assertEqual([s['agent_profile_id'] for s in starts],['codex-astra','claude-opus'])
@@ -328,6 +337,8 @@ class AdapterTests(unittest.TestCase):
     def test_gitea_adapter_quota_fallback(self): self.run_adapter(False)
     def test_github_adapter_runs_a_request_after_a_failed_start(self): self.run_adapter(True, refused=True)
     def test_gitea_adapter_runs_a_request_after_a_failed_start(self): self.run_adapter(False, refused=True)
+    def test_github_adapter_releases_a_pr_whose_label_cannot_be_cleaned(self): self.run_adapter(True, refused=True, stuck=True)
+    def test_gitea_adapter_releases_a_pr_whose_label_cannot_be_cleaned(self): self.run_adapter(False, refused=True, stuck=True)
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
 
     def run_restart(self, github, held=False, down=False, boundary=False, broken=False):
