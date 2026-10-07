@@ -331,10 +331,16 @@ class Handler(BaseHTTPRequestHandler):
                              daemon=True).start()
         except Exception as e:
             # No run started: release the PR, or every later request on it is ignored
-            # until a restart (#64 item 16).
+            # until a restart (#64 item 16). First take hands-reviewing off again: a write
+            # whose answer was lost may still have set it, and with no run behind it the
+            # next start would fail the PR as "restarted mid-run" (#64 item 17).
+            print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
+            try:
+                set_label(repo, num, L_WORKING, False)
+            except Exception as e:
+                print(f"working label not removed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
             with lock:
                 in_flight.discard(key)
-            print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
 
 
 recover_stale(resume_runs())

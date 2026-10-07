@@ -20,7 +20,8 @@ from pathlib import Path
 class AdapterTests(unittest.TestCase):
     def run_adapter(self, github, refused=False, blocked=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
-        forge first answers 503 to setting hands-reviewing, so no run starts; the request is put back
+        forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
+        label is taken off again; the request is put back
         and must run then: the failed start released the PR (#64 item 16). BLOCKED (GitHub): another
         PR, listed first, keeps failing its start on every poll; the request still runs."""
         head = 'a' * 40
@@ -51,6 +52,8 @@ class AdapterTests(unittest.TestCase):
                     result = [{'name': 'review-this', 'id': 1}]
                 elif refused and not refusal.is_set() and self.command == 'POST' and path.endswith('/issues/1/labels') \
                         and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
+                    # the write is stored, its answer lost: hands-reviewing is set with no run behind it
+                    labels.add('hands-reviewing')
                     refusal.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif path == '/forge/repos/owner/repo/issues/1/labels':
                     if self.command == 'POST':
@@ -123,7 +126,8 @@ class AdapterTests(unittest.TestCase):
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
                     time.sleep(.5)  # the failed start unwinds
                     self.assertEqual(starts, [])
-                    labels.discard('hands-reviewing'); labels.add('review-this')  # the user asks again
+                    self.assertNotIn('hands-reviewing', labels, 'the failed start takes hands-reviewing off again (#64 item 17)')
+                    labels.add('review-this')  # the user asks again
                     request()
                 success = done.wait(12)
             finally:
