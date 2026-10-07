@@ -338,7 +338,7 @@ def trigger(repo, num, title):
         # to the other PRs, so one PR that keeps failing never holds them up.
         with lock:
             in_flight.discard(key)
-        log(f"review start failed: {repo}#{num}: {type(e).__name__}")
+        log(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
 
 
 def recover_stale(resumed=()):

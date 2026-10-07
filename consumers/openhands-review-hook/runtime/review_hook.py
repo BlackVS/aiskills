@@ -334,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
             # until a restart (#64 item 16).
             with lock:
                 in_flight.discard(key)
-            print(f"review start failed: {repo}#{num}: {type(e).__name__}", flush=True)
+            print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
 
 
 recover_stale(resume_runs())

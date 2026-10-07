@@ -18,10 +18,11 @@ from pathlib import Path
 
 
 class AdapterTests(unittest.TestCase):
-    def run_adapter(self, github, refused=False):
+    def run_adapter(self, github, refused=False, blocked=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge first answers 503 to setting hands-reviewing, so no run starts; the request is put back
-        and must run then: the failed start released the PR (#64 item 16)."""
+        and must run then: the failed start released the PR (#64 item 16). BLOCKED (GitHub): another
+        PR, listed first, keeps failing its start on every poll; the request still runs."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = {'review-this'}
@@ -39,9 +40,15 @@ class AdapterTests(unittest.TestCase):
                 if path == '/forge/search/issues':
                     query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)['q'][0]
                     items = [] if 'label:' in query else [{'repository_url': 'https://example.test/repos/owner/repo', 'number': 1, 'title': 'test', 'labels': [{'name': n} for n in labels]}]
+                    if blocked and items:
+                        items.insert(0, {'repository_url': 'https://example.test/repos/owner/repo', 'number': 2, 'title': 'other', 'labels': [{'name': 'review-this'}]})
                     result = {'items': items}
                 elif path == '/forge/repos/issues/search': result = []
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}}
+                elif blocked and path.startswith('/forge/repos/owner/repo/issues/2/labels'):
+                    if self.command == 'POST':  # PR 2's start is refused on every poll
+                        refusal.set(); self.send_response(403); self.send_header('Content-Length', '0'); self.end_headers(); return
+                    result = [{'name': 'review-this', 'id': 1}]
                 elif refused and not refusal.is_set() and self.command == 'POST' and path.endswith('/issues/1/labels') \
                         and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
                     refusal.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
@@ -124,7 +131,9 @@ class AdapterTests(unittest.TestCase):
                 server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(success,output)
             if refused:
-                self.assertIn('review start failed: owner/repo#1: HTTPError', output)
+                self.assertIn('review start failed: owner/repo#1: HTTPError 503', output)
+            if blocked:
+                self.assertIn('review start failed: owner/repo#2: HTTPError 403', output)
             self.assertEqual([s['agent_profile_id'] for s in starts],['codex-astra','claude-opus'])
             self.assertFalse(failures); self.assertFalse(errors)
             self.assertEqual(labels,{'hands-reviewed'})
@@ -315,6 +324,7 @@ class AdapterTests(unittest.TestCase):
     def test_gitea_adapter_quota_fallback(self): self.run_adapter(False)
     def test_github_adapter_runs_a_request_after_a_failed_start(self): self.run_adapter(True, refused=True)
     def test_gitea_adapter_runs_a_request_after_a_failed_start(self): self.run_adapter(False, refused=True)
+    def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
 
     def run_restart(self, github, held=False, down=False, boundary=False, broken=False):
         """The receiver is killed while a review conversation runs and started again:
