@@ -297,15 +297,25 @@ class AdapterTests(unittest.TestCase):
     def test_github_adapter_quota_fallback(self): self.run_adapter(True)
     def test_gitea_adapter_quota_fallback(self): self.run_adapter(False)
 
-    def run_restart(self, github):
+    def run_restart(self, github, held=False, down=False):
         """The receiver is killed while a review conversation runs and started again:
         the restarted service watches the same conversation, and its stale-label
-        recovery leaves that PR alone."""
+        recovery leaves that PR alone. HELD: the service starts with a run on disk whose
+        review was posted but never labelled (the forge was down at its deadline, #64
+        item 7): it is labelled done, and the recovery, which no longer sees that review
+        in its window, leaves the PR alone instead of calling the run lost. DOWN: the forge still
+        refuses label writes at that start: the run is kept again, and recovery still leaves the PR
+        alone (on GitHub the live labels no longer tell it so)."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed']
-        labels = {'review-this'}
+        labels = {'hands-reviewing'} if held else {'review-this'}
         starts, failures, errors = [], [], []
-        posted, done, searched = threading.Event(), threading.Event(), threading.Event()
+        posted, done, searched, attempted = threading.Event(), threading.Event(), threading.Event(), threading.Event()
+        def stale():
+            # HELD: the search answers as the PR stood when it was asked, after the run has ended
+            # (a search index lags; the run takes no time): only the run's own claim keeps recovery off
+            if held:
+                (attempted if down else done).wait(10); time.sleep(.5)
         item = {'repository_url': 'https://example.test/repos/owner/repo', 'repository': {'full_name': 'owner/repo'}, 'number': 1, 'title': 'test'}
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
@@ -319,11 +329,15 @@ class AdapterTests(unittest.TestCase):
                 if path == '/forge/search/issues':
                     query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)['q'][0]
                     if 'label:' in query:  # the restart recovery's search for working PRs
-                        searched.set(); items = [dict(item, labels=[{'name': n} for n in labels])] if 'hands-reviewing' in labels else []
+                        items = [dict(item, labels=[{'name': n} for n in labels])] if 'hands-reviewing' in labels else []
+                        stale(); searched.set()
                     else: items = [dict(item, labels=[{'name': n} for n in labels])]
                     result = {'items': items}
                 elif path == '/forge/repos/issues/search':
-                    searched.set(); result = [item] if 'hands-reviewing' in labels else []
+                    result = [item] if 'hands-reviewing' in labels else []
+                    stale(); searched.set()
+                elif down and self.command in ('POST', 'DELETE') and '/issues/1/labels' in path:
+                    attempted.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}}
                 elif path == '/forge/repos/owner/repo/issues/1/labels':
                     if self.command == 'POST':
@@ -375,6 +389,32 @@ class AdapterTests(unittest.TestCase):
                     if condition(): return True
                     time.sleep(.05)
                 return False
+            if held:
+                now = time.time()
+                runs_file.write_text(json.dumps({'owner/repo#1': {
+                    'repo': 'owner/repo', 'num': 1, 'title': 'test', 'label': 'review-this', 'profile': 'codex-astra',
+                    'choices': ['codex-astra'], 'reading': None, 'head': head, 'since': '2026-01-01T00:00:00Z',
+                    'attempt': 0, 'conversation': 'conv-0', 'started': now - 7200, 'deadline': now - 4500, 'posted': True}}))
+                proc = start(); outputs = []
+                try:
+                    success = (attempted if down else done).wait(12)
+                    self.assertTrue(wait_for(searched.is_set), 'the service never ran its recovery')
+                    time.sleep(.5)  # the recovery would act on the PR here, from its stale search answer
+                finally:
+                    proc.terminate(); outputs.append(proc.communicate(timeout=5)[0])
+                    server.shutdown(); server.server_close(); thread.join()
+                self.assertTrue(success, outputs[-1])
+                self.assertNotIn('restarted mid-run', outputs[0]); self.assertNotIn('recover error', outputs[0])
+                if down:
+                    self.assertIn('posted review kept for the next start: owner/repo#1', outputs[0])
+                    self.assertEqual((starts, failures, errors, labels), ([], [], [], {'hands-reviewing'}))
+                    self.assertEqual([r.get('posted') for r in json.loads(runs_file.read_text()).values()], [True])
+                    return
+                self.assertIn('review done (posted before the restart): owner/repo#1', outputs[0])
+                self.assertEqual((starts, failures, errors), ([], [], []))  # no conversation, nothing said on the PR
+                self.assertEqual(labels, {'hands-reviewed'})
+                self.assertEqual(json.loads(runs_file.read_text()), {})
+                return
             proc = start(); outputs = []
             try:
                 if not github:
@@ -419,6 +459,10 @@ class AdapterTests(unittest.TestCase):
 
     def test_github_adapter_resumes_after_restart(self): self.run_restart(True)
     def test_gitea_adapter_resumes_after_restart(self): self.run_restart(False)
+    def test_github_adapter_labels_a_held_posted_review_at_start(self): self.run_restart(True, held=True)
+    def test_gitea_adapter_labels_a_held_posted_review_at_start(self): self.run_restart(False, held=True)
+    def test_github_adapter_keeps_a_held_review_while_the_forge_is_down(self): self.run_restart(True, held=True, down=True)
+    def test_gitea_adapter_keeps_a_held_review_while_the_forge_is_down(self): self.run_restart(False, held=True, down=True)
 
 
 if __name__ == '__main__': unittest.main()

@@ -274,15 +274,20 @@ def run_review(repo, num, title, label, profile, resume=None):
 
 def resume_runs():
     """On service start, re-attach a watcher to every run recorded before the
-    restart; its conversation kept running in Canvas meanwhile."""
+    restart; its conversation kept running in Canvas meanwhile. Returns the
+    PRs resumed: their runs label them, so restart recovery leaves them alone
+    even once a run has ended (one holding a posted review ends at once)."""
+    resumed = set()
     for record in RUNS.load():
         repo, num = record["repo"], record["num"]
+        resumed.add((repo, num))
         with lock:
             in_flight.add((repo, num))
         log(f"review resume: {repo}#{num} conversation={record['conversation']}")
         threading.Thread(target=run_review,
                          args=(repo, num, record.get("title", ""), record["label"], record["profile"], record),
                          daemon=True).start()
+    return resumed
 
 def search_prs(label=None):
     """Open PRs in the watched scope (carrying `label` if given):
@@ -323,13 +328,13 @@ def trigger(repo, num, title):
                      daemon=True).start()
 
 
-def recover_stale():
+def recover_stale(resumed=()):
     """On service start, clear L_WORKING left over from a lost run."""
     try:
         for repo, num, _, _ in search_prs(L_WORKING):
             with lock:
-                resumed = (repo, num) in in_flight
-            if resumed:
+                running = (repo, num) in in_flight
+            if running or (repo, num) in resumed:
                 continue  # its watcher was re-attached by resume_runs()
             # Search lags label edits; a review that finished seconds before
             # the restart is still indexed as working. Only the live labels count.
@@ -345,8 +350,7 @@ def recover_stale():
         log(f"recover error: {e}")
 
 
-resume_runs()
-recover_stale()
+recover_stale(resume_runs())
 log(f"polling {', '.join(REPOS) if REPOS else 'user:' + OWNER} every {POLL_SECONDS}s "
     f"(default profile {DEFAULT_PROFILE})")
 while True:

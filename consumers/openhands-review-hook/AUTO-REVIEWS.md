@@ -321,7 +321,12 @@ profiles intact. A receiver restart during a review is safe from 1.18.0: each
 run is recorded in `REVIEW_RUNS_DIR` (default `/opt/openhands/hooks`,
 `review-runs-gitea.json` and `review-runs-github.json`) once its conversation
 exists, and the restarted service re-attaches its watcher (journal:
-`review resume`, then `review resumed`) with the same head and deadline. Only a
+`review resume`, then `review resumed`) with the same head and deadline. A run
+resumed after its deadline reads its conversation once, so a quota error while
+the service was down still starts the fallback. A run whose review was posted
+but whose `hands-reviewing` label could not be removed, because the forge was
+down until the deadline, stays recorded (journal: `posted review kept for the
+next start`), and the next start labels it done. Only a
 run that was never recorded (a write to that directory failed, or a pre-1.18
 runtime started it) falls back to the older recovery: completed when its review
 comment is already posted for the current head, failed otherwise. The Canvas

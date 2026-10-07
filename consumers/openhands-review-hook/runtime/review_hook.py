@@ -231,18 +231,23 @@ def run_review(repo, num, title, label, profile, resume=None):
 
 def resume_runs():
     """On service start, re-attach a watcher to every run recorded before the
-    restart; its conversation kept running in Canvas meanwhile."""
+    restart; its conversation kept running in Canvas meanwhile. Returns the
+    PRs resumed: their runs label them, so restart recovery leaves them alone
+    even once a run has ended (one holding a posted review ends at once)."""
+    resumed = set()
     for record in RUNS.load():
         repo, num = record["repo"], record["num"]
+        resumed.add((repo, num))
         with lock:
             in_flight.add((repo, num))
         print(f"review resume: {repo}#{num} conversation={record['conversation']}", flush=True)
         threading.Thread(target=run_review,
                          args=(repo, num, record.get("title", ""), record["label"], record["profile"], record),
                          daemon=True).start()
+    return resumed
 
 
-def recover_stale():
+def recover_stale(resumed=()):
     """On service start, clear L_WORKING left over from a lost run."""
     try:
         res = api(
@@ -255,8 +260,8 @@ def recover_stale():
             repo = issue["repository"]["full_name"]
             num = issue["number"]
             with lock:
-                resumed = (repo, num) in in_flight
-            if resumed:
+                running = (repo, num) in in_flight
+            if running or (repo, num) in resumed:
                 continue  # its watcher was re-attached by resume_runs()
             # A run whose review was already posted only lost its label swap.
             if recovered_head(api, repo, num, MARKER, BOT_NAME, WATCH_SECONDS):
@@ -320,6 +325,5 @@ class Handler(BaseHTTPRequestHandler):
                          daemon=True).start()
 
 
-resume_runs()
-recover_stale()
+recover_stale(resume_runs())
 HTTPServer(("127.0.0.1", int(os.environ.get("HOOK_PORT", "8081"))), Handler).serve_forever()

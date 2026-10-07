@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.3] - 2026-10-07
+
+### Fixed
+- hands consumer: a review that was posted but could not be labelled done
+  because the forge was down until the deadline no longer turns into a
+  "could not run" failure after a late receiver restart (#64 item 7). When
+  `hands-reviewing` cannot be removed either, the run stays in the run state
+  file marked as posted. The next start of the receiver labels the review done
+  without a new conversation or a PR comment; a new request on the PR drops
+  it first. Restart recovery leaves every PR whose run the service resumed
+  alone, even once that run has ended.
+- hands consumer: a run resumed after its deadline reads its conversation once
+  before it ends (#64 item 9). A quota or rate-limit error while the receiver
+  was down now starts the configured fallback, and a conversation that finished
+  without posting says so, instead of "no review posted".
+
 ## [1.33.2] - 2026-10-07
 
 ### Fixed
