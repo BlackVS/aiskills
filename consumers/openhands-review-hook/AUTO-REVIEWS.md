@@ -329,8 +329,8 @@ container is different: restarting it ends every conversation, so keep that
 restart for an idle moment.
 
 A review is watched until its deadline (`WATCH_MINUTES`, 45 by default). A
-forge read that fails transiently is tried again, up to three times with a
-20-second timeout each, and one poll makes several reads, so a watch can end
+forge read that fails transiently is tried up to three times in all, each
+with a 20-second timeout, and one poll makes several reads, so a watch can end
 a few minutes past its deadline in the worst case. A TLS certificate that
 fails verification is not retried, since waiting does not fix it: the run
 ends at once and is logged (`review failed … URLError`). When it is the

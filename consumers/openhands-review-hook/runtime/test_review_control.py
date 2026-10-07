@@ -703,6 +703,7 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(transient(bad_cert))
         self.assertFalse(transient(urllib.error.URLError(bad_cert)))
         self.assertTrue(transient(urllib.error.URLError(ConnectionRefusedError(111, 'refused'))), 'a refused connection is')
+        self.assertTrue(transient(urllib.error.URLError(ssl.SSLEOFError(8, 'EOF occurred'))), 'other TLS errors still are')
         cert_calls = []
         def cert_down():
             cert_calls.append(1); raise urllib.error.URLError(bad_cert)
