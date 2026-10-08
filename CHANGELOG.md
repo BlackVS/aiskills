@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.6] - 2026-10-08
+
+### Fixed
+- hands consumer: a request whose start fails after its request label was
+  taken off now says so on the PR (#64 item 18): "could not run: the review
+  could not start (HTTPError 503)", or whatever the error was, with the
+  usual advice to add the label again, and `hands-reviewing` comes off as
+  part of it. Before, only the receiver's journal recorded it. The live
+  labels decide, so a removal whose answer was lost counts as done. While
+  the request label is still on the PR, nothing is posted: GitHub's next
+  poll retries the request (Gitea retries at the next label event), and a
+  comment on every poll would flood the PR. The cleanup
+  failure line is now `failed start not cleaned up`.
+
 ## [1.33.5] - 2026-10-07
 
 ### Fixed

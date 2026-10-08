@@ -18,13 +18,16 @@ from pathlib import Path
 
 
 class AdapterTests(unittest.TestCase):
-    def run_adapter(self, github, refused=False, blocked=False, stuck=False):
+    def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
         label is taken off again; the request is put back
         and must run then: the failed start released the PR (#64 item 16). BLOCKED (GitHub): another
         PR, listed first, keeps failing its start on every poll; the request still runs. STUCK (with
-        REFUSED): taking hands-reviewing off fails too; that is logged and the PR is still released."""
+        REFUSED): taking hands-reviewing off fails too; that is logged and the PR is still released.
+        LOST: the first removal of the request label is applied but answered 503; KEPT: it is refused and
+        the label stays. Only LOST (like REFUSED) leaves nothing to ask again, so only it is reported on
+        the PR (#64 item 18)."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = {'review-this'}
@@ -48,12 +51,18 @@ class AdapterTests(unittest.TestCase):
                 elif path == '/forge/repos/issues/search': result = []
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}}
                 elif blocked and path.startswith('/forge/repos/owner/repo/issues/2/labels'):
-                    if self.command == 'POST':  # PR 2's start is refused on every poll
+                    if self.command == 'DELETE':  # PR 2's request label cannot be taken off: its start fails on every poll
                         refusal.set(); self.send_response(403); self.send_header('Content-Length', '0'); self.end_headers(); return
                     result = [{'name': 'review-this', 'id': 1}]
                 elif stuck and refusal.is_set() and not cleanup.is_set() and self.command == 'DELETE' \
                         and path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
                     cleanup.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
+                elif (lost or kept) and not refusal.is_set() and self.command == 'DELETE' \
+                        and path.startswith('/forge/repos/owner/repo/issues/1/labels/') \
+                        and path.split('/')[-1] in ('review-this', '1'):
+                    if lost:
+                        labels.discard('review-this')
+                    refusal.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif refused and not refusal.is_set() and self.command == 'POST' and path.endswith('/issues/1/labels') \
                         and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
                     # the write is stored, its answer lost: hands-reviewing is set with no run behind it
@@ -126,12 +135,14 @@ class AdapterTests(unittest.TestCase):
                     except urllib.error.URLError: time.sleep(.05)
             try:
                 request()
-                if refused:
+                if refused or lost or kept:
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
                     time.sleep(.5)  # the failed start unwinds
                     self.assertEqual(starts, [])
                     if stuck:  # the forge refused that too: the label stays, the PR is released all the same
                         self.assertTrue(cleanup.is_set()); self.assertIn('hands-reviewing', labels)
+                    elif kept and github:
+                        pass  # the request label stayed: the next poll may already have run it
                     else:
                         self.assertNotIn('hands-reviewing', labels, 'the failed start takes hands-reviewing off again (#64 item 17)')
                     labels.add('review-this')  # the user asks again
@@ -141,10 +152,15 @@ class AdapterTests(unittest.TestCase):
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(success,output)
-            if refused:
+            if refused or lost or kept:
                 self.assertIn('review start failed: owner/repo#1: HTTPError 503', output)
-            if stuck:
-                self.assertIn('working label not removed: owner/repo#1: HTTPError 503', output)
+            if stuck:  # the cleanup was refused too: no failure comment could follow it
+                self.assertIn('failed start not cleaned up: owner/repo#1: HTTPError 503', output)
+            # a start that failed after its request label was taken off says so on the PR, once (#64 item 18);
+            # one that still has its request label (PR 2) is retried by the next poll and never comments
+            self.assertEqual([f['body'].split('\n')[0] for f in failures], [] if stuck or not (refused or lost) else
+                             ['⚠️ [test-bot review] could not run: the review could not start (HTTPError 503)'])
+            failures.clear()
             if blocked:
                 self.assertIn('review start failed: owner/repo#2: HTTPError 403', output)
             self.assertEqual([s['agent_profile_id'] for s in starts],['codex-astra','claude-opus'])
@@ -339,6 +355,10 @@ class AdapterTests(unittest.TestCase):
     def test_gitea_adapter_runs_a_request_after_a_failed_start(self): self.run_adapter(False, refused=True)
     def test_github_adapter_releases_a_pr_whose_label_cannot_be_cleaned(self): self.run_adapter(True, refused=True, stuck=True)
     def test_gitea_adapter_releases_a_pr_whose_label_cannot_be_cleaned(self): self.run_adapter(False, refused=True, stuck=True)
+    def test_github_adapter_reports_a_start_whose_label_removal_lost_its_answer(self): self.run_adapter(True, lost=True)
+    def test_gitea_adapter_reports_a_start_whose_label_removal_lost_its_answer(self): self.run_adapter(False, lost=True)
+    def test_github_adapter_stays_quiet_while_the_request_label_remains(self): self.run_adapter(True, kept=True)
+    def test_gitea_adapter_stays_quiet_while_the_request_label_remains(self): self.run_adapter(False, kept=True)
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
 
     def run_restart(self, github, held=False, down=False, boundary=False, broken=False):
