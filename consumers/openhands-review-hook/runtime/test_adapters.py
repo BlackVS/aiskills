@@ -43,7 +43,10 @@ class AdapterTests(unittest.TestCase):
         it is served, and runs the request whose label is still on. TWO (Gitea): the PR has two request
         labels; the start removes the first, whose webhook (by the token's account) still lists the
         second, and is refused the second: that webhook is the receiver's own and starts nothing, so
-        the note is posted once (#64 item 23). With OWN or TWO the fake forge sends a webhook for every
+        the note is posted once (#64 item 23). OWN='quiet' (Gitea): no webhook of the start's own label
+        changes ever comes (lost, as Gitea sends each once), so their counts are still due when the run
+        ends; the run's end drops them, and the request then asked again from the token's account runs
+        again (#64 item 24). With OWN (other than 'quiet') or TWO, the fake forge sends a webhook for every
         label change it applies, as Gitea does."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
@@ -169,7 +172,7 @@ class AdapterTests(unittest.TestCase):
                         with urllib.request.urlopen(hook,timeout=2) as response: self.assertEqual(response.status,204)
                         break
                     except urllib.error.URLError: time.sleep(.05)
-            if own or two:  # Gitea reports each label change as the token's account, with the labels it left
+            if (own or two) and own != 'quiet':  # Gitea reports each label change as the token's account, with the labels it left
                 echo.append(lambda: request('someone' if own == 'other' else 'test-bot', sorted(labels)))
             try:
                 request('test-bot' if own == 'idle' else 'someone')
@@ -200,6 +203,11 @@ class AdapterTests(unittest.TestCase):
                     labels.add('review-this')  # the user asks again
                     request('test-bot' if own else 'someone')
                 if not two:
+                    success = done.wait(12)
+                if own == 'quiet' and success:  # the run has ended once its watch released the PR
+                    time.sleep(1.5)
+                    labels.clear(); labels.add('review-this'); done.clear()
+                    request('test-bot')  # asked again from the token's account
                     success = done.wait(12)
             finally:
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
@@ -239,6 +247,12 @@ class AdapterTests(unittest.TestCase):
             failures.clear()
             if blocked:
                 self.assertIn('review start failed: owner/repo#2: HTTPError 403', output)
+            if own == 'quiet':
+                # the start's two writes were counted and their webhooks never came: the run's end drops
+                # them, so the re-request is served and starts a run again (#64 item 24)
+                self.assertEqual(skipped, 0, output)
+                self.assertEqual([s['agent_profile_id'] for s in starts[2:]], ['codex-astra'], output)
+                del starts[2:]
             self.assertEqual([s['agent_profile_id'] for s in starts],['codex-astra','claude-opus'])
             self.assertFalse(failures); self.assertFalse(errors)
             self.assertEqual(labels,{'hands-reviewed'})
@@ -450,6 +464,7 @@ class AdapterTests(unittest.TestCase):
         # the re-request from the token's account (a site whose token is a person's) still runs
         self.run_adapter(False, refused=True, stuck=True, own='idle')
     def test_gitea_adapter_serves_a_request_from_its_own_account(self): self.run_adapter(False, own='idle')
+    def test_gitea_adapter_ends_its_own_counts_with_the_run(self): self.run_adapter(False, own='quiet')
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
 
     def run_restart(self, github, held=False, down=False, boundary=False, broken=False):
