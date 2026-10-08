@@ -46,7 +46,7 @@ class AdapterTests(unittest.TestCase):
         the note is posted once (#64 item 23). OWN='quiet' (Gitea): no webhook of the start's own label
         changes ever comes (lost, as Gitea sends each once), so their counts are still due when the run
         ends; the run's end drops them, and the request then asked again from the token's account runs
-        again (#64 item 24). Except with OWN='quiet', with OWN or TWO the fake forge sends a webhook for every
+        again (#64 item 24). With OWN (other than 'quiet') or TWO, the fake forge sends a webhook for every
         label change it applies, as Gitea does."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
