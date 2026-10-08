@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.9] - 2026-10-08
+
+### Fixed
+- hands consumer, Gitea receiver: a request start that removes one of two
+  request labels and then fails is reported once (#64 item 23). The
+  webhook of the first removal still listed the second request label and
+  ran the request again. The label changes of the whole start now count as
+  the receiver's own (as those of its failure report did since 1.33.8);
+  a run's relabelling at its end still does not, so a request label added
+  during a run is still served.
+
 ## [1.33.8] - 2026-10-08
 
 ### Fixed
