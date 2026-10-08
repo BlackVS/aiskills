@@ -9,6 +9,23 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.8] - 2026-10-08
+
+### Fixed
+- hands consumer, Gitea receiver: a label webhook caused by the receiver's
+  own label change is ignored (#64 item 22). After a failed start left the
+  request label on, removing a stale `hands-reviewing` sent one more
+  webhook that still listed the request label, so the request ran again
+  and the "could not run" note could be posted twice. Each label change
+  the receiver makes while reporting a failed start accounts for one
+  webhook by the token's account within the next 60 seconds, and that
+  webhook uses it up; a change that fails is not counted. Nothing else is
+  counted: a run's own relabelling still lets its webhook serve a request
+  label added meanwhile. Any further webhook is served as usual, so a site
+  whose token belongs to a person still gets that person's requests,
+  including one made right after the note. Logged as `own label change
+  ignored`.
+
 ## [1.33.7] - 2026-10-08
 
 ### Fixed

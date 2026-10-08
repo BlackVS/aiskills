@@ -87,6 +87,63 @@ RUNS = RunStore(os.path.join(os.environ.get("REVIEW_RUNS_DIR", "/opt/openhands/h
 
 in_flight = set()
 lock = threading.Lock()
+own_login = None  # the account behind TOKEN, read once (see own_change)
+own_writes = {}  # (repo, num) -> times of counted label writes whose webhook is still due
+OWN_WINDOW = 60  # seconds within which a label write's webhook is expected
+counting = threading.local()  # .on while a failed start is reported (see own_write)
+
+
+def own_write(repo, num, write):
+    """WRITE, a label change of this receiver. Only the changes made while a failed start is
+    reported (counting.on, set in this thread by handle_event) are counted for own_change: that
+    report is where a webhook of the receiver's own would run the request again (#64 item 22).
+    A run's own relabelling is not counted, so its webhook still serves a request label added
+    meanwhile, and startup recovery's changes are not either: their webhooks are refused while
+    the receiver is not yet listening, and one delivered later is served as usual. Counted before it is sent, since its webhook may arrive before
+    the answer; a write that raises sends no webhook and is no longer counted (one whose answer
+    was lost may still send one: it is then served as before)."""
+    if not getattr(counting, "on", False):
+        return write()
+    stamp = time.monotonic()
+    with lock:
+        own_writes.setdefault((repo, num), []).append(stamp)
+    try:
+        return write()
+    except Exception:
+        with lock:
+            if stamp in own_writes.get((repo, num), []):
+                own_writes[(repo, num)].remove(stamp)
+        raise
+
+
+def own_change(payload, repo, num):
+    """Whether a webhook reports a label change the receiver made while reporting a failed
+    start. Such a change never carries a new request: when the request label stayed on,
+    removing a stale hands-reviewing would otherwise run the request again and report it
+    twice (#64 item 22). Each counted write accounts for one webhook by the token's account
+    within OWN_WINDOW seconds, and that webhook uses it up; any further webhook, including
+    one from a person whose token the site uses, is served as usual. The account is read
+    once; while it cannot be read, nothing is skipped."""
+    global own_login
+    sender = (payload.get("sender") or {}).get("login")
+    now = time.monotonic()
+    with lock:
+        pending = [t for t in own_writes.get((repo, num), []) if now - t <= OWN_WINDOW]
+        own_writes[(repo, num)] = pending
+    if not sender or not pending:
+        return False
+    if own_login is None:
+        try:
+            own_login = (api("/user") or {}).get("login") or ""
+        except Exception as e:
+            print(f"token account unreadable, own label changes not skipped: {type(e).__name__}", flush=True)
+            return False
+    if not own_login or sender != own_login:
+        return False
+    with lock:
+        if own_writes.get((repo, num)):
+            own_writes[(repo, num)].pop(0)
+    return True
 
 
 def api(path, method="GET", data=None):
@@ -150,9 +207,9 @@ def set_label(repo, num, name, present):
         if lid is None:
             print(f"label {name} not found for {repo}", flush=True)
             return
-        api(f"/repos/{repo}/issues/{num}/labels", "POST", {"labels": [lid]})
+        own_write(repo, num, lambda: api(f"/repos/{repo}/issues/{num}/labels", "POST", {"labels": [lid]}))
     if not present and name in have:
-        api(f"/repos/{repo}/issues/{num}/labels/{have[name]}", "DELETE")
+        own_write(repo, num, lambda: api(f"/repos/{repo}/issues/{num}/labels/{have[name]}", "DELETE"))
 
 
 def request_labels(names):
@@ -298,10 +355,14 @@ class Handler(BaseHTTPRequestHandler):
         pr = p.get("pull_request")
         if not pr or not str(p.get("action", "")).startswith("label"):
             return
-        if not request_labels(l["name"] for l in pr.get("labels", [])):
-            return
         repo = p["repository"]["full_name"]
         num = pr["number"]
+        # Every webhook of an own write uses it up, with or without a request label on the PR.
+        if own_change(p, repo, num):
+            print(f"own label change ignored: {repo}#{num}", flush=True)
+            return
+        if not request_labels(l["name"] for l in pr.get("labels", [])):
+            return
         # The payload is a snapshot; Gitea redelivers webhooks, and a stale
         # redelivery once restarted a finished review. Trust only the live
         # label state.
@@ -340,9 +401,9 @@ class Handler(BaseHTTPRequestHandler):
             # Say so on the PR (#64 item 18): fail_review takes hands-reviewing off and asks for
             # the label again. Gitea sends a label webhook once, so nothing retries this request
             # on its own: the note is posted whether or not the request label came off (#64 item
-            # 21), and says when it is still there. It repeats at most once: when a stale
-            # hands-reviewing was on the PR, its removal sends one more label webhook that still
-            # lists the request label, and that pass finds nothing left to remove. The live labels decide, as
+            # 21), and says when it is still there. When a stale hands-reviewing was on the PR, its
+            # removal sends one more label webhook that still lists the request label: own_change
+            # skips it, so the note is not posted twice (#64 item 22). The live labels decide, as
             # far as they can be read: a removal whose answer was lost took it off all the same.
             try:
                 consumed = not request_labels(labels_of(repo, num))
@@ -352,7 +413,11 @@ class Handler(BaseHTTPRequestHandler):
             if not consumed:
                 reason += "; its request label is still on the pull request: remove it before adding it again"
             try:
-                fail_review(repo, num, reason)
+                counting.on = True  # its label changes are the ones whose webhooks own_change skips
+                try:
+                    fail_review(repo, num, reason)
+                finally:
+                    counting.on = False
             except Exception as e:
                 print(f"failed start not cleaned up: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
             with lock:
