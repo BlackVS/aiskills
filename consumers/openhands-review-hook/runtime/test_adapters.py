@@ -410,6 +410,10 @@ class AdapterTests(unittest.TestCase):
     def test_gitea_adapter_ignores_its_own_label_changes(self): self.run_adapter(False, kept=True, own=True)
     def test_gitea_adapter_uses_up_its_own_change_without_a_request_label(self): self.run_adapter(False, refused=True, own=True)
     def test_gitea_adapter_serves_the_same_change_from_another_account(self): self.run_adapter(False, kept=True, own='other')
+    def test_gitea_adapter_does_not_count_a_failed_cleanup(self):
+        # the report's own label change is refused, so no webhook follows it: its count is dropped, and
+        # the re-request from the token's account (a site whose token is a person's) still runs
+        self.run_adapter(False, refused=True, stuck=True, own='idle')
     def test_gitea_adapter_serves_a_request_from_its_own_account(self): self.run_adapter(False, own='idle')
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
 
