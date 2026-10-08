@@ -88,15 +88,22 @@ RUNS = RunStore(os.path.join(os.environ.get("REVIEW_RUNS_DIR", "/opt/openhands/h
 in_flight = set()
 lock = threading.Lock()
 own_login = None  # the account behind TOKEN, read once (see own_change)
-own_writes = {}  # (repo, num) -> times of this receiver's label writes whose webhook is still due
+own_writes = {}  # (repo, num) -> times of counted label writes whose webhook is still due
 OWN_WINDOW = 60  # seconds within which a label write's webhook is expected
+counting = threading.local()  # .on while a failed start is reported (see own_write)
 
 
 def own_write(repo, num, write):
-    """WRITE, a label change of this receiver, counted for own_change. Counted before it is
-    sent, since its webhook may arrive before the answer; a write that raises sends no webhook
-    and is no longer counted (one whose answer was lost may still send one: it is then served
-    as before)."""
+    """WRITE, a label change of this receiver. Only the changes made while a failed start is
+    reported (counting.on, set in this thread by handle_event) are counted for own_change: that
+    report is where a webhook of the receiver's own would run the request again (#64 item 22).
+    A run's own relabelling is not counted, so its webhook still serves a request label added
+    meanwhile, and startup recovery's changes are not either, since no webhook can reach the
+    receiver before it listens. Counted before it is sent, since its webhook may arrive before
+    the answer; a write that raises sends no webhook and is no longer counted (one whose answer
+    was lost may still send one: it is then served as before)."""
+    if not getattr(counting, "on", False):
+        return write()
     stamp = time.monotonic()
     with lock:
         own_writes.setdefault((repo, num), []).append(stamp)
@@ -110,13 +117,13 @@ def own_write(repo, num, write):
 
 
 def own_change(payload, repo, num):
-    """Whether a webhook reports a label change this receiver made itself. Such a change
-    never carries a new request: when a failed start leaves the request label on, removing a
-    stale hands-reviewing would otherwise run the request again and report it twice (#64
-    item 22). Each label write of the receiver accounts for one webhook by the token's
-    account within OWN_WINDOW seconds, and that webhook uses it up; any further webhook,
-    including one from a person whose token the site uses, is served as usual. The account
-    is read once; while it cannot be read, nothing is skipped."""
+    """Whether a webhook reports a label change the receiver made while reporting a failed
+    start. Such a change never carries a new request: when the request label stayed on,
+    removing a stale hands-reviewing would otherwise run the request again and report it
+    twice (#64 item 22). Each counted write accounts for one webhook by the token's account
+    within OWN_WINDOW seconds, and that webhook uses it up; any further webhook, including
+    one from a person whose token the site uses, is served as usual. The account is read
+    once; while it cannot be read, nothing is skipped."""
     global own_login
     sender = (payload.get("sender") or {}).get("login")
     now = time.monotonic()
@@ -406,7 +413,11 @@ class Handler(BaseHTTPRequestHandler):
             if not consumed:
                 reason += "; its request label is still on the pull request: remove it before adding it again"
             try:
-                fail_review(repo, num, reason)
+                counting.on = True  # its label changes are the ones whose webhooks own_change skips
+                try:
+                    fail_review(repo, num, reason)
+                finally:
+                    counting.on = False
             except Exception as e:
                 print(f"failed start not cleaned up: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
             with lock:
