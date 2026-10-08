@@ -339,8 +339,10 @@ class Handler(BaseHTTPRequestHandler):
             print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
             # Say so on the PR (#64 item 18): fail_review takes hands-reviewing off and asks for
             # the label again. Gitea sends a label webhook once, so nothing retries this request
-            # on its own and the note cannot repeat: it is posted whether or not the request label
-            # came off (#64 item 21), and says when it is still there. The live labels decide, as
+            # on its own: the note is posted whether or not the request label came off (#64 item
+            # 21), and says when it is still there. It repeats at most once: when a stale
+            # hands-reviewing was on the PR, its removal sends one more label webhook that still
+            # lists the request label, and that pass finds nothing left to remove. The live labels decide, as
             # far as they can be read: a removal whose answer was lost took it off all the same.
             try:
                 consumed = not request_labels(labels_of(repo, num))

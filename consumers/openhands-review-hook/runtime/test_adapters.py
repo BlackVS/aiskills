@@ -143,7 +143,12 @@ class AdapterTests(unittest.TestCase):
                 request()
                 if refused or lost or kept:
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
-                    time.sleep(4 if blind else .5)  # the failed start unwinds (a blind read is retried for 3 s)
+                    if blind:  # a blind read is retried for about 3 s: wait for all three answers
+                        for _ in range(300):
+                            if not blind_left[0]: break
+                            time.sleep(.05)
+                        self.assertEqual(blind_left, [0], 'the labels were never read again')
+                    time.sleep(.5)  # the failed start unwinds
                     self.assertEqual(starts, [])
                     if stuck:  # the forge refused that too: the label stays, the PR is released all the same
                         self.assertTrue(cleanup.is_set()); self.assertIn('hands-reviewing', labels)
