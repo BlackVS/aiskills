@@ -38,7 +38,7 @@ class AdapterTests(unittest.TestCase):
         of KEPT the request label is already off, so that webhook carries none, and must still use up
         the count before the request-label filter, or the re-request would be the one skipped.
         OWN='idle': the request itself comes from the token's account, and the webhook of the run's own
-        relabelling at its end is not counted as the receiver's (only a failed start's report is).
+        relabelling at its end is not counted as the receiver's (only a start and its failure report are).
         OWN='other' (with KEPT): the same webhook comes from another account, so it is no own change:
         it is served, and runs the request whose label is still on. TWO (Gitea): the PR has two request
         labels; the start removes the first, whose webhook (by the token's account) still lists the
@@ -210,7 +210,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual([f['body'].split('\n')[0] for f in failures],
                                  ['⚠️ [test-bot review] could not run: the review could not start (HTTPError 503); '
                                   'its request label is still on the pull request: remove it before adding it again'])
-                self.assertIn('own label change ignored: owner/repo#1', output)
+                self.assertEqual(output.count('own label change ignored: owner/repo#1'), 1, output)
                 return
             if refused or lost or kept:
                 self.assertIn('review start failed: owner/repo#1: HTTPError 503', output)
@@ -227,7 +227,9 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(blind_left, [0], 'the labels were read after the failed write')
             skipped = output.count('own label change ignored: owner/repo#1')
             if own is True:
-                self.assertGreaterEqual(skipped, 1, output)  # the report's own removal, then the re-request's start
+                # KEPT: the report's own removal, then the re-request's two start writes; REFUSED: the start's
+                # request-label removal and the report's own removal, then the re-request's two start writes
+                self.assertEqual(skipped, 4 if refused else 3, output)
             if own == 'other':
                 self.assertEqual(skipped, 0, output)
             if own == 'idle' and not refused:
