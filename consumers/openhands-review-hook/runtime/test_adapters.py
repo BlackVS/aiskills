@@ -37,10 +37,12 @@ class AdapterTests(unittest.TestCase):
         of KEPT the request label is already off, so that webhook carries none, and must still use up
         the count before the request-label filter, or the re-request would be the one skipped.
         OWN='idle': the request itself comes from the token's account, and the webhook of the run's own
-        relabelling at its end is not counted as the receiver's (only a failed start's report is)."""
+        relabelling at its end is not counted as the receiver's (only a failed start's report is).
+        OWN='other' (with KEPT): the same webhook comes from another account, so it is no own change:
+        it is served, and runs the request whose label is still on."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
-        labels = {'review-this', 'hands-reviewing'} if own is True and kept else {'review-this'}
+        labels = {'review-this', 'hands-reviewing'} if own in (True, 'other') and kept else {'review-this'}
         echo = []  # OWN: sends the webhook of the receiver's own removal of hands-reviewing
         starts, failures, errors = [], [], []
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
@@ -153,10 +155,12 @@ class AdapterTests(unittest.TestCase):
                         break
                     except urllib.error.URLError: time.sleep(.05)
             if own:  # Gitea reports a removal of hands-reviewing as the token's account, with the labels it left
-                echo.append(lambda: request('test-bot', sorted(labels)))
+                echo.append(lambda: request('someone' if own == 'other' else 'test-bot', sorted(labels)))
             try:
                 request('test-bot' if own == 'idle' else 'someone')
-                if refused or lost or kept:
+                if own == 'other':  # the echo by another account is served: it runs the request itself
+                    self.assertTrue(refusal.wait(12), 'the request never reached the label change')
+                elif refused or lost or kept:
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
                     if blind:  # a blind read is retried for about 3 s: wait for all three answers
                         for _ in range(300):
@@ -196,7 +200,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(blind_left, [0], 'the labels were read after the failed write')
             if own is True:
                 self.assertEqual(output.count('own label change ignored: owner/repo#1'), 1, output)
-            if own == 'idle':
+            if own in ('idle', 'other'):
                 self.assertNotIn('own label change ignored', output)
             failures.clear()
             if blocked:
@@ -405,6 +409,7 @@ class AdapterTests(unittest.TestCase):
         self.run_adapter(False, kept=True, blind=True)
     def test_gitea_adapter_ignores_its_own_label_changes(self): self.run_adapter(False, kept=True, own=True)
     def test_gitea_adapter_uses_up_its_own_change_without_a_request_label(self): self.run_adapter(False, refused=True, own=True)
+    def test_gitea_adapter_serves_the_same_change_from_another_account(self): self.run_adapter(False, kept=True, own='other')
     def test_gitea_adapter_serves_a_request_from_its_own_account(self): self.run_adapter(False, own='idle')
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
 

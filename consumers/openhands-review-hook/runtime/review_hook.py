@@ -98,8 +98,8 @@ def own_write(repo, num, write):
     reported (counting.on, set in this thread by handle_event) are counted for own_change: that
     report is where a webhook of the receiver's own would run the request again (#64 item 22).
     A run's own relabelling is not counted, so its webhook still serves a request label added
-    meanwhile, and startup recovery's changes are not either, since no webhook can reach the
-    receiver before it listens. Counted before it is sent, since its webhook may arrive before
+    meanwhile, and startup recovery's changes are not either: their webhooks are refused while
+    the receiver is not yet listening, and one delivered later is served as usual. Counted before it is sent, since its webhook may arrive before
     the answer; a write that raises sends no webhook and is no longer counted (one whose answer
     was lost may still send one: it is then served as before)."""
     if not getattr(counting, "on", False):
