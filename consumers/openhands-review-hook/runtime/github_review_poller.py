@@ -335,10 +335,17 @@ def trigger(repo, num, title):
     except Exception as e:
         # No run started: release the PR, or every later request on it is ignored
         # until a restart (#64 item 16). Logged here, not raised: the poll goes on
-        # to the other PRs, so one PR that keeps failing never holds them up.
+        # to the other PRs, so one PR that keeps failing never holds them up. First
+        # take hands-reviewing off again: a write whose answer was lost may still have
+        # set it, and with no run behind it the next start would fail the PR as
+        # "restarted mid-run" (#64 item 17).
+        log(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
+        try:
+            set_label(repo, num, L_WORKING, False)
+        except Exception as e:
+            log(f"working label not removed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
         with lock:
             in_flight.discard(key)
-        log(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
 
 
 def recover_stale(resumed=()):

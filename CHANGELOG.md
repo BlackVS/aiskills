@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.5] - 2026-10-07
+
+### Fixed
+- hands consumer: a failed request start takes `hands-reviewing` off the PR
+  again before the PR is released (#64 item 17). A label write whose answer
+  was lost may still have set it, and with no run behind it the next
+  receiver start failed the PR as "the review service restarted mid-run".
+  If that removal fails too, the receiver logs `working label not removed`.
+
 ## [1.33.4] - 2026-10-07
 
 ### Fixed
