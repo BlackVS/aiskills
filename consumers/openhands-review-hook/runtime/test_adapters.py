@@ -18,7 +18,8 @@ from pathlib import Path
 
 
 class AdapterTests(unittest.TestCase):
-    def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False, blind=False, own=False):
+    def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False, blind=False, own=False,
+                    two=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
         label is taken off again; the request is put back
@@ -37,13 +38,22 @@ class AdapterTests(unittest.TestCase):
         of KEPT the request label is already off, so that webhook carries none, and must still use up
         the count before the request-label filter, or the re-request would be the one skipped.
         OWN='idle': the request itself comes from the token's account, and the webhook of the run's own
-        relabelling at its end is not counted as the receiver's (only a failed start's report is).
+        relabelling at its end is not counted as the receiver's (only a start and its failure report are).
         OWN='other' (with KEPT): the same webhook comes from another account, so it is no own change:
-        it is served, and runs the request whose label is still on."""
+        it is served, and runs the request whose label is still on. TWO (Gitea): the PR has two request
+        labels; the start removes the first, whose webhook (by the token's account) still lists the
+        second, and is refused the second: that webhook is the receiver's own and starts nothing, so
+        the note is posted once (#64 item 23). With OWN or TWO the fake forge sends a webhook for every
+        label change it applies, as Gitea does."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
-        labels = {'review-this', 'hands-reviewing'} if own in (True, 'other') and kept else {'review-this'}
-        echo = []  # OWN: sends the webhook of the receiver's own removal of hands-reviewing
+        labels = ({'review-this', 'hands-reviewing'} if own in (True, 'other') and kept else
+                  {'review-this', 'review-this:codex-astra'} if two else {'review-this'})
+        request_deletes = []
+        echo = []  # OWN, TWO: sends the webhook of a label change the fake forge applied
+        def report():
+            if echo:
+                threading.Thread(target=echo[0], daemon=True).start()
         starts, failures, errors = [], [], []
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
         blind_left = [3 if blind else 0]
@@ -74,28 +84,33 @@ class AdapterTests(unittest.TestCase):
                     cleanup.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif refusal.is_set() and blind_left[0] and self.command == 'GET' and path == '/forge/repos/owner/repo/issues/1/labels':
                     blind_left[0] -= 1; self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
+                elif two and self.command == 'DELETE' and path.startswith('/forge/repos/owner/repo/issues/1/labels/') \
+                        and names[int(path.split('/')[-1])-1].startswith('review-this'):
+                    request_deletes.append(path)
+                    if len(request_deletes) == 2:  # the second request label cannot be taken off
+                        refusal.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
+                    labels.discard(names[int(path.split('/')[-1])-1]); report()  # its webhook still lists the second
                 elif (lost or kept) and not refusal.is_set() and self.command == 'DELETE' \
                         and path.startswith('/forge/repos/owner/repo/issues/1/labels/') \
                         and path.split('/')[-1] in ('review-this', '1'):
                     if lost:
-                        labels.discard('review-this')
+                        labels.discard('review-this'); report()
                     refusal.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif refused and not refusal.is_set() and self.command == 'POST' and path.endswith('/issues/1/labels') \
                         and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
                     # the write is stored, its answer lost: hands-reviewing is set with no run behind it
-                    labels.add('hands-reviewing')
+                    labels.add('hands-reviewing'); report()
                     refusal.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif path == '/forge/repos/owner/repo/issues/1/labels':
                     if self.command == 'POST':
                         labels.update(body['labels'] if github else (names[i-1] for i in body['labels']))
+                        report()
                         if 'hands-reviewed' in labels: done.set()
                     result = [{'name': n, 'id': names.index(n)+1} for n in labels]
                 elif path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
                     name = path.split('/')[-1]
                     name = name if github else names[int(name)-1]
-                    labels.discard(name)
-                    if echo and name == 'hands-reviewing':  # Gitea reports the change, as done by the token's account
-                        threading.Thread(target=echo[0], daemon=True).start()
+                    labels.discard(name); report()
                 elif path == '/forge/orgs/owner/labels' or path == '/forge/repos/owner/repo/labels':
                     result = [{'name': n, 'id': i+1} for i,n in enumerate(names)]
                 elif path.startswith('/forge/repos/owner/repo/labels/'):
@@ -154,11 +169,15 @@ class AdapterTests(unittest.TestCase):
                         with urllib.request.urlopen(hook,timeout=2) as response: self.assertEqual(response.status,204)
                         break
                     except urllib.error.URLError: time.sleep(.05)
-            if own:  # Gitea reports a removal of hands-reviewing as the token's account, with the labels it left
+            if own or two:  # Gitea reports each label change as the token's account, with the labels it left
                 echo.append(lambda: request('someone' if own == 'other' else 'test-bot', sorted(labels)))
             try:
                 request('test-bot' if own == 'idle' else 'someone')
-                if own == 'other':  # the echo by another account is served: it runs the request itself
+                if two:  # the start fails on the second label; the first removal's webhook comes back
+                    self.assertTrue(refusal.wait(12), 'the start never reached the second request label')
+                    time.sleep(1.5)
+                    success = True
+                elif own == 'other':  # the echo by another account is served: it runs the request itself
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
                 elif refused or lost or kept:
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
@@ -180,11 +199,19 @@ class AdapterTests(unittest.TestCase):
                         self.assertEqual(starts, [], 'a label change by the receiver itself started a review')
                     labels.add('review-this')  # the user asks again
                     request('test-bot' if own else 'someone')
-                success = done.wait(12)
+                if not two:
+                    success = done.wait(12)
             finally:
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(success,output)
+            if two:
+                self.assertEqual(starts, [], "the webhook of the start's own label change started a review")
+                self.assertEqual([f['body'].split('\n')[0] for f in failures],
+                                 ['⚠️ [test-bot review] could not run: the review could not start (HTTPError 503); '
+                                  'its request label is still on the pull request: remove it before adding it again'])
+                self.assertEqual(output.count('own label change ignored: owner/repo#1'), 1, output)
+                return
             if refused or lost or kept:
                 self.assertIn('review start failed: owner/repo#1: HTTPError 503', output)
             if stuck:  # the cleanup was refused too: no failure comment could follow it
@@ -198,10 +225,17 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual([f['body'].split('\n')[0] for f in failures], expected)
             if blind:
                 self.assertEqual(blind_left, [0], 'the labels were read after the failed write')
+            skipped = output.count('own label change ignored: owner/repo#1')
             if own is True:
-                self.assertEqual(output.count('own label change ignored: owner/repo#1'), 1, output)
-            if own in ('idle', 'other'):
-                self.assertNotIn('own label change ignored', output)
+                # KEPT: the report's own removal, then the re-request's two start writes; REFUSED: the start's
+                # request-label removal and the report's own removal, then the re-request's two start writes
+                self.assertEqual(skipped, 4 if refused else 3, output)
+            if own == 'other':
+                self.assertEqual(skipped, 0, output)
+            if own == 'idle' and not refused:
+                # the start's two label changes (request label off, hands-reviewing on) are its own; the
+                # run's relabelling at its end is not counted, so its two webhooks are served
+                self.assertEqual(skipped, 2, output)
             failures.clear()
             if blocked:
                 self.assertIn('review start failed: owner/repo#2: HTTPError 403', output)
@@ -410,6 +444,7 @@ class AdapterTests(unittest.TestCase):
     def test_gitea_adapter_ignores_its_own_label_changes(self): self.run_adapter(False, kept=True, own=True)
     def test_gitea_adapter_uses_up_its_own_change_without_a_request_label(self): self.run_adapter(False, refused=True, own=True)
     def test_gitea_adapter_serves_the_same_change_from_another_account(self): self.run_adapter(False, kept=True, own='other')
+    def test_gitea_adapter_reports_a_start_with_two_request_labels_once(self): self.run_adapter(False, two=True)
     def test_gitea_adapter_does_not_count_a_failed_cleanup(self):
         # the report's own label change is refused, so no webhook follows it: its count is dropped, and
         # the re-request from the token's account (a site whose token is a person's) still runs

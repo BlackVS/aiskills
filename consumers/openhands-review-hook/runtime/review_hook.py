@@ -90,18 +90,19 @@ lock = threading.Lock()
 own_login = None  # the account behind TOKEN, read once (see own_change)
 own_writes = {}  # (repo, num) -> times of counted label writes whose webhook is still due
 OWN_WINDOW = 60  # seconds within which a label write's webhook is expected
-counting = threading.local()  # .on while a failed start is reported (see own_write)
+counting = threading.local()  # .on while a request's start, or its failure report, runs in this thread
 
 
 def own_write(repo, num, write):
-    """WRITE, a label change of this receiver. Only the changes made while a failed start is
-    reported (counting.on, set in this thread by handle_event) are counted for own_change: that
-    report is where a webhook of the receiver's own would run the request again (#64 item 22).
-    A run's own relabelling is not counted, so its webhook still serves a request label added
-    meanwhile, and startup recovery's changes are not either: their webhooks are refused while
-    the receiver is not yet listening, and one delivered later is served as usual. Counted before it is sent, since its webhook may arrive before
-    the answer; a write that raises sends no webhook and is no longer counted (one whose answer
-    was lost may still send one: it is then served as before)."""
+    """WRITE, a label change of this receiver. Only the changes made by a request's start and,
+    if it fails, by its report (counting.on, set in this thread by handle_event) are counted for
+    own_change: there a webhook of the receiver's own could run the request again (#64 items 22
+    and 23). A run's own relabelling is not counted, so its webhook still serves a request label
+    added meanwhile, and startup recovery's changes are not either: their webhooks are refused
+    while the receiver is not yet listening, and one delivered later is served as usual. Counted
+    before it is sent, since its webhook may arrive before the answer; a write that raises sends
+    no webhook and is no longer counted (one whose answer was lost may still send one: it is then
+    served as before)."""
     if not getattr(counting, "on", False):
         return write()
     stamp = time.monotonic()
@@ -117,13 +118,14 @@ def own_write(repo, num, write):
 
 
 def own_change(payload, repo, num):
-    """Whether a webhook reports a label change the receiver made while reporting a failed
-    start. Such a change never carries a new request: when the request label stayed on,
-    removing a stale hands-reviewing would otherwise run the request again and report it
-    twice (#64 item 22). Each counted write accounts for one webhook by the token's account
-    within OWN_WINDOW seconds, and that webhook uses it up; any further webhook, including
-    one from a person whose token the site uses, is served as usual. The account is read
-    once; while it cannot be read, nothing is skipped."""
+    """Whether a webhook reports a label change the receiver made in a request's start or its
+    failure report. Such a change never carries a new request: when a request label stayed on,
+    the webhook of removing a stale hands-reviewing (#64 item 22), or of removing the first of
+    two request labels (#64 item 23), would otherwise run the request again and report it twice.
+    Each counted write accounts for one webhook by the token's account within OWN_WINDOW
+    seconds, and that webhook uses it up; any further webhook, including one from a person whose
+    token the site uses, is served as usual. The account is read once; while it cannot be read,
+    nothing is skipped."""
     global own_login
     sender = (payload.get("sender") or {}).get("login")
     now = time.monotonic()
@@ -382,46 +384,49 @@ class Handler(BaseHTTPRequestHandler):
         if not RUNS.clear(repo, num):
             print(f"run state not updated for the new request: {repo}#{num} a held review may label it done after a restart", flush=True)
         print(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}", flush=True)
-        consumed = False  # how far the start got: the request labels are off
+        # The label changes of this start, and of its report if it fails, are counted: their
+        # webhooks are the receiver's own and never carry a new request (#64 items 22 and 23).
+        # A run's own relabelling happens in its thread, where nothing is counted.
+        counting.on = True
         try:
-            for l, _ in requested:
-                set_label(repo, num, l, False)
-            consumed = True
-            set_label(repo, num, L_DONE, False)
-            set_label(repo, num, L_WORKING, True)
-            threading.Thread(target=run_review,
-                             args=(repo, num, pr.get('title', ''), label, profile),
-                             daemon=True).start()
-        except Exception as e:
-            # No run started: release the PR, or every later request on it is ignored
-            # until a restart (#64 item 16). First take hands-reviewing off again: a write
-            # whose answer was lost may still have set it, and with no run behind it the
-            # next start would fail the PR as "restarted mid-run" (#64 item 17).
-            print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
-            # Say so on the PR (#64 item 18): fail_review takes hands-reviewing off and asks for
-            # the label again. Gitea sends a label webhook once, so nothing retries this request
-            # on its own: the note is posted whether or not the request label came off (#64 item
-            # 21), and says when it is still there. When a stale hands-reviewing was on the PR, its
-            # removal sends one more label webhook that still lists the request label: own_change
-            # skips it, so the note is not posted twice (#64 item 22). The live labels decide, as
-            # far as they can be read: a removal whose answer was lost took it off all the same.
+            consumed = False  # how far the start got: the request labels are off
             try:
-                consumed = not request_labels(labels_of(repo, num))
-            except Exception:
-                pass  # unreadable: how far the start got decides
-            reason = "the review could not start " + f"({type(e).__name__} {getattr(e, 'code', '')}".rstrip() + ")"
-            if not consumed:
-                reason += "; its request label is still on the pull request: remove it before adding it again"
-            try:
-                counting.on = True  # its label changes are the ones whose webhooks own_change skips
+                for l, _ in requested:
+                    set_label(repo, num, l, False)
+                consumed = True
+                set_label(repo, num, L_DONE, False)
+                set_label(repo, num, L_WORKING, True)
+                threading.Thread(target=run_review,
+                                 args=(repo, num, pr.get('title', ''), label, profile),
+                                 daemon=True).start()
+            except Exception as e:
+                # No run started: release the PR, or every later request on it is ignored
+                # until a restart (#64 item 16). First take hands-reviewing off again: a write
+                # whose answer was lost may still have set it, and with no run behind it the
+                # next start would fail the PR as "restarted mid-run" (#64 item 17).
+                print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
+                # Say so on the PR (#64 item 18): fail_review takes hands-reviewing off and asks for
+                # the label again. Gitea sends a label webhook once, so nothing retries this request
+                # on its own: the note is posted whether or not the request label came off (#64 item
+                # 21), and says when it is still there. When a stale hands-reviewing was on the PR, its
+                # removal sends one more label webhook that still lists the request label: own_change
+                # skips it, so the note is not posted twice (#64 item 22). The live labels decide, as
+                # far as they can be read: a removal whose answer was lost took it off all the same.
+                try:
+                    consumed = not request_labels(labels_of(repo, num))
+                except Exception:
+                    pass  # unreadable: how far the start got decides
+                reason = "the review could not start " + f"({type(e).__name__} {getattr(e, 'code', '')}".rstrip() + ")"
+                if not consumed:
+                    reason += "; its request label is still on the pull request: remove it before adding it again"
                 try:
                     fail_review(repo, num, reason)
-                finally:
-                    counting.on = False
-            except Exception as e:
-                print(f"failed start not cleaned up: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
-            with lock:
-                in_flight.discard(key)
+                except Exception as e:
+                    print(f"failed start not cleaned up: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
+                with lock:
+                    in_flight.discard(key)
+        finally:
+            counting.on = False
 
 
 recover_stale(resume_runs())
