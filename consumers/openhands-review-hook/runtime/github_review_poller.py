@@ -325,9 +325,11 @@ def trigger(repo, num, title):
     if not RUNS.clear(repo, num):
         log(f"run state not updated for the new request: {repo}#{num} a held review may label it done after a restart")
     log(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}")
+    consumed = False  # how far the start got: the request labels are off
     try:
         for l, _ in requested:
             set_label(repo, num, l, False)
+        consumed = True
         set_label(repo, num, L_DONE, False)
         set_label(repo, num, L_WORKING, True)
         threading.Thread(target=run_review, args=(repo, num, title, label, profile),
@@ -340,10 +342,24 @@ def trigger(repo, num, title):
         # set it, and with no run behind it the next start would fail the PR as
         # "restarted mid-run" (#64 item 17).
         log(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
+        # Once the request labels are off, say so on the PR (#64 item 18): fail_review takes
+        # hands-reviewing off and asks for the label again. While a request label is still
+        # there, only the label is cleaned: on GitHub the next poll retries, and a comment on
+        # every poll would flood the PR.
+        # The live labels decide, as far as they can be read: a removal whose answer was
+        # lost took the request label off all the same, and nothing would ask again.
         try:
-            set_label(repo, num, L_WORKING, False)
+            consumed = not request_labels(labels_of(repo, num))
+        except Exception:
+            pass  # unreadable: how far the start got decides
+        try:
+            if consumed:
+                fail_review(repo, num, "the review could not start "
+                            f"({type(e).__name__} {getattr(e, 'code', '')}".rstrip() + ")")
+            else:
+                set_label(repo, num, L_WORKING, False)
         except Exception as e:
-            log(f"working label not removed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
+            log(f"failed start not cleaned up: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
         with lock:
             in_flight.discard(key)
 
