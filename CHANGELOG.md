@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.7] - 2026-10-08
+
+### Fixed
+- hands consumer, Gitea receiver: a failed request start is reported on the
+  PR even when its request label could not be taken off (#64 item 21). The
+  note adds "its request label is still on the pull request: remove it
+  before adding it again". Gitea sends a label webhook once, so nothing
+  retried the request and nothing said so. The GitHub poller still posts
+  nothing in that case, since its next poll retries the request.
+- hands consumer tests: the fallback used when the labels cannot be read
+  after a failed start is now covered on both receivers (#64 item 20).
+
 ## [1.33.6] - 2026-10-08
 
 ### Fixed

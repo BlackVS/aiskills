@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 class AdapterTests(unittest.TestCase):
-    def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False):
+    def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False, blind=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
         label is taken off again; the request is put back
@@ -27,12 +27,16 @@ class AdapterTests(unittest.TestCase):
         REFUSED): taking hands-reviewing off fails too; that is logged and the PR is still released.
         LOST: the first removal of the request label is applied but answered 503; KEPT: it is refused and
         the label stays. Only LOST (like REFUSED) leaves nothing to ask again, so only it is reported on
-        the PR (#64 item 18)."""
+        the PR on GitHub (#64 item 18); Gitea, which sends a webhook once, reports both, KEPT with
+        advice to take the label off first (#64 item 21). BLIND: after the failed write, the labels
+        cannot be read for a while (three answers of 503, as many as a read is tried), so how far the
+        start got decides."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = {'review-this'}
         starts, failures, errors = [], [], []
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
+        blind_left = [3 if blind else 0]
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_GET(self): self.handle_request()
@@ -57,6 +61,8 @@ class AdapterTests(unittest.TestCase):
                 elif stuck and refusal.is_set() and not cleanup.is_set() and self.command == 'DELETE' \
                         and path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
                     cleanup.set(); self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
+                elif refusal.is_set() and blind_left[0] and self.command == 'GET' and path == '/forge/repos/owner/repo/issues/1/labels':
+                    blind_left[0] -= 1; self.send_response(503); self.send_header('Content-Length', '0'); self.end_headers(); return
                 elif (lost or kept) and not refusal.is_set() and self.command == 'DELETE' \
                         and path.startswith('/forge/repos/owner/repo/issues/1/labels/') \
                         and path.split('/')[-1] in ('review-this', '1'):
@@ -137,6 +143,11 @@ class AdapterTests(unittest.TestCase):
                 request()
                 if refused or lost or kept:
                     self.assertTrue(refusal.wait(12), 'the request never reached the label change')
+                    if blind:  # a blind read is retried for about 3 s: wait for all three answers
+                        for _ in range(300):
+                            if not blind_left[0]: break
+                            time.sleep(.05)
+                        self.assertEqual(blind_left, [0], 'the labels were never read again')
                     time.sleep(.5)  # the failed start unwinds
                     self.assertEqual(starts, [])
                     if stuck:  # the forge refused that too: the label stays, the PR is released all the same
@@ -158,8 +169,13 @@ class AdapterTests(unittest.TestCase):
                 self.assertIn('failed start not cleaned up: owner/repo#1: HTTPError 503', output)
             # a start that failed after its request label was taken off says so on the PR, once (#64 item 18);
             # one that still has its request label (PR 2) is retried by the next poll and never comments
-            self.assertEqual([f['body'].split('\n')[0] for f in failures], [] if stuck or not (refused or lost) else
-                             ['⚠️ [test-bot review] could not run: the review could not start (HTTPError 503)'])
+            reported = '⚠️ [test-bot review] could not run: the review could not start (HTTPError 503)'
+            expected = ([] if stuck else [reported] if refused or lost else
+                        [reported + '; its request label is still on the pull request: remove it before adding it again']
+                        if kept and not github else [])
+            self.assertEqual([f['body'].split('\n')[0] for f in failures], expected)
+            if blind:
+                self.assertEqual(blind_left, [0], 'the labels were read after the failed write')
             failures.clear()
             if blocked:
                 self.assertIn('review start failed: owner/repo#2: HTTPError 403', output)
@@ -358,7 +374,13 @@ class AdapterTests(unittest.TestCase):
     def test_github_adapter_reports_a_start_whose_label_removal_lost_its_answer(self): self.run_adapter(True, lost=True)
     def test_gitea_adapter_reports_a_start_whose_label_removal_lost_its_answer(self): self.run_adapter(False, lost=True)
     def test_github_adapter_stays_quiet_while_the_request_label_remains(self): self.run_adapter(True, kept=True)
-    def test_gitea_adapter_stays_quiet_while_the_request_label_remains(self): self.run_adapter(False, kept=True)
+    def test_gitea_adapter_reports_a_start_whose_request_label_remains(self): self.run_adapter(False, kept=True)
+    def test_github_adapter_falls_back_to_the_start_when_labels_cannot_be_read(self):
+        self.run_adapter(True, refused=True, blind=True)
+        self.run_adapter(True, kept=True, blind=True)
+    def test_gitea_adapter_falls_back_to_the_start_when_labels_cannot_be_read(self):
+        self.run_adapter(False, refused=True, blind=True)
+        self.run_adapter(False, kept=True, blind=True)
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
 
     def run_restart(self, github, held=False, down=False, boundary=False, broken=False):

@@ -71,6 +71,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
+| 1.33.7 | The Gitea receiver reports a failed request start on the PR even when the request label is still on, with advice to remove it before adding it again. Deploy `review_hook.py`, then restart `review-hook` (safe mid-run since 1.18.0). |
 | 1.33.6 | A request that cannot start after its request label was taken off gets a "could not run" comment on the PR, and the journal line for a failed cleanup is now `failed start not cleaned up` (was `working label not removed`; update any log alert that matched it). Deploy `review_hook.py` and `github_review_poller.py`, then restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.33.5 | A request whose start fails takes `hands-reviewing` off the PR again, so a later restart no longer reports "restarted mid-run" for a run that never started. Deploy `review_hook.py` and `github_review_poller.py`, then restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
 | 1.33.4 | A request whose start fails on a label change (a forge error) no longer blocks later requests on that PR until a restart. Deploy `review_hook.py` and `github_review_poller.py`, then restart `review-hook` and `github-review-poller` (safe mid-run since 1.18.0). |
