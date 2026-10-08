@@ -1016,10 +1016,13 @@ class RunnerTests(unittest.TestCase):
         def landed(repo, num, text):
             comments.append({'body': '⚠️ [hands-bot review] note: ' + text})
             raise TimeoutError('the answer was lost')
-        slept = []
-        starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_note=landed, on_sleep=slept.append)
+        events = []  # the sleeps and the comment reads, in order
+        starts, labels, failures, notes, logs, _ = self.unchanged(comments, same, on_note=landed, on_sleep=events.append,
+                                                                  on_comments=lambda: events.append('read'))
         self.assertEqual((starts, failures), ([], []), 'it was posted: the request ends as noted, no review')
-        self.assertIn(NOTE_SETTLE, slept, 'the forge is given a moment to store the POST before the read-back')
+        self.assertIn(NOTE_SETTLE, events, 'the forge is given a moment to store the POST')
+        self.assertEqual(events[events.index(NOTE_SETTLE):], [NOTE_SETTLE, 'read'],
+                         'the moment is given before the read-back, which is the last read')
         self.assertEqual(labels[-1], ('owner/repo', 1, 'hands-reviewed', True))
         comments[:] = [self.review_comment(old)]
         def lost(repo, num, text):

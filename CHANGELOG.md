@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.11] - 2026-10-08
+
+### Fixed
+- Tests only, no change to what ships. The hands runner test of a note
+  whose answer was lost now checks that the runner waits before it reads
+  the comments back, not only that it waits. Moving the wait after the
+  read-back passed before; it now fails (follow-up from the review of
+  #77).
+
 ## [1.33.10] - 2026-10-08
 
 ### Fixed
