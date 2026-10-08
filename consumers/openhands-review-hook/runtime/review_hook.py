@@ -124,8 +124,9 @@ def own_change(payload, repo, num):
     two request labels (#64 item 23), would otherwise run the request again and report it twice.
     Each counted write accounts for one webhook by the token's account within OWN_WINDOW
     seconds, and that webhook uses it up; any further webhook, including one from a person whose
-    token the site uses, is served as usual. The account is read once; while it cannot be read,
-    nothing is skipped."""
+    token the site uses, is served as usual. A count left when the PR's run ends (its webhook
+    was lost) is dropped then (run_review), so it cannot use up a later request. The account is
+    read once; while it cannot be read, nothing is skipped."""
     global own_login
     sender = (payload.get("sender") or {}).get("login")
     now = time.monotonic()
@@ -284,7 +285,10 @@ def run_review(repo, num, title, label, profile, resume=None):
                         change_identity=change_identity)
         runner.run(repo, num, title, label, profile, PROMPT_FILE, WORKSPACES_DIR, resume=resume)
     finally:
+        # The start's counted writes whose webhooks never came (lost, or the receiver was busy)
+        # end with the run: a later request from the token's account is then served (#64 item 24).
         with lock:
+            own_writes.pop((repo, num), None)
             in_flight.discard((repo, num))
 
 

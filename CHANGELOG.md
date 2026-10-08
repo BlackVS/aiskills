@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.10] - 2026-10-08
+
+### Fixed
+- hands consumer, Gitea receiver: a re-request from the token's own
+  account after a run is no longer skipped when the webhooks of that run's
+  start never arrived (#64 item 24). The start's label changes stayed
+  counted as the receiver's own for up to a minute, so the next webhook by
+  that account could use one up. A run's end now drops the PR's remaining
+  counts. A failed start whose own webhooks are lost still keeps them for
+  up to a minute.
+
 ## [1.33.9] - 2026-10-08
 
 ### Fixed
