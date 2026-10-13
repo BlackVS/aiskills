@@ -9,6 +9,16 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.12] - 2026-10-13
+
+### Fixed
+- verify-delivery: the local review is recognised in the header forms
+  members post, `[oh-code-review high]` and the level-less
+  `[oh-code-review review]`, as well as `[oh-code-review (high) review]`
+  (#89). Before, only the last form counted, so the delivery check reported
+  the local review as missing. A level-less header does not show the review
+  level; SKILL.md says so. The external review's pattern is unchanged.
+
 ## [1.33.11] - 2026-10-08
 
 ### Fixed

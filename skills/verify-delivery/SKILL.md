@@ -62,7 +62,12 @@ All four must pass for the verdict `confirmed`:
    (`[<reviewer> review] reviewed at head <full-sha>`, then `VERDICT` /
    `READY_FOR_HUMAN_MERGE`):
    - `local`: the pre-merge `oh-code-review` review at level high (or max,
-     ultra);
+     ultra). Its header counts in any of three forms:
+     `[oh-code-review (high) review]`, `[oh-code-review high]` and
+     `[oh-code-review review]` (high may be max or ultra in the first two).
+     The last form carries no level, so a review posted that way is not
+     proof that it ran at level high; a lower level written into the header
+     (`[oh-code-review medium]`) does not count;
    - `external`: any other reviewer's comment in that format.
 
    Who counts as trusted: the accounts you list for that review with
