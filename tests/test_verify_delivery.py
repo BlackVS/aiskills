@@ -1531,8 +1531,8 @@ class GitLab(unittest.TestCase):
 class DefaultReviews(unittest.TestCase):
     """Which default review a header line counts as (#89)."""
 
-    def counts_as(self, header):
-        line = f"{header} reviewed at head {'a' * 40}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n"
+    def counts_as(self, header, before="", after=""):
+        line = f"{before}{header} reviewed at head {'a' * 40}{after}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n"
         return [name for name, pattern in vd.DEFAULT_REVIEWS if re.search(pattern, line)]
 
     def test_each_local_form_counts_as_the_local_review_only(self):
@@ -1546,6 +1546,10 @@ class DefaultReviews(unittest.TestCase):
                        "[oh-code-review high review]", "[oh-code-review-x review]"):
             with self.subTest(header):
                 self.assertEqual(self.counts_as(header), [])
+        for before, after in (("> ", ""), ("  ", ""), ("", "xyz")):  # quoted or indented; a longer word than a SHA
+            with self.subTest(before=before, after=after):
+                self.assertEqual(self.counts_as("[oh-code-review high]", before, after), [])
+                self.assertEqual(self.counts_as("[example-bot review]", before, after), [])
 
     def test_another_reviewer_counts_as_the_external_review_only(self):
         self.assertEqual(self.counts_as("[example-bot review]"), ["external"])
