@@ -786,6 +786,24 @@ class Verify:
     def local_review(self):
         return next(c for c in self.comments() if c["body"].startswith("[oh-code-review"))
 
+    def test_the_local_review_is_recognised_in_each_header_form_members_post(self):
+        # #89: the levelled form of the fixture, the short levelled form and the level-less form
+        body = self.local_review()["body"]
+        for header in ("[oh-code-review high]", "[oh-code-review ultra]", "[oh-code-review review]"):
+            with self.subTest(header):
+                self.local_review()["body"] = body.replace("[oh-code-review (high) review]", header, 1)
+                code, doc = self.run_vd()
+                self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+                local = {r["review"]: r for r in self.check(doc, "reviewed_head")["reviews"]}["local"]
+                self.assertEqual((local["status"], local["url"]), ("ready", self.local_review()["html_url"]))
+        for header in ("[oh-code-review medium]", "[oh-code-review (low) review]"):
+            with self.subTest(header):  # below high: not the pre-merge review, and not an external one either
+                self.local_review()["body"] = body.replace("[oh-code-review (high) review]", header, 1)
+                code, doc = self.run_vd()
+                self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+                self.assertEqual({r["review"]: r["status"] for r in self.check(doc, "reviewed_head")["reviews"]}["local"],
+                                 "missing")
+
     def test_a_short_sha_at_the_final_head_needs_the_full_sha(self):
         # a commit made to share the reviewed head's abbreviation, force-pushed after the review,
         # would inherit it (#75): this forge keeps no list of heads to rule that out, so such a
@@ -1508,6 +1526,35 @@ class GitLab(unittest.TestCase):
         code = vd.main(["--pr", "acme/widgets!5", "--forge", "gitlab"], env={"GITLAB_TOKEN_FILE": str(self.token_file)}, stdout=out)
         self.assertEqual(code, 2)
         self.assertIn("--api-base is required for GitLab without a merge request URL", json.loads(out.getvalue())["error"]["message"])
+
+
+class DefaultReviews(unittest.TestCase):
+    """Which default review a header line counts as (#89)."""
+
+    def counts_as(self, header, before="", after=""):
+        line = f"{before}{header} reviewed at head {'a' * 40}{after}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE\n"
+        return [name for name, pattern in vd.DEFAULT_REVIEWS if re.search(pattern, line)]
+
+    def test_each_local_form_counts_as_the_local_review_only(self):
+        for level in ("high", "max", "ultra"):
+            self.assertEqual(self.counts_as(f"[oh-code-review ({level}) review]"), ["local"])
+            self.assertEqual(self.counts_as(f"[oh-code-review {level}]"), ["local"])
+        self.assertEqual(self.counts_as("[oh-code-review review]"), ["local"])
+
+    def test_a_lower_level_or_another_shape_counts_as_neither(self):
+        for header in ("[oh-code-review medium]", "[oh-code-review (low) review]", "[oh-code-review]",
+                       "[oh-code-review high review]", "[oh-code-review-x review]"):
+            with self.subTest(header):
+                self.assertEqual(self.counts_as(header), [])
+        for before, after in (("> ", ""), ("  ", ""), ("", "xyz")):  # quoted or indented; a longer word than a SHA
+            with self.subTest(before=before, after=after):
+                self.assertEqual(self.counts_as("[oh-code-review high]", before, after), [])
+                self.assertEqual(self.counts_as("[example-bot review]", before, after), [])
+
+    def test_another_reviewer_counts_as_the_external_review_only(self):
+        self.assertEqual(self.counts_as("[example-bot review]"), ["external"])
+        self.assertEqual(self.counts_as("[hands-bot review]"), ["external"])
+        self.assertEqual(self.counts_as("[oh-code-reviewer review]"), ["external"])  # another name, not the skill
 
 
 class References(unittest.TestCase):

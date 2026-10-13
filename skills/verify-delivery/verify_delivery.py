@@ -28,9 +28,12 @@ MAX_REBASED = 100   # commits of a rebase merge walked back to find its base; a 
 SHA = r"(?P<sha>[0-9a-fA-F]{7,40})"
 
 # The review comment format of the oh-code-review skill (references/dispositions.md):
-# "[<reviewer> review] reviewed at head <sha>", then a VERDICT line.
+# "[<reviewer> review] reviewed at head <sha>", then a VERDICT line. The local review is posted as
+# "[oh-code-review (high) review]", "[oh-code-review high]" or, without its level,
+# "[oh-code-review review]" (#89); the level-less form does not show the level.
 DEFAULT_REVIEWS = [
-    ("local", rf"(?m)^\[oh-code-review \((?:high|max|ultra)\) review\] reviewed at head {SHA}\b"),
+    ("local", rf"(?m)^\[oh-code-review(?: \((?:high|max|ultra)\) review| (?:high|max|ultra)| review)\]"
+              rf" reviewed at head {SHA}\b"),
     ("external", rf"(?m)^\[(?!oh-code-review\b)[^\]\n]+ review\] reviewed at head {SHA}\b"),
 ]
 DEFAULT_VERDICT = r"(?m)^[ \t]*VERDICT[ \t]*\r?\n[ \t]*READY_FOR_HUMAN_MERGE\b"
