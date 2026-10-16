@@ -376,8 +376,8 @@ class Runner:
             self.fail(repo, num, 'the review is stale because the pull request changed or closed')
             return True
         def swap():
+            self.set_label(repo, num, self.done, True)  # on before working comes off: never no label
             self.set_label(repo, num, self.working, False)
-            self.set_label(repo, num, self.done, True)
         if self._watched(repo, num, swap, 'label swap', then) is MISSED:
             return False
         self.log(f'review done: {repo}#{num} profile={profile}')
@@ -410,8 +410,8 @@ class Runner:
                 self.set_label(repo, num, self.working, False)
                 self.log(f'posted review is stale, not labelled done: {repo}#{num} the pull request changed or closed')
                 return
+            self.set_label(repo, num, self.done, True)  # on before working comes off: never no label
             self.set_label(repo, num, self.working, False)
-            self.set_label(repo, num, self.done, True)
         except Exception as error:
             if transient(error):
                 self.log(f'posted review label swap failed: {repo}#{num}: {type(error).__name__}')
@@ -508,8 +508,8 @@ class Runner:
         # The PR has been told no new review runs: from here the request ends whatever the forge
         # does. Both label writes are idempotent, so a transient error is tried again.
         def swap():
+            self.set_label(repo, num, self.done, True)  # on before working comes off: never no label
             self.set_label(repo, num, self.working, False)
-            self.set_label(repo, num, self.done, True)
         try:
             retried(swap, sleep=self.sleep)
         except Exception as error:

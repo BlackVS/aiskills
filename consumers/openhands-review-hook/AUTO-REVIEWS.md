@@ -61,6 +61,19 @@ retry on generic errors, unknown startup outcomes or timeouts. If the head
 changes, request a new review. A completed review is recognized by head and
 verdict, not merely the presence of the bot marker.
 
+Each label change puts the new state label on before it takes the old one
+off, so a PR that hands is handling always carries one of its labels. When a
+request is picked up, `hands-reviewing` goes on first, then the request labels
+and `hands-reviewed` come off. When a review is done, including after a
+restart, `hands-reviewed` goes on first, then `hands-reviewing` comes off. The
+forge applies each change as a separate call. Before 1.33.13 the old label
+came off first, which left about two seconds with no hands label at all. A
+client that read the labels in that gap saw none, took the request for lost,
+added `review-this` again, and the same head was reviewed twice. If the first
+write of a start (`hands-reviewing`) fails, the request label is still on:
+the GitHub poller retries it at the next poll without a comment, and the
+Gitea receiver's note says the label is still there.
+
 The settings file contains `revision`, `primary`, nullable `secondary` and
 nullable `fallback` — agent profile names only. A file written before 1.13.0
 has no `secondary` and reads as None.

@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.13] - 2026-10-16
+
+### Fixed
+- hands receivers: every label change puts the new state label on before it
+  takes the old one off, so a PR that hands is handling never shows no hands
+  label. On pickup `hands-reviewing` now goes on first, then the request
+  labels and `hands-reviewed` come off; when a review is done (also after a
+  restart) `hands-reviewed` goes on first, then `hands-reviewing` comes off.
+  Before, a client that read the labels in the gap of about two seconds saw
+  none, added `review-this` again, and the same head was reviewed twice. A
+  start whose first write fails now leaves the request label on, so the
+  GitHub poller retries it at the next poll without a comment.
+- review gates and `oh-code-review`'s external-review protocol: a read that
+  shows no hands label right after adding `review-this` is not a lost
+  request; read again before adding it again.
+
 ## [1.33.12] - 2026-10-13
 
 ### Fixed

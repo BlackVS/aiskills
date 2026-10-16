@@ -35,6 +35,13 @@ conversation is still running, so leave a `hands-reviewing` PR alone.
   have to be read and acted on.
 - Never hand-edit `hands-reviewing` or `hands-reviewed`; hands owns them.
 - Do not re-add `review-this` while `hands-reviewing` is present.
+- hands puts the new label on before it takes the old one off, so a PR it is
+  handling always carries one of its labels. Sites older than 1.33.13 took the
+  old label off first, which left a gap of a few seconds with none. A read that
+  shows no label right after you added `review-this` does not mean the request
+  was lost: read again after a short wait, and look for a `[hands-bot review]`
+  or `could not run` comment, before adding `review-this` again. Re-adding in
+  that gap made hands review the same head twice.
 - Any later commit or rebase makes the review stale: re-trigger by adding
   `review-this` again and clear the stale `hands-reviewed` when you do. The
   reviewer is told to treat a PR with earlier `[hands-bot review]` comments as

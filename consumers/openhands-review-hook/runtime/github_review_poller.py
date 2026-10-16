@@ -327,11 +327,14 @@ def trigger(repo, num, title):
     log(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}")
     consumed = False  # how far the start got: the request labels are off
     try:
+        # The new state label goes on before the old ones come off, so the PR is never seen with
+        # no hands label at all: a client reading in between took that for a lost request and
+        # asked again, and the same head was reviewed twice.
+        set_label(repo, num, L_WORKING, True)
         for l, _ in requested:
             set_label(repo, num, l, False)
         consumed = True
         set_label(repo, num, L_DONE, False)
-        set_label(repo, num, L_WORKING, True)
         threading.Thread(target=run_review, args=(repo, num, title, label, profile),
                          daemon=True).start()
     except Exception as e:
@@ -377,8 +380,8 @@ def recover_stale(resumed=()):
             if L_WORKING in labels_of(repo, num):
                 # A run whose review was already posted only lost its label swap.
                 if recovered_head(api, repo, num, MARKER, None, int(os.environ.get("WATCH_MINUTES", "45")) * 60):
+                    set_label(repo, num, L_DONE, True)  # on before working comes off: never no label
                     set_label(repo, num, L_WORKING, False)
-                    set_label(repo, num, L_DONE, True)
                     log(f"review done (recovered after restart): {repo}#{num}")
                     continue
                 fail_review(repo, num, "the review service restarted mid-run")

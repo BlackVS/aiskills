@@ -126,6 +126,11 @@ Gitea orgs a hands site covers, and on GitHub repos hands polls):
   read and acted on.
 - Do not re-add `review-this` while `hands-reviewing` is present, and never
   hand-edit the other two labels.
+- A read that shows none of these labels right after you added `review-this`
+  does not mean the request was lost: hands may be switching labels (older
+  sites take the old label off before the new one is on). Read again after a
+  short wait, and look for a `[hands-bot review]` or `could not run` comment,
+  before adding `review-this` again.
 - Any later commit or rebase makes the review stale: re-trigger by adding
   `review-this` again, and clear the stale `hands-reviewed` when you do.
   The exception is a base-only update with an unchanged patch identity (see

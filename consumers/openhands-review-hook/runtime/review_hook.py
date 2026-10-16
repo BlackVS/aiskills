@@ -328,8 +328,8 @@ def recover_stale(resumed=()):
                 continue  # its watcher was re-attached by resume_runs()
             # A run whose review was already posted only lost its label swap.
             if recovered_head(api, repo, num, MARKER, BOT_NAME, WATCH_SECONDS):
+                set_label(repo, num, L_DONE, True)  # on before working comes off: never no label
                 set_label(repo, num, L_WORKING, False)
-                set_label(repo, num, L_DONE, True)
                 print(f"review done (recovered after restart): {repo}#{num}", flush=True)
                 continue
             fail_review(repo, num, "the review service restarted mid-run")
@@ -395,11 +395,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             consumed = False  # how far the start got: the request labels are off
             try:
+                # The new state label goes on before the old ones come off, so the PR is never seen
+                # with no hands label at all: a client reading in between took that for a lost
+                # request and asked again, and the same head was reviewed twice.
+                set_label(repo, num, L_WORKING, True)
                 for l, _ in requested:
                     set_label(repo, num, l, False)
                 consumed = True
                 set_label(repo, num, L_DONE, False)
-                set_label(repo, num, L_WORKING, True)
                 threading.Thread(target=run_review,
                                  args=(repo, num, pr.get('title', ''), label, profile),
                                  daemon=True).start()

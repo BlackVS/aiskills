@@ -23,7 +23,9 @@ class AdapterTests(unittest.TestCase):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
         label is taken off again; the request is put back
-        and must run then: the failed start released the PR (#64 item 16). BLOCKED (GitHub): another
+        and must run then: the failed start released the PR (#64 item 16). hands-reviewing is the
+        start's first write, so the request label is still on: GitHub's next poll retries without a
+        comment, and Gitea's note says the label is still there. BLOCKED (GitHub): another
         PR, listed first, keeps failing its start on every poll; the request still runs. STUCK (with
         REFUSED): taking hands-reviewing off fails too; that is logged and the PR is still released.
         LOST: the first removal of the request label is applied but answered 503; KEPT: it is refused and
@@ -52,9 +54,12 @@ class AdapterTests(unittest.TestCase):
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = ({'review-this', 'hands-reviewing'} if own in (True, 'other') and kept else
                   {'review-this', 'review-this:codex-astra'} if two else {'review-this'})
+        labels_at_start = frozenset(labels)
         request_deletes = []
         echo = []  # OWN, TWO: sends the webhook of a label change the fake forge applied
+        seen = []  # the PR's labels after every change the fake forge applied
         def report():
+            seen.append(frozenset(labels))
             if echo:
                 threading.Thread(target=echo[0], daemon=True).start()
         starts, failures, errors = [], [], []
@@ -108,12 +113,13 @@ class AdapterTests(unittest.TestCase):
                     if self.command == 'POST':
                         labels.update(body['labels'] if github else (names[i-1] for i in body['labels']))
                         report()
-                        if 'hands-reviewed' in labels: done.set()
+                        if 'hands-reviewed' in labels and 'hands-reviewing' not in labels: done.set()  # the end's swap is complete
                     result = [{'name': n, 'id': names.index(n)+1} for n in labels]
                 elif path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
                     name = path.split('/')[-1]
                     name = name if github else names[int(name)-1]
                     labels.discard(name); report()
+                    if 'hands-reviewed' in labels and 'hands-reviewing' not in labels: done.set()
                 elif path == '/forge/orgs/owner/labels' or path == '/forge/repos/owner/repo/labels':
                     result = [{'name': n, 'id': i+1} for i,n in enumerate(names)]
                 elif path.startswith('/forge/repos/owner/repo/labels/'):
@@ -218,7 +224,8 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual([f['body'].split('\n')[0] for f in failures],
                                  ['⚠️ [test-bot review] could not run: the review could not start (HTTPError 503); '
                                   'its request label is still on the pull request: remove it before adding it again'])
-                self.assertEqual(output.count('own label change ignored: owner/repo#1'), 1, output)
+                # hands-reviewing on, the first request label off, and the report taking hands-reviewing off
+                self.assertEqual(output.count('own label change ignored: owner/repo#1'), 3, output)
                 return
             if refused or lost or kept:
                 self.assertIn('review start failed: owner/repo#1: HTTPError 503', output)
@@ -227,17 +234,20 @@ class AdapterTests(unittest.TestCase):
             # a start that failed after its request label was taken off says so on the PR, once (#64 item 18);
             # one that still has its request label (PR 2) is retried by the next poll and never comments
             reported = '⚠️ [test-bot review] could not run: the review could not start (HTTPError 503)'
-            expected = ([] if stuck else [reported] if refused or lost else
+            # REFUSED fails the first write (hands-reviewing), before the request label comes off
+            expected = ([] if stuck else [reported] if lost else
                         [reported + '; its request label is still on the pull request: remove it before adding it again']
-                        if kept and not github else [])
+                        if (kept or refused) and not github else [])
             self.assertEqual([f['body'].split('\n')[0] for f in failures], expected)
             if blind:
                 self.assertEqual(blind_left, [0], 'the labels were read after the failed write')
             skipped = output.count('own label change ignored: owner/repo#1')
             if own is True:
-                # KEPT: the report's own removal, then the re-request's two start writes; REFUSED: the start's
-                # request-label removal and the report's own removal, then the re-request's two start writes
-                self.assertEqual(skipped, 4 if refused else 3, output)
+                # KEPT (a stale hands-reviewing is on, so the start adds nothing): the report's own removal,
+                # then the re-request's two start writes. LOST: the start's hands-reviewing and the report's
+                # own removal (no request label: it must use up its count, or the re-request would be the one
+                # skipped), then the re-request's two start writes. The lost removal's webhook is uncounted.
+                self.assertEqual(skipped, 4 if lost else 3, output)
             if own == 'other':
                 self.assertEqual(skipped, 0, output)
             if own == 'idle' and not refused:
@@ -257,6 +267,16 @@ class AdapterTests(unittest.TestCase):
             self.assertFalse(failures); self.assertFalse(errors)
             self.assertEqual(labels,{'hands-reviewed'})
             self.assertIn(head,starts[1]['initial_message']['content'][0]['text'])
+            if not (refused or lost or kept or blocked or own == 'quiet'):
+                # A label change never leaves the PR with no hands label: the new state label goes on
+                # before the old one comes off, at the start and at the end of the run. A client that
+                # read the labels in between saw none and asked again (2026-10-16).
+                state = lambda l: l.startswith('review-this') or l in ('hands-reviewing', 'hands-reviewed')
+                self.assertTrue(seen, 'no label change was recorded')
+                gaps = [sorted(s) for s in seen if not any(state(l) for l in s)]
+                self.assertEqual(gaps, [], f'a moment with no hands label: {[sorted(s) for s in seen]}')
+                self.assertEqual(seen[0], frozenset(labels_at_start | {'hands-reviewing'}),
+                                 'the start puts hands-reviewing on before taking anything off')
 
     def run_unchanged(self, github, author='test-bot', owner='test-bot', review_author=None, gitea_json=False, requests=1,
                       flaky=None):
@@ -307,11 +327,12 @@ class AdapterTests(unittest.TestCase):
                 elif path == '/forge/repos/owner/repo/issues/1/labels':
                     if self.command == 'POST':
                         labels.update(body['labels'] if github else (names[i-1] for i in body['labels']))
-                        if 'hands-reviewed' in labels: outcome.set()
+                        if 'hands-reviewed' in labels and 'hands-reviewing' not in labels: outcome.set()  # the swap is complete
                     result = [{'name': n, 'id': names.index(n)+1} for n in labels]
                 elif path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
                     name = path.split('/')[-1]
                     labels.discard(name if github else names[int(name)-1])
+                    if 'hands-reviewed' in labels and 'hands-reviewing' not in labels: outcome.set()
                 elif path == '/forge/orgs/owner/labels' or path == '/forge/repos/owner/repo/labels':
                     result = [{'name': n, 'id': i+1} for i, n in enumerate(names)]
                 elif path.startswith('/forge/repos/owner/repo/labels'): result = {'name': path.split('/')[-1]}
@@ -456,13 +477,13 @@ class AdapterTests(unittest.TestCase):
         self.run_adapter(False, refused=True, blind=True)
         self.run_adapter(False, kept=True, blind=True)
     def test_gitea_adapter_ignores_its_own_label_changes(self): self.run_adapter(False, kept=True, own=True)
-    def test_gitea_adapter_uses_up_its_own_change_without_a_request_label(self): self.run_adapter(False, refused=True, own=True)
+    def test_gitea_adapter_uses_up_its_own_change_without_a_request_label(self): self.run_adapter(False, lost=True, own=True)
     def test_gitea_adapter_serves_the_same_change_from_another_account(self): self.run_adapter(False, kept=True, own='other')
     def test_gitea_adapter_reports_a_start_with_two_request_labels_once(self): self.run_adapter(False, two=True)
     def test_gitea_adapter_does_not_count_a_failed_cleanup(self):
         # the report's own label change is refused, so no webhook follows it: its count is dropped, and
         # the re-request from the token's account (a site whose token is a person's) still runs
-        self.run_adapter(False, refused=True, stuck=True, own='idle')
+        self.run_adapter(False, lost=True, stuck=True, own='idle')
     def test_gitea_adapter_serves_a_request_from_its_own_account(self): self.run_adapter(False, own='idle')
     def test_gitea_adapter_ends_its_own_counts_with_the_run(self): self.run_adapter(False, own='quiet')
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
@@ -518,11 +539,12 @@ class AdapterTests(unittest.TestCase):
                         if boundary and (2 in body['labels'] or 'hands-reviewing' in body['labels']):
                             at_working.append(runs_file.read_text() if runs_file.is_file() else '')
                         labels.update(body['labels'] if github else (names[i-1] for i in body['labels']))
-                        if 'hands-reviewed' in labels: done.set()
+                        if 'hands-reviewed' in labels and 'hands-reviewing' not in labels: done.set()  # the swap is complete
                     result = [{'name': n, 'id': names.index(n)+1} for n in labels]
                 elif path.startswith('/forge/repos/owner/repo/issues/1/labels/'):
                     name = path.split('/')[-1]
                     labels.discard(name if github else names[int(name)-1])
+                    if 'hands-reviewed' in labels and 'hands-reviewing' not in labels: done.set()
                 elif path == '/forge/orgs/owner/labels' or path == '/forge/repos/owner/repo/labels':
                     result = [{'name': n, 'id': i+1} for i,n in enumerate(names)]
                 elif path.startswith('/forge/repos/owner/repo/labels/'):
