@@ -33,14 +33,38 @@ def profiles():
         acp = data.get('agent_kind') == 'acp'
         result.append({'name': path.stem, 'model': data.get('acp_model') or data.get('llm_profile_ref') or path.stem,
                        'llm_profile_ref': None if acp else data.get('llm_profile_ref'),
-                       'switch': bool(not acp and data.get('enable_switch_llm_tool'))})
+                       'switch': not acp and has_switch(data)})
     return result
+
+
+SWITCH_TOOL_NAMES = frozenset({'switch_llm', 'SwitchLLMTool'})  # the SDK accepts a built-in by tool or class name
+
+
+def has_switch(data):
+    """Whether a stored OpenHands-kind agent profile gives its conversations the switch_llm
+    tool, as the SDK reads the file: the flag of profile schema 2 (on when absent), else
+    schema 3's `tools`, where None is the standard set, which includes the tool."""
+    if 'enable_switch_llm_tool' in data:
+        return bool(data['enable_switch_llm_tool'])
+    tools = data.get('tools')
+    if tools is None or not isinstance(data.get('schema_version'), int) or data['schema_version'] < 3:
+        return True
+    return any(isinstance(tool, dict) and tool.get('name') in SWITCH_TOOL_NAMES for tool in tools)
 
 
 # What the Auto Reviews app generates per profile of a combined-mode pair; every
 # other agent setting is shared by the pair, because the conversation runs on the
 # reading profile's agent and the primary contributes only its LLM and signature.
-GENERATED_FIELDS = frozenset({'id', 'name', 'revision', 'llm_profile_ref', 'enable_switch_llm_tool'})
+# The switch tool is the flag of profile schema 2 or an entry of schema 3's `tools`
+# (compared without it); the schema version is storage, not a setting.
+GENERATED_FIELDS = frozenset({'id', 'name', 'revision', 'schema_version', 'llm_profile_ref', 'enable_switch_llm_tool'})
+
+
+def _shared_settings(doc):
+    shared = {k: v for k, v in doc.items() if k not in GENERATED_FIELDS}
+    if isinstance(shared.get('tools'), list):
+        shared['tools'] = [t for t in shared['tools'] if not (isinstance(t, dict) and t.get('name') in SWITCH_TOOL_NAMES)]
+    return shared
 
 
 def agent_settings_diff(primary, secondary):
@@ -53,7 +77,7 @@ def agent_settings_diff(primary, secondary):
             docs.append(json.loads((profiles_dir() / (name + '.json')).read_text()))
         except (OSError, ValueError):
             return ['(unreadable profile)']
-    a, b = ({k: v for k, v in d.items() if k not in GENERATED_FIELDS} for d in docs)
+    a, b = (_shared_settings(d) for d in docs)
     return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
 
 

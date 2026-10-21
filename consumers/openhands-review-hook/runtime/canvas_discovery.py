@@ -304,6 +304,35 @@ def inventory():
     return {'providers': providers, 'selections': selections()}
 
 
+SWITCH_LLM_TOOL = 'switch_llm'
+
+
+def has_switch(agent):
+    """Whether an OpenHands-kind agent profile gives its conversations the switch_llm tool.
+
+    SDK 1.49 has a per-profile flag (on by default). SDK 1.51 retired it: the tool is
+    selected in `tools`, where None is the standard set, which includes it.
+    """
+    if 'enable_switch_llm_tool' in type(agent).model_fields:
+        return bool(agent.enable_switch_llm_tool)
+    return agent.tools is None or any(tool.name == SWITCH_LLM_TOOL for tool in agent.tools)
+
+
+def switch_fields(switch):
+    """The agent profile fields that turn the switch_llm tool on or off on the installed SDK.
+
+    Without the flag both profiles of a generated pair pin the standard tool set, the
+    reading profile's with switch_llm, so the pair differs in that tool only (as the SDK's
+    own migration pins it for a stored profile with the flag off).
+    """
+    from openhands.sdk.profiles import OpenHandsAgentProfile
+    if 'enable_switch_llm_tool' in OpenHandsAgentProfile.model_fields:
+        return {'enable_switch_llm_tool': bool(switch)}
+    from openhands.sdk.tool.defaults import resolve_tool_specs
+    return {'tools': [tool.model_dump(mode='json') for tool in resolve_tool_specs(None, enable_browser=True)
+                      if switch or tool.name != SWITCH_LLM_TOOL]}
+
+
 def selections():
     from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
     import shlex
@@ -327,14 +356,14 @@ def selections():
             except (ValueError, FileNotFoundError):
                 # Shown to the person with what is missing; never dropped or repaired here.
                 result[agent.name] = {'provider': 'profile:' + str(agent.llm_profile_ref), 'model': None, 'effort': None,
-                                      'switch': bool(getattr(agent, 'enable_switch_llm_tool', False)),
+                                      'switch': has_switch(agent),
                                       'problem': f'LLM profile {agent.llm_profile_ref!r} not found'}
                 continue
             provider = ('connection:' + llm.provider_connection_id if llm.provider_connection_id
                 else 'profile:' + origins.get(agent.llm_profile_ref, agent.llm_profile_ref))
             model = bare_model(llm.model)
             effort = getattr(llm, 'reasoning_effort', None) or API_DEFAULT_EFFORT
-            switch = bool(getattr(agent, 'enable_switch_llm_tool', False))
+            switch = has_switch(agent)
         result[agent.name] = {'provider': provider, 'model': model, 'effort': effort, 'switch': switch}
     return result
 
@@ -462,8 +491,7 @@ def prepare(selection, switch=False):
         else:
             if stored.model_dump(mode='json') != llm.model_dump(mode='json') or stored.api_key != llm.api_key:
                 raise ValueError('Generated LLM profile name already in use')
-        payload = {'agent_kind': 'openhands', 'llm_profile_ref': name,
-            'enable_switch_llm_tool': bool(switch)}
+        payload = {'agent_kind': 'openhands', 'llm_profile_ref': name, **switch_fields(switch)}
     payload.update(name=name)
     payload.pop('id', None)
     payload.pop('revision', None)

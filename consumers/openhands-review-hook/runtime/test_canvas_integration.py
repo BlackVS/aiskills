@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from canvas_discovery import prepare, inventory, stores, effort_options
+from canvas_discovery import prepare, inventory, stores, effort_options, has_switch, switch_fields
 
 
 @unittest.skipUnless(os.environ.get('OH_PERSISTENCE_DIR', '').startswith('/tmp/auto-reviews-test-'), 'requires isolated Canvas SDK storage')
@@ -52,7 +52,7 @@ class CanvasIntegrationTests(unittest.TestCase):
             self.assertEqual(llm.model, 'litellm_proxy/test-model')  # a custom endpoint is addressed through the proxy prefix
             self.assertEqual(llm.litellm_extra_body, {'reasoning_effort': 'high'})  # and carries the effort where the proxy provider cannot drop it
             self.assertFalse(llm.api_key)
-            self.assertFalse(profile.enable_switch_llm_tool)
+            self.assertFalse(has_switch(profile))
             self.assertEqual(llm.reasoning_effort, 'high')  # written on the profile, not substituted by selections()
             rows = {p['id']: p for p in inventory()['providers']}  # the seam the UI's effort controls key on
             self.assertEqual(rows['connection:test-connection']['efforts'], effort_options('connection:test-connection'))
@@ -66,7 +66,7 @@ class CanvasIntegrationTests(unittest.TestCase):
             self.assertEqual(prepare(dict(selected, effort='low')), low)  # a plain request never reuses the switch profile
             with self.assertRaises(ValueError): prepare({'provider': 'acp:codex', 'model': 'x'}, switch=True)
             reading = get_agent_profile_store().load(fast['profile'])
-            self.assertTrue(reading.enable_switch_llm_tool)
+            self.assertTrue(has_switch(reading))
             self.assertEqual(get_llm_profile_store().load(reading.llm_profile_ref, cipher=None, resolve_provider=False).reasoning_effort, 'low')
             self.assertEqual(inventory()['selections'][fast['profile']], dict(selected, effort='low', switch=True))
             with self.assertRaises(ValueError): prepare(dict(selected, effort='turbo'))
@@ -103,7 +103,7 @@ class CanvasIntegrationTests(unittest.TestCase):
             get_llm_profile_store().save('hand-pair', LLM(model='openai/test-model', base_url=f'http://127.0.0.1:{server.server_port}', api_key=SecretStr('test-key')),
                                          include_secrets=True, cipher=cipher, max_profiles=50)
             save_profile_preserving_identity(get_agent_profile_store(), validate_agent_profile(
-                {'name': 'hand-pair', 'agent_kind': 'openhands', 'llm_profile_ref': 'hand-pair', 'enable_switch_llm_tool': False}), max_profiles=50)
+                {'name': 'hand-pair', 'agent_kind': 'openhands', 'llm_profile_ref': 'hand-pair', **switch_fields(False)}), max_profiles=50)
             get_llm_profile_store().save('other-key', LLM(model='openai/test-model', base_url=f'http://127.0.0.1:{server.server_port}', api_key=SecretStr('other-key')),
                                          include_secrets=True, cipher=cipher, max_profiles=50)
             ids = {p['id'] for p in inventory()['providers']}
@@ -120,21 +120,21 @@ class CanvasIntegrationTests(unittest.TestCase):
             self.assertEqual(prepare({'provider': 'profile:inline-src', 'model': 'test-model', 'effort': 'max'}), {'profile': variant})  # re-saving reuses the variant
             # An agent profile whose LLM profile was deleted is reported with what is missing, not dropped.
             save_profile_preserving_identity(get_agent_profile_store(), validate_agent_profile(
-                {'name': 'orphan', 'agent_kind': 'openhands', 'llm_profile_ref': 'nope', 'enable_switch_llm_tool': False}), max_profiles=50)
+                {'name': 'orphan', 'agent_kind': 'openhands', 'llm_profile_ref': 'nope', **switch_fields(False)}), max_profiles=50)
             self.assertEqual(inventory()['selections']['orphan'], {'provider': 'profile:nope', 'model': None, 'effort': None, 'switch': False, 'problem': "LLM profile 'nope' not found"})
             self.assertEqual(prepare(selected), first)  # a problem row never breaks reuse
             # A variant saved under the old openai/ prefix on a custom endpoint is left alone: the next save builds a proxy-prefixed one.
             get_llm_profile_store().save('review-test-model-xhigh', LLM(model='openai/test-model', provider_connection_id='test-connection', reasoning_effort='xhigh'),
                                          include_secrets=True, cipher=cipher, max_profiles=50)
             save_profile_preserving_identity(get_agent_profile_store(), validate_agent_profile(
-                {'name': 'review-test-model-xhigh', 'agent_kind': 'openhands', 'llm_profile_ref': 'review-test-model-xhigh', 'enable_switch_llm_tool': False}), max_profiles=50)
+                {'name': 'review-test-model-xhigh', 'agent_kind': 'openhands', 'llm_profile_ref': 'review-test-model-xhigh', **switch_fields(False)}), max_profiles=50)
             self.assertEqual(inventory()['selections']['review-test-model-xhigh']['model'], 'test-model')  # both prefixes read back symmetrically
             self.assertEqual(prepare(dict(selected, effort='xhigh')), {'profile': 'review-test-model-xhigh-2'})
             # A proxied variant saved without the effort body (1.14.4) is not reused either.
             get_llm_profile_store().save('review-test-model-none', LLM(model='litellm_proxy/test-model', provider_connection_id='test-connection', reasoning_effort='none'),
                                          include_secrets=True, cipher=cipher, max_profiles=50)
             save_profile_preserving_identity(get_agent_profile_store(), validate_agent_profile(
-                {'name': 'review-test-model-none', 'agent_kind': 'openhands', 'llm_profile_ref': 'review-test-model-none', 'enable_switch_llm_tool': False}), max_profiles=50)
+                {'name': 'review-test-model-none', 'agent_kind': 'openhands', 'llm_profile_ref': 'review-test-model-none', **switch_fields(False)}), max_profiles=50)
             self.assertEqual(prepare(dict(selected, effort='none')), {'profile': 'review-test-model-none-2'})
             self.assertEqual(get_llm_profile_store().load('review-test-model-xhigh-2', cipher=cipher, resolve_provider=False).model, 'litellm_proxy/test-model')
             self.assertEqual(len(get_agent_profile_store().list()), before + 15)  # 3 connection variants, codex-probe, 2 codex variants, the namesake, the inline variant, hand-pair, medium-2, orphan, the old-prefix xhigh pair, the no-body pair
@@ -207,7 +207,7 @@ class CanvasIntegrationTests(unittest.TestCase):
                     self.assertEqual(saved['problems'], {})
                     agents = agent_store()
                     deep, reading = agents.load(settings['primary']), agents.load(settings['secondary'])
-                    self.assertTrue(reading.enable_switch_llm_tool); self.assertFalse(deep.enable_switch_llm_tool)
+                    self.assertTrue(has_switch(reading)); self.assertFalse(has_switch(deep))
                     def profile_info(name):  # the receivers' lookup (review_hook, github_review_poller), which start serving on import
                         data = json.loads((root / 'agent-profiles' / f'{name}.json').read_text())
                         llm = {p['name']: p for p in canvas('/api/profiles')['profiles']}.get(data.get('llm_profile_ref'), {})

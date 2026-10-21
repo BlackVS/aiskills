@@ -87,6 +87,26 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(review_policy.agent_settings_diff('api-deep', 'api-fast'), [])
         self.assertEqual(review_policy.agent_settings_diff('api-deep', 'missing'), ['(unreadable profile)'])
 
+    def test_schema_3_profiles_select_the_switch_tool_in_tools(self):
+        # SDK 1.51 retired the flag: a stored profile of schema 3 selects switch_llm in `tools`, None being the standard set with it
+        standard = [{'name': n, 'params': {}} for n in ['terminal', 'file_editor', 'task_tracker', 'browser_tool_set']]
+        for name, doc in [('v3-deep', {'tools': standard}), ('v3-fast', {'tools': standard + [{'name': 'switch_llm', 'params': {}}]}),
+                          ('v3-class', {'tools': standard + [{'name': 'SwitchLLMTool', 'params': {}}]}), ('v3-standard', {'tools': None}),
+                          ('v2-default', {'schema_version': 2})]:
+            (self.root / (name + '.json')).write_text(json.dumps({'schema_version': 3, 'agent_kind': 'openhands', 'llm_profile_ref': 'r-' + name, **doc}))
+        switch = {p['name']: p['switch'] for p in review_policy.profiles()}
+        self.assertEqual([switch[n] for n in ['v3-deep', 'v3-fast', 'v3-class', 'v3-standard', 'v2-default', 'api-deep', 'api-fast']],
+                         [False, True, True, True, True, False, True])  # a schema-2 file without the flag has it on, as the SDK reads it
+        self.assertEqual(review_policy.agent_settings_diff('v3-deep', 'v3-fast'), [])  # the pair differs in the switch tool only
+        self.assertEqual(review_policy.validate({'revision': 1, 'primary': 'v3-deep', 'secondary': 'v3-fast', 'fallback': None})['secondary'], 'v3-fast')
+        with self.assertRaisesRegex(ValueError, 'switch_llm tool enabled'):
+            review_policy.validate({'revision': 1, 'primary': 'v3-fast', 'secondary': 'v3-deep', 'fallback': None})
+        self.assertEqual(review_policy.agent_settings_diff('v3-deep', 'v3-standard'), ['tools'])  # the standard set is not known here: never assumed equal
+        self.assertEqual(review_policy.agent_settings_diff('api-deep', 'v3-fast'), ['tools'])  # nor across schemas
+        fast = json.loads((self.root / 'v3-fast.json').read_text())
+        (self.root / 'v3-fast.json').write_text(json.dumps(dict(fast, tools=fast['tools'] + [{'name': 'task_tool_set', 'params': {}}])))
+        self.assertEqual(review_policy.agent_settings_diff('v3-deep', 'v3-fast'), ['tools'])
+
     def test_hot_reload_and_explicit_override(self):
         review_policy.save_settings({'revision': 0, 'primary': 'claude-opus', 'fallback': None})
         self.assertEqual(review_policy.requested_profiles(['review-this'], 'review-this'), [('review-this', None)])  # resolved by the runner

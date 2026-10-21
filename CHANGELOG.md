@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.33.14] - 2026-10-21
+
+### Fixed
+- Auto Reviews on agent-canvas 1.27 (OpenHands SDK 1.54). SDK 1.51 retired an
+  agent profile's `enable_switch_llm_tool` flag: the `switch_llm` tool is now
+  selected in the profile's `tools`, where the standard set (`tools` unset)
+  includes it. Generating a profile failed there, and saving combined-mode
+  settings was refused. The discovery helper now reads and writes whichever
+  form the installed SDK has: on SDK 1.51 and later both profiles of a
+  generated pair pin the standard tool set, the reading profile's with
+  `switch_llm`. The control server reads a stored profile as the SDK does: the
+  flag of schema 2 (on when absent, which was read as off before), else the
+  `switch_llm` entry of schema 3's `tools`, and compares a pair without that
+  entry. `enable_classify_and_switch_llm_tool` is a different tool (routing
+  by meta-profile) and is not used.
+
 ## [1.33.13] - 2026-10-16
 
 ### Fixed

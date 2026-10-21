@@ -48,6 +48,19 @@ local Canvas HTTP API:
   2026-09-24); an ACP conversation stays `default`. The value therefore
   answers "has it switched to X", never "is it still on Y". `current_model_id`
   is the bare model name and does not distinguish two profiles of one model.
+- The switch tool on agent-canvas 1.27.1 (SDK 1.54.0), observed 2026-10-21 in
+  the image: the profile flag `enable_switch_llm_tool` was retired in SDK 1.51
+  (deprecated input is still folded into `tools` with a warning, removal
+  announced for 1.56). `tools: null` is the standard set, which includes
+  `switch_llm`; a list carries it only when named. A stored schema-2 profile is
+  migrated to schema 3 when the SDK saves it, not on read, so the store holds
+  both shapes after an upgrade. At launch a `switch_llm` entry becomes
+  `SwitchLLMTool` in the agent's `include_default_tools`, the tool itself is
+  unchanged, and `usage_id` is still `profile:<name>` after a switch.
+  `enable_classify_and_switch_llm_tool` is a separate routing tool
+  (`route_task_to_model`, meta-profiles), not the renamed flag. A host-side
+  comparison cannot know the standard set, so `tools: null` against a pinned
+  list counts as a difference, never as equal.
 - `switch_llm` appears as an `ActionEvent` with `tool_name: switch_llm` and
   `action: {profile_name, reason}`, followed by an `ObservationEvent` of the
   same `tool_name` and `tool_call_id`, plus a `ConversationStateUpdateEvent`
