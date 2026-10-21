@@ -1,7 +1,11 @@
 # Design proposal: `forge-gates`
 
-Status: proposal for review, revision 2. Nothing is implemented yet. The
+Status: proposal for review, revision 3. Nothing is implemented yet. The
 review is asked to judge the design and the contract below, not code.
+Revision 3 binds the CLI credential to its source as well as its host (the
+CLI's global environment overrides are removed), states the review precedence
+`check_reviews` actually applies, and lists the known limits of the GitLab
+and Gitea adapters.
 Revision 2 takes option A, which the first review preferred, and closes the
 three contract gaps it found: how a review of an older head is carried to the
 current head, GitLab's state before the merge, and which host an automatic
@@ -112,10 +116,22 @@ base: `https://api.github.com` means `github.com`, and `https://HOST/api/v3`
 means `HOST`. Any other API base shape is a usage error for rule 4. When the
 pull request is given as a URL, its host must be that same host; a mismatch
 (for example a `--api-base` override that points elsewhere) is a usage error,
-and no credential is read. The script runs
-`gh auth token --hostname HOST` once, with a timeout and with no shell, and
-keeps the token in memory only. A `gh` that is missing, not logged in to
-`HOST` or failing gives a usage error that names the three other choices. The
+and no credential is read.
+
+The CLI must return a credential stored for `HOST`, never a global one. `gh`
+lets environment variables override its stored logins: `GH_TOKEN` and
+`GITHUB_TOKEN` for github.com, and `GH_ENTERPRISE_TOKEN` and
+`GITHUB_ENTERPRISE_TOKEN` for every other host, whatever `--hostname` names.
+With such a variable set for instance A, `gh auth token --hostname B` returns
+A's token although B has no login. So the script runs
+`gh auth token --hostname HOST` once, with a timeout, with no shell, and with
+an environment from which those four variables and `GH_HOST` are removed;
+`GH_CONFIG_DIR` and the rest are kept, so the logins stored in the CLI's
+configuration or the system keyring are still found. A person or job that
+wants an environment token used passes it as a token file (rule 2 or 3),
+which is an explicit binding. The token is kept in memory only. A `gh` that
+is missing, not logged in to `HOST` or failing gives a usage error that names
+the three other choices. The
 token is then sent only to the API base's origin. `Http` never follows a
 redirect, and `Forge.pages` refuses a next-page link to another host, so it
 cannot leave that origin. Gitea and GitLab have no CLI rule: their CLIs keep
@@ -125,9 +141,14 @@ file or `--anonymous` is required there.
 ## Reviews at the current head
 
 `gates` reads the reviews with `check_reviews` for the current head and with
-no merge time, so every review comment counts and the latest one of each
-review supersedes earlier ones. The result for each configured review is then
-one of these:
+no merge time, so no comment is excluded for coming after a merge. Its
+precedence is kept as it is: for each configured review, the latest trusted
+comment that names the current head counts, even when a newer comment names
+an older head; only when no comment names the current head does the latest
+one naming an older head count. A newer review of the current head always
+supersedes an earlier one of it, so a later RETURN_TO_IMPLEMENTATION is never
+hidden by an earlier READY. The result for each configured review is then one
+of these:
 
 - **READY at the current head:** the review names the current head by its
   full SHA and its verdict is READY. On GitLab, an abbreviation also counts
@@ -190,6 +211,16 @@ passed. A running or queued result makes CI `pending`. No result at all is
 `skipped`) and Gitea's and GitLab's (`success`) are `verify-delivery`'s.
 `merge-check` keeps the delivery check's own selection for post-merge CI (on
 GitLab, the target branch's push pipeline at the merged commit).
+
+Known limits, reported rather than guessed around:
+
+- GitLab's merged-results pipelines run on a commit that combines the source
+  and the target branch, not on the head itself. `head_pipeline` is counted
+  only when its `sha` is the head, so a project that runs only merged-results
+  pipelines shows CI as `pending` with that reason.
+- Gitea's work-in-progress prefixes are configurable per installation. The
+  fallback knows the defaults; `--draft-prefix` (repeatable) replaces them for
+  an installation with its own.
 
 `ready` is true only when the pull request is open, is not a draft, every
 required review is `ready` (at the current head or carried), and CI at the
@@ -268,7 +299,11 @@ Standard library `unittest`, with recorded forge responses served through
   pipeline passed and that has no target-branch pipeline; CI pending, failed
   and absent.
 - Credentials: `--anonymous` never asks the GitHub CLI; a token file wins over
-  the CLI; the CLI is asked for the host derived from the API base; a pull
+  the CLI; the CLI is asked for the host derived from the API base, with
+  `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`
+  and `GH_HOST` removed from its environment (a fake `gh` records the
+  environment it was given, and a synthetic global token set in the caller's
+  environment never reaches the request); a pull
   request URL on another host than the API base is a usage error with nothing
   read; a missing or logged-out `gh` is a named usage error.
 - `merge-check`: equals `verify-delivery`'s output for the same recorded
@@ -291,9 +326,10 @@ Standard library `unittest`, with recorded forge responses served through
 
 1. Do the carry-over rule and the change identity close the stale-review gap
    without refusing a base-only update the gates allow?
-2. Is the credential order, with the host derived from the API base and the
-   URL host required to match, enough to keep an automatic token on its own
-   host?
+2. With the host derived from the API base, the URL host required to match,
+   and the CLI's global token variables removed from its environment, is an
+   automatic token now bound to its own host, both where it comes from and
+   where it goes?
 3. Are the pre-merge adapters (draft and CI per forge) complete, in
    particular GitLab's `head_pipeline` and Gitea's draft detection?
 4. Are the wait outcomes and the failure correlation enough for an agent to
