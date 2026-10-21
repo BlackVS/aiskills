@@ -9,6 +9,12 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+- The aimem process handbook says which external reviewer to request (the one
+  deployed on the project's own forge, with the model its site runs) and what
+  holds where none is deployed: the local high review is the pre-merge gate,
+  and the external gate is reported as absent, never as passed.
+
 ## [1.33.14] - 2026-10-21
 
 ### Fixed
