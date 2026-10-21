@@ -221,7 +221,8 @@ def ci_gate(args, forge, kind, pr):
     else:
         runs = vd.ci_results(kind, head, forge, set())
         if kind == "github":
-            for s in forge.get(f"/commits/{head}/status?per_page=100").get("statuses") or []:
+            # every page: a failed status past the first 100 must not be missed
+            for s in forge.pages(f"/commits/{head}/status", key="statuses"):
                 state = s.get("state")
                 runs.append({"name": s.get("context"), "id": s.get("id"), "url": s.get("target_url") or "",
                              "state": state, "conclusion": state,

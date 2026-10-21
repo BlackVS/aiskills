@@ -37,6 +37,15 @@ def review(who, sha, verdict="READY_FOR_HUMAN_MERGE"):
     return f"{header} reviewed at head {sha}\n\nBLOCKERS\n- None\n\nVERDICT\n{verdict}\n\nRISK\nLOW\n"
 
 
+class Pages(list):
+    """A listing served page by page, with a Link rel="next" header (LINK, when given, replaces the
+    next page's URL)."""
+
+    def __init__(self, pages, link=None):
+        super().__init__(pages)
+        self.link = link
+
+
 class FakeApi:
     """Serves responses by path and query (paging parameters ignored); records each request."""
 
@@ -46,7 +55,7 @@ class FakeApi:
 
     @staticmethod
     def key(path, query):
-        return path, frozenset((k, v) for k, v in urllib.parse.parse_qsl(query) if k not in ("per_page", "limit"))
+        return path, frozenset((k, v) for k, v in urllib.parse.parse_qsl(query) if k not in ("per_page", "limit", "page"))
 
     def set(self, route, body, status=200):
         path, _, query = route.partition("?")
@@ -61,10 +70,16 @@ class FakeApi:
                               "timeout": timeout})
         url = urllib.parse.urlsplit(req.full_url)
         status, body = self.routes.get(self.key(url.path[len(self.base):], url.query), (404, {"message": "Not Found"}))
+        headers = {}
+        if isinstance(body, Pages):
+            page = int(dict(urllib.parse.parse_qsl(url.query)).get("page", 1))
+            status, body, pages = (*body[page - 1], body)
+            if page < len(pages):
+                headers["Link"] = f'<{pages.link or req.full_url.split("&page=")[0] + f"&page={page + 1}"}>; rel="next"'
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         if status != 200:
             raise urllib.error.HTTPError(req.full_url, status, "error", {}, io.BytesIO(data))
-        return tvd.Response(200, data)
+        return tvd.Response(200, data, headers)
 
 
 class FakeGh:
@@ -487,6 +502,28 @@ class GitHubGates(GatesContract, unittest.TestCase):
             runs, statuses = [], []
         self.fake.set(f"{self.repo}/commits/{HEAD}/check-runs?filter=latest", {"check_runs": runs})
         self.fake.set(f"{self.repo}/commits/{HEAD}/status", {"state": "pending", "statuses": statuses})
+
+    def test_every_status_page_is_read(self):
+        ok = [{"context": f"ci/{i}", "id": i, "target_url": "", "state": "success"} for i in range(100)]
+        route = f"{self.repo}/commits/{HEAD}/status"
+        for last, expected in (("success", (0, "passed")), ("failure", (3, "failed")), ("pending", (4, "pending"))):
+            with self.subTest(last):
+                tail = [{"context": "ci/late", "id": 100, "target_url": "", "state": last}]
+                self.fake.set(route, Pages([(200, {"state": last, "statuses": ok}), (200, {"state": last, "statuses": tail})]))
+                code, doc = self.gates()
+                ci = self.check(doc, "ci")
+                self.assertEqual((code, ci["status"]), expected)
+                self.assertEqual(len(ci["runs"]), 102, "one check run and 101 statuses")
+        with self.subTest("second page unavailable"):
+            self.fake.set(route, Pages([(200, {"state": "failure", "statuses": ok}), (500, {"message": "error"})]))
+            code, doc = self.gates()
+            self.assertEqual((code, doc["status"], doc["error"]["kind"]), (4, "pending", "unavailable"))
+        with self.subTest("next page on another host"):
+            self.fake.set(route, Pages([(200, {"state": "failure", "statuses": ok}), (200, {"statuses": []})],
+                                       link="https://elsewhere.example.org/next"))
+            code, doc = self.gates()
+            self.assertEqual((code, doc["ready"]), (2, False))
+            self.assertFalse(any("elsewhere" in r["url"] for r in self.fake.requests))
 
     def test_known_flaky_failure_still_fails(self):
         self.build_ci("run failed")
