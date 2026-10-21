@@ -27,7 +27,8 @@ Two placeholder namespaces, deliberately different:
 
 `REASONING_PROFILES` is the optional block for sites whose agent can change its
 LLM mid-conversation (OpenHands SDK: the built-in `switch_llm` tool, enabled per
-agent profile with `enable_switch_llm_tool`). The universal contract it encodes:
+agent profile with `enable_switch_llm_tool` up to SDK 1.50 and by a `switch_llm`
+entry in the profile's `tools` from SDK 1.51). The universal contract it encodes:
 gather material (clone, diff, read the changed files) on a cheap/fast profile,
 then switch to the deep profile BEFORE forming the frozen scope or writing any
 finding, so the review pass, the verification stage and the write-up all run

@@ -256,6 +256,7 @@ class DiscoveryTests(unittest.TestCase):
         sdk = {name: types.ModuleType(name) for name in ['openhands', 'openhands.sdk', 'openhands.sdk.profiles', 'openhands.sdk.llm']}
         sdk['openhands.sdk.profiles'].validate_agent_profile = lambda payload: payload
         sdk['openhands.sdk.profiles'].save_profile_preserving_identity = lambda store, profile, **kw: saved.append(profile['name'])
+        sdk['openhands.sdk.profiles'].OpenHandsAgentProfile = types.SimpleNamespace(model_fields={'enable_switch_llm_tool': None})
         sdk['openhands.sdk.llm'].LLM = lambda **kw: types.SimpleNamespace(**kw)
         connection = types.SimpleNamespace(get=lambda source, cipher=None: types.SimpleNamespace(base_url=None))
         known = {'review-codex-high': {'provider': 'acp:codex', 'model': 'codex', 'effort': 'high', 'switch': False}}
@@ -291,6 +292,30 @@ class DiscoveryTests(unittest.TestCase):
                  patch('canvas_discovery.discover', return_value={'models': [{'id': 'other'}]}):
                 name = canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'other'})['profile']
             self.assertEqual(saved, [name], 'an account agent needs no LLM profile, so a full LLM store does not block it')
+
+    def test_the_switch_tool_is_the_flag_of_sdk_1_49_or_an_entry_of_tools_from_sdk_1_51(self):
+        import sys, types
+        import canvas_discovery
+        from canvas_discovery import has_switch, switch_fields
+        Tool = lambda name: types.SimpleNamespace(name=name, model_dump=lambda mode=None: {'name': name, 'params': {}})
+        Flag = type('Flag', (), {'model_fields': {'enable_switch_llm_tool': None, 'tools': None}})
+        Tools = type('Tools', (), {'model_fields': {'tools': None}})
+        def agent(cls, **fields):
+            made = cls(); made.__dict__.update(fields); return made
+        self.assertTrue(has_switch(agent(Flag, enable_switch_llm_tool=True, tools=None)))
+        self.assertFalse(has_switch(agent(Flag, enable_switch_llm_tool=False, tools=[Tool('switch_llm')])))  # 1.49: the flag decides
+        self.assertTrue(has_switch(agent(Tools, tools=None)))  # the standard set includes it
+        self.assertTrue(has_switch(agent(Tools, tools=[Tool('terminal'), Tool('switch_llm')])))
+        self.assertFalse(has_switch(agent(Tools, tools=[Tool('terminal')])))
+        self.assertFalse(has_switch(agent(Tools, tools=[])))
+        standard = [Tool(n) for n in ['terminal', 'file_editor', 'task_tracker', 'browser_tool_set', 'switch_llm']]
+        for fields, expected in [({'enable_switch_llm_tool': None}, [{'enable_switch_llm_tool': True}, {'enable_switch_llm_tool': False}]),
+                                 ({'tools': None}, [{'tools': [t.model_dump() for t in standard]}, {'tools': [t.model_dump() for t in standard[:-1]]}])]:
+            sdk = {name: types.ModuleType(name) for name in ['openhands', 'openhands.sdk', 'openhands.sdk.profiles', 'openhands.sdk.tool', 'openhands.sdk.tool.defaults']}
+            sdk['openhands.sdk.profiles'].OpenHandsAgentProfile = types.SimpleNamespace(model_fields=fields)
+            sdk['openhands.sdk.tool.defaults'].resolve_tool_specs = lambda tools, enable_browser: standard if tools is None and enable_browser else None
+            with self.subTest(fields=fields), patch.dict(sys.modules, sdk):
+                self.assertEqual([switch_fields(True), switch_fields(False)], expected)
 
     def test_the_helper_answers_a_full_store_distinctly_and_anything_else_with_fixed_text(self):
         from canvas_discovery import answer, ProfileLimit
