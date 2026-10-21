@@ -153,6 +153,11 @@ if ($Want -contains 'architecture-review') {
         }
     }
 }
+# forge-gates imports the verify-delivery module from its sibling directory
+if ($Want -contains 'forge-gates' -and $Want -notcontains 'verify-delivery') {
+    Write-Host "note: forge-gates needs verify-delivery; adding it"
+    $Want += 'verify-delivery'
+}
 
 # OpenCode reads its config from $XDG_CONFIG_HOME\opencode, ~\.config\opencode when unset
 $OpenCodeDir = Join-Path $(if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }) 'opencode'

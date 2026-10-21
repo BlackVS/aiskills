@@ -58,7 +58,17 @@ conversation is still running, so leave a `hands-reviewing` PR alone.
   above.
 - Adding the label means **watching for the result**: start a background
   watch and act on the findings when the comment lands — never leave a
-  triggered review for the user to discover.
+  triggered review for the user to discover. With the `forge-gates` skill
+  installed, the watch is `forge_gates.py wait-review --pr <PR> --head
+  <full SHA>`, run in the background.
+- **Matching the comment to the head while waiting:** the comment answers for
+  the head you pushed when the SHA it names is a prefix of that head, 7 to 40
+  hexadecimal digits, in any case. Never assume a fixed length (a reviewer
+  may abbreviate to 7 digits). That match only says the answer arrived. For
+  readiness, the gate needs the review to name the head by its **full** SHA
+  (on GitHub and Gitea an abbreviation could also name a commit made later to
+  share it, so it never counts there); `forge_gates.py gates` applies that
+  rule.
 
 ## Choosing the reviewer model — only where the site supports it
 

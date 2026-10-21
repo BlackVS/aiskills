@@ -594,31 +594,10 @@ def verify(args, forge, kind, number):
     pr_url = pr.get("html_url") or ""
 
     # 1. reviewed head
-    items = [{"body": c.get("body"), "created_at": c.get("created_at"), "updated_at": c.get("updated_at"),
-              "url": c.get("html_url"), "author": (c.get("user") or {}).get("login"),
-              "association": c.get("author_association")}
-             for c in forge.pages(f"/issues/{number}/comments")]
-    # Formal reviews are read only to say why they do not count (see FORMAL_REVIEW).
-    items += [{"body": r.get("body"), "created_at": r.get("submitted_at"), "url": r.get("html_url"),
-               "author": (r.get("user") or {}).get("login"), "association": r.get("author_association"),
-               "formal": True}
-              for r in forge.pages(f"/pulls/{number}/reviews")]
+    items = comment_items(forge, number)
     head_commit = (forge.get_or_none(f"/git/commits/{head}") if head else None) or {}
     head_url = head_commit.get("html_url") or ""
-    heads = once(lambda: forge.pull_heads(number))
-    def short_at_head(sha):
-        """Whether an abbreviation of the final head names it: only on request, or where the forge
-        keeps every head and nothing else shares the abbreviation (GitLab's versions)."""
-        if args.accept_short_head_sha:
-            return True
-        try:
-            listed = heads()
-        except Unavailable:
-            return None  # unknown for now: the review is pending
-        if listed is None:
-            return False
-        versions, everything = listed
-        return head in versions and {s for s in everything if s.startswith(sha)} == {head}
+    heads, short_at_head = head_abbreviations(args, forge, number, head)
     ready, reviews, ignored = check_reviews(items, head, merged_at, args.reviews, args.verdict,
                                             kind, args.review_authors, args.trust_any_author,
                                             short_at_head)
@@ -707,6 +686,40 @@ def verify(args, forge, kind, number):
         ci["status"] = "passed"
     checks.append(ci)
     return checks, pr_url, head_url, merge_url, runs
+
+
+def comment_items(forge, number, formal=True):
+    """The pull request's comments in the shape check_reviews reads, and (FORMAL) its formal
+    reviews, which are read only to say why they do not count (see FORMAL_REVIEW)."""
+    items = [{"body": c.get("body"), "created_at": c.get("created_at"), "updated_at": c.get("updated_at"),
+              "url": c.get("html_url"), "author": (c.get("user") or {}).get("login"),
+              "association": c.get("author_association")}
+             for c in forge.pages(f"/issues/{number}/comments")]
+    if formal:
+        items += [{"body": r.get("body"), "created_at": r.get("submitted_at"), "url": r.get("html_url"),
+                   "author": (r.get("user") or {}).get("login"), "association": r.get("author_association"),
+                   "formal": True}
+                  for r in forge.pages(f"/pulls/{number}/reviews")]
+    return items
+
+
+def head_abbreviations(args, forge, number, head):
+    """(heads, short_at_head): the pull request's heads, read at most once, and whether an
+    abbreviation of the final head names it: only on request, or where the forge keeps every
+    head and nothing else shares the abbreviation (GitLab's versions)."""
+    heads = once(lambda: forge.pull_heads(number))
+    def short_at_head(sha):
+        if args.accept_short_head_sha:
+            return True
+        try:
+            listed = heads()
+        except Unavailable:
+            return None  # unknown for now: the review is pending
+        if listed is None:
+            return False
+        versions, everything = listed
+        return head in versions and {s for s in everything if s.startswith(sha)} == {head}
+    return heads, short_at_head
 
 
 def once(read):
@@ -936,7 +949,12 @@ def evidence_for(pr_url, head_url, merge_url, runs):
 # ---------------------------------------------------------------- CLI
 
 def build_parser():
-    p = ArgParser(prog="verify_delivery.py", description=__doc__.split("\n\n")[0], allow_abbrev=False)
+    return add_arguments(ArgParser(prog="verify_delivery.py", description=__doc__.split("\n\n")[0],
+                                   allow_abbrev=False))
+
+
+def add_arguments(p):
+    """The options of this check, on parser P (forge-gates adds them to its subcommands)."""
     p.add_argument("--pr", required=True, help="pull or merge request URL, owner/repo#N, or owner/repo with --number")
     p.add_argument("--number", type=int, help="pull request number when --pr is owner/repo")
     p.add_argument("--forge", choices=("github", "gitea", "gitlab"), help="forge type (default: from the URL; github for owner/repo)")
@@ -1055,19 +1073,34 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
         except SystemExit as e:  # --help
             return EXIT_USAGE if e.code else 0
         kind, api_base, owner, repo, number, token = resolve(args, env)
-        forge = (GitLabForge if kind == "gitlab" else Forge)(Http(token, kind, opener=opener, sleep=sleep), kind, api_base, owner, repo)
-        checks, pr_url, head_url, merge_url, runs = verify(args, forge, kind, number)
     except UsageError as e:
-        emit({"verdict": "not_confirmed", "error": {"kind": "usage", "message": str(e)}, "checks": []}, stdout, token)
-        return EXIT_USAGE
-    except Unavailable as e:
-        emit({"verdict": "pending", "error": {"kind": "unavailable", "message": str(e)}, "checks": []}, stdout, token)
-        return EXIT_PENDING
-    except NotFound:
-        emit({"verdict": "not_confirmed", "error": {"kind": "not_found", "message": "a record the pull request refers to was not found"},
-              "checks": []}, stdout, token)
-        return EXIT_NOT_CONFIRMED
+        doc, code = failure(e)
+    else:
+        doc, code = deliver(args, make_forge(token, kind, api_base, owner, repo, opener, sleep), kind, owner, repo, number)
+    emit(doc, stdout, token)
+    return code
 
+
+def make_forge(token, kind, api_base, owner, repo, opener=None, sleep=time.sleep):
+    return (GitLabForge if kind == "gitlab" else Forge)(Http(token, kind, opener=opener, sleep=sleep), kind, api_base, owner, repo)
+
+
+def failure(e):
+    """(document, exit code) for a check stopped by E."""
+    if isinstance(e, UsageError):
+        return {"verdict": "not_confirmed", "error": {"kind": "usage", "message": str(e)}, "checks": []}, EXIT_USAGE
+    if isinstance(e, Unavailable):
+        return {"verdict": "pending", "error": {"kind": "unavailable", "message": str(e)}, "checks": []}, EXIT_PENDING
+    return ({"verdict": "not_confirmed", "error": {"kind": "not_found", "message": "a record the pull request refers to was not found"},
+             "checks": []}, EXIT_NOT_CONFIRMED)
+
+
+def deliver(args, forge, kind, owner, repo, number):
+    """(document, exit code): the delivery verdict for pull request NUMBER, as main prints it."""
+    try:
+        checks, pr_url, head_url, merge_url, runs = verify(args, forge, kind, number)
+    except (UsageError, Unavailable, NotFound) as e:
+        return failure(e)
     statuses = {c["status"] for c in checks}
     verdict = "not_confirmed" if "failed" in statuses else "pending" if "pending" in statuses else "confirmed"
     doc = {"verdict": verdict, "pr": {"forge": kind, "repo": f"{owner}/{repo}", "number": number, "url": pr_url},
@@ -1079,8 +1112,7 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
             doc["error"] = {"kind": "evidence", "message": "the evidence would not fit its limits (16 entries, 512 bytes each)"}
         else:
             doc["evidence"] = evidence
-    emit(doc, stdout, token)
-    return {"confirmed": EXIT_CONFIRMED, "pending": EXIT_PENDING}.get(verdict, EXIT_NOT_CONFIRMED)
+    return doc, {"confirmed": EXIT_CONFIRMED, "pending": EXIT_PENDING}.get(verdict, EXIT_NOT_CONFIRMED)
 
 
 if __name__ == "__main__":

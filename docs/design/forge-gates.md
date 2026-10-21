@@ -1,7 +1,12 @@
 # Design proposal: `forge-gates`
 
-Status: proposal for review, revision 3. Nothing is implemented yet. The
-review is asked to judge the design and the contract below, not code.
+Status: accepted at revision 3 and implemented in
+`skills/forge-gates/` (tests in `tests/test_forge_gates.py`). Two details were
+settled during implementation: a failure comment counts as naming the head
+when any SHA it names is a prefix of the head (a run of digits only is read as
+a SHA only at its full 40-digit length, since it is more often a number), and
+the request label is `--request-label` (default `review-this`, its
+`review-this:<profile>` variants included).
 Revision 3 binds the CLI credential to its source as well as its host (the
 CLI's global environment overrides are removed), states the review precedence
 `check_reviews` actually applies, and lists the known limits of the GitLab

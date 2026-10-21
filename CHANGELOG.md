@@ -9,6 +9,25 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- `forge-gates`, a new skill that reads the review gates before the merge
+  from the forge (GitHub, Gitea, GitLab), so agents stop writing their own
+  watchers. `wait-review` waits for the external reviewer's comment for a
+  pushed head: any abbreviation of 7 to 40 digits, trusted authors only, and
+  a failure comment ends the wait only when it is newer than the latest
+  request label. `gates` says whether the current head is ready for a person
+  to merge: open, not a draft (Gitea's title prefixes included), the required
+  reviews READY at the head or carried from an older head whose change is the
+  same, and CI green at the head (GitLab's merge request pipeline).
+  `merge-check` prints `verify-delivery`'s document. On GitHub without a
+  token file, the token comes from `gh auth token --hostname` for the API's
+  own host, with the CLI's global token variables removed. The design is in
+  `docs/design/forge-gates.md`.
+- The installers install `verify-delivery` whenever `forge-gates` is
+  selected: the new skill imports its module.
+- `verify-delivery`: the delivery document is built by `deliver()`, which
+  `forge-gates merge-check` shares; the output is unchanged.
+
 ### Fixed
 - The aimem process handbook says which external reviewer to request (the one
   deployed on the project's own forge, with the model its site runs) and what
