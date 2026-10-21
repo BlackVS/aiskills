@@ -167,6 +167,8 @@ def review_gate(args, forge, kind, number, pr):
                 identities[sha] = (change_identity(forge, kind, tips[0], sha), None)
             except (vd.Unavailable, ValueError) as e:
                 identities[sha] = (None, str(e))
+            except vd.NotFound:
+                identities[sha] = (None, f"the base branch {pr['base']} was not found")
         return identities[sha]
 
     for r in reviews:
@@ -310,12 +312,14 @@ def poll(args, forge, kind, number, head, since):
                                            "verdict": word.group(1) if word else None,
                                            "ready_verdict": bool(args.verdict.search(c["body"] or "")),
                                            "url": c["url"], "author": c["author"], "created_at": c["created_at"]}}
-    label = label_added(forge, kind, number, args.request_label)
-    correlation = {"correlation": "label" if label else "wait_start", "since": (label or since).isoformat()}
-    for c in reversed(trusted):
-        stamp = vd.when(c["created_at"])
-        if (args.failure.search(c["body"] or "") and names_head(c["body"], head) and stamp
-                and stamp > (label or since)):
+    failures = [c for c in reversed(trusted) if args.failure.search(c["body"] or "") and names_head(c["body"], head)
+                and vd.when(c["created_at"])]
+    correlation = {}
+    if failures:  # the label events are read only when there is a failure to correlate
+        label = label_added(forge, kind, number, args.request_label)
+        correlation = {"correlation": "label" if label else "wait_start", "since": (label or since).isoformat()}
+        c = next((c for c in failures if vd.when(c["created_at"]) > (label or since)), None)
+        if c:
             return "reviewer_failed", {"failure": {"url": c["url"], "author": c["author"], "created_at": c["created_at"]},
                                        **correlation}
     if pr["head"] != head:
@@ -335,10 +339,10 @@ def wait_review(args, forge, kind, owner, repo, number, clock, sleep):
         polls += 1
         try:
             outcome, details = poll(args, forge, kind, number, head, since)
-        except vd.UsageError:
+        except vd.UsageError as e:
             if polls == 1:
                 raise
-            outcome, last_error = None, "the pull request could no longer be read (it may have been deleted)"
+            outcome, last_error = None, str(e)
         except vd.Unavailable as e:
             outcome, last_error = None, str(e)
         elapsed = clock() - start

@@ -286,6 +286,15 @@ class GatesContract(Gates):
         self.assertEqual((code, doc["status"], r["status"]), (4, "pending", "unknown"), json.dumps(r))
         self.assertFalse(doc["ready"])
 
+    def test_a_base_branch_that_is_not_found_gives_unknown(self):
+        self.external_at_head()["body"] = review("example-bot", OLD)
+        self.publish_comments()
+        self.fake.drop(f"{self.repo}/repository/branches/main" if self.forge == "gitlab" else f"{self.repo}/branches/main")
+        code, doc = self.gates()
+        r = self.review_of(doc)
+        self.assertEqual((code, r["status"]), (4, "unknown"), json.dumps(doc))
+        self.assertIn("main", r["detail"])
+
     def test_an_older_head_named_by_an_abbreviation_is_not_carried(self):
         self.external_at_head()["body"] = review("example-bot", OLD[:12])
         self.publish_comments()
@@ -373,6 +382,16 @@ class WaitContract(Gates):
         self.comment("⚠️ The external review could not run.", minutes=-25)  # the label was added at -20
         code, doc = self.wait("--timeout", "60")
         self.assertEqual((code, doc["outcome"]), (4, "timeout"))
+
+    def test_label_events_are_read_only_to_correlate_a_failure(self):
+        del self.comments[2]
+        self.publish_comments()
+        self.wait("--timeout", "120")
+        self.assertFalse(any(("/events" in r["url"] or "/timeline" in r["url"] or "label_events" in r["url"])
+                             for r in self.fake.requests), "no failure comment: no label events read")
+        self.comment("⚠️ The external review could not run.", minutes=-25)  # before the label (-20)
+        code, doc = self.wait("--timeout", "60")
+        self.assertEqual((code, doc["outcome"], doc["correlation"]), (4, "timeout", "label"))
 
     def test_failure_naming_another_head_does_not_count(self):
         del self.comments[2]
