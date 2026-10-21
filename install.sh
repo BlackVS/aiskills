@@ -114,6 +114,10 @@ if printf '%s\n' ${want[@]+"${want[@]}"} | grep -qx architecture-review; then
     printf '%s\n' ${want[@]+"${want[@]}"} | grep -qx "$dep" || { echo "note: architecture-review needs $dep; adding it"; want+=("$dep"); }
   done
 fi
+# forge-gates imports the verify-delivery module from its sibling directory
+if printf '%s\n' ${want[@]+"${want[@]}"} | grep -qx forge-gates; then
+  printf '%s\n' "${want[@]}" | grep -qx verify-delivery || { echo "note: forge-gates needs verify-delivery; adding it"; want+=(verify-delivery); }
+fi
 
 dest_for() {  # tool -> destination skills dir
   case "$1" in

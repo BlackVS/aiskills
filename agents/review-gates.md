@@ -91,6 +91,12 @@ Pull request lifecycle:
   command; do not re-add `review-this`, do not restore `WIP: ` or draft, and
   leave `hands-reviewed` in place. The PR stays ready for human merge. CI
   still runs on the new head and must be green.
+  Without a clone, the `forge-gates` skill's `gates` command makes the same
+  decision from the forge: it carries a READY review of an older head when
+  that head's `change_identity` (a digest of its diff against the base,
+  context lines included) equals the new head's. That digest is not a
+  git patch-id and is never compared with one; it is the stricter of the two,
+  so where they disagree the answer is a re-review.
 - Any other later commit (a conflict resolved with edits, any content change)
   makes both reviews stale: the local delta review names the new head, the
   external review is re-requested, and a PR already marked ready goes back
@@ -142,7 +148,10 @@ Gitea orgs a hands site covers, and on GitHub repos hands polls):
   follow-up commits after the result arrives, then re-trigger.
 - Adding the label means watching for the result: start a background watch,
   and act on the findings when the comment lands — do not leave a triggered
-  review for the user to discover.
+  review for the user to discover. Where the `forge-gates` skill is
+  installed, the watch is its `wait-review --head <full SHA>` and the
+  readiness check before marking the PR ready is its `gates`; do not write a
+  private watcher.
 
 QA gate (optional, execution-based):
 

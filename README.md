@@ -4,8 +4,8 @@ Skills taken from `OpenHands/extensions` (see `UPSTREAM.txt` for the commit),
 plus skills written here. The upstream skills carry an `oh-` prefix so they
 never shadow built-in skills of the same name (Claude Code ships its own
 `/code-review`, and the OpenHands public catalog has `code-review`,
-`code-simplifier`, ...). `architecture-review` and `verify-delivery` are local
-and unprefixed.
+`code-simplifier`, ...). `architecture-review`, `verify-delivery` and `forge-gates`
+are local and unprefixed.
 All use the common `SKILL.md` format (YAML
 frontmatter with `name` and `description`, then instructions), so the same folder
 works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
@@ -21,6 +21,7 @@ works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
 | `oh-qa-changes` | extensions (`qa-changes`) | QA a PR by RUNNING the software: env setup, exercise changed behavior as a user, PASS/FAIL report with before/after evidence. Not tests (CI's job), not reading code (review's job). |
 | `oh-learn-from-code-review` | extensions (`learn-from-code-review`) | Distill merged-PR review feedback into repo skills and the `custom-codereview-guide` the reviewer reads; Gitea+GitHub; AI-reviewer comments included as signal. |
 | `verify-delivery` | written here | Confirm from the forge (GitHub, Gitea or GitLab) that a PR was delivered: reviews READY at the final head, merged by a person, merged tree equal to the reviewed one, CI green on the merge commit. Read-only helper, JSON verdict and evidence. |
+| `forge-gates` | written here | The review gates before the merge, read from the forge: wait for the external reviewer's answer for a head (`wait-review`), whether the current head is ready for a person to merge (`gates`), and `verify-delivery`'s verdict (`merge-check`). Read-only; needs `verify-delivery` next to it, which the installers add. |
 
 `prompts/` holds ready-to-fill prompts for each skill. The command stubs the
 upstream ships were only "read SKILL.md, then `$ARGUMENTS`", so they were replaced
@@ -297,7 +298,9 @@ The `oh-` prefix keeps the built-in `/code-review` available alongside.
 Keep `references/` and `scripts/` next to each `SKILL.md`: the skills refer to
 them by relative path. `architecture-review` refers to its siblings as
 `../oh-code-review/...` and `../oh-technical-writing/...`, so install those three
-together.
+together. `forge-gates` imports `../verify-delivery/verify_delivery.py`, so it
+needs `verify-delivery` next to it. The installers add these siblings when
+they are not selected.
 
 ## Enabling in OpenHands (Agent Canvas / agent-server)
 
@@ -491,6 +494,26 @@ review author allowlists, the required count, a merger allowlist, bot accounts a
 options; `SKILL.md` documents them and how to read the result. The helper is
 tested offline against recorded API responses for all three forges
 (`tests/test_verify_delivery.py`).
+
+`forge-gates` covers the two steps before delivery from the same code. Its
+helper, `skills/forge-gates/scripts/forge_gates.py`, imports
+`verify_delivery.py` from the sibling skill (the installers install
+`verify-delivery` whenever `forge-gates` is selected):
+
+```bash
+python3 skills/forge-gates/scripts/forge_gates.py wait-review --pr https://github.com/OWNER/REPO/pull/123 --head <full SHA>
+python3 skills/forge-gates/scripts/forge_gates.py gates --pr https://github.com/OWNER/REPO/pull/123
+```
+
+`wait-review` waits for the external reviewer's comment for the pushed head
+(any abbreviation of 7 to 40 digits, trusted authors only; a failure comment
+correlated with the latest request label ends it too). `gates` says whether
+the head is ready: open, not a draft, the required reviews READY at the head
+(or carried from an older head whose change is the same), CI green at the
+head. `merge-check` prints `verify-delivery`'s document. On GitHub, without a
+token file, the token comes from `gh auth token --hostname` for the API's own
+host, with the CLI's global token variables removed. Tests:
+`tests/test_forge_gates.py`.
 
 ## Compatibility rules
 

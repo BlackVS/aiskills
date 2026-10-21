@@ -72,7 +72,10 @@ The external reviewer is the one deployed on the project's own forge, running
 whatever model its site runs. Request it with plain review-this (a
 review-this:<profile> variant only where the site offers one and the owner asks
 for a model or the default would repeat the local review's model family), then
-watch and read its result for the exact head. Where no external reviewer is
+watch and read its result for the exact head: with the forge-gates skill, run
+`forge_gates.py wait-review --head <full SHA>` in the background, and before
+marking the PR ready check `forge_gates.py gates`, not a private watcher.
+Where no external reviewer is
 deployed, the local high review is the pre-merge gate: report the external gate
 as absent, never as passed. Never push while hands-reviewing is present.
 A source change makes the review stale: review the delta and re-trigger. A

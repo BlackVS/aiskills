@@ -15,6 +15,10 @@ The helper is read-only. Every request it makes is an HTTP `GET`; it never
 merges, comments, labels or pushes. Do not add any of that around it: this
 skill confirms, it does not act.
 
+Before the merge, use the `forge-gates` skill instead: `wait-review` waits for
+the external review of a head, and `gates` says whether the head is ready to
+be marked ready. Its `merge-check` prints exactly this skill's document.
+
 ## What it checks
 
 All four must pass for the verdict `confirmed`:

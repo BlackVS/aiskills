@@ -109,6 +109,19 @@ class InstallerContract:
         self.assertEqual((other / "SKILL.md").read_text(), "mine\n", "unrelated skills are left alone")
         self.assertTrue((self.repo / ".agents/skills/oh-technical-writing/SKILL.md").is_file(), "unselected shipped skills are left alone")
 
+    def test_forge_gates_brings_verify_delivery(self):
+        r = self.install(str(self.repo), "-t", "claude", "-s", "forge-gates")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("forge-gates needs verify-delivery", r.stdout)
+        skills = self.repo / ".claude/skills"
+        for s in ("forge-gates", "verify-delivery"):
+            self.assertTrue(complete(skills / s), f"{s} incomplete")
+        # the installed script finds its sibling: --help needs the verify-delivery module
+        run = subprocess.run([sys.executable, "-B", str(skills / "forge-gates/scripts/forge_gates.py"), "--help"],
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("wait-review", run.stdout)
+
     def test_user_level_destinations(self):
         r = self.install("--user" if self.flavor == "bash" else "-User", home=self.home)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
