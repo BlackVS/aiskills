@@ -114,8 +114,9 @@ authority):
 - Gitea: org-wide labels; every repo of the org that hands can clone.
 - GitHub: only repos hands polls (it cannot receive webhooks from GitHub).
   Labels are per repo; hands creates the full request set (`review-this`
-  plus every `review-this:<profile>`) in each polled repo that has an open
-  PR, within one polling interval. So on GitHub a missing variant means
+  plus every `review-this:<profile>`, except Canvas's own `default` profile,
+  whose model Canvas may change) in each polled repo that has an open PR,
+  within one polling interval. So on GitHub a missing variant means
   either the site has not seen the repo yet (open the PR, wait ~2 minutes,
   re-list) or the profile does not exist — not a reason to create it.
 

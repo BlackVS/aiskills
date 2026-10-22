@@ -29,6 +29,12 @@ content fixes inside existing skills. The current version is in `VERSION`.
   `forge-gates merge-check` shares; the output is unchanged.
 
 ### Fixed
+- The GitHub review poller no longer creates a `review-this:default` request
+  label. Canvas starts its chats from the `default` agent profile and may
+  repoint it to another model on its own, so the label named a reviewer whose
+  model could change silently (it duplicated another profile's label). A
+  `review-this:default` label that already exists is still served. Operators
+  delete the existing labels after deploying (UPDATING.md).
 - Review-hook runtime tests: the receiver tests no longer print
   `ConnectionResetError` tracebacks while passing. The test stopped the
   receiver as soon as the run ended, while the webhook of the run's last label

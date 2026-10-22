@@ -74,6 +74,7 @@ class AdapterTests(unittest.TestCase):
                 sender = threading.Thread(target=echo[0], daemon=True)
                 echo_threads.append(sender); sender.start()
         starts, failures, errors = [], [], []
+        label_reads = []  # the repository labels the adapter looked up
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
         blind_left = [3 if blind else 0]
         class Fake(BaseHTTPRequestHandler):
@@ -134,6 +135,7 @@ class AdapterTests(unittest.TestCase):
                 elif path == '/forge/orgs/owner/labels' or path == '/forge/repos/owner/repo/labels':
                     result = [{'name': n, 'id': i+1} for i,n in enumerate(names)]
                 elif path.startswith('/forge/repos/owner/repo/labels/'):
+                    label_reads.append(urllib.parse.unquote(path.split('/')[-1]))
                     result = {'name': path.split('/')[-1]}
                 elif path == '/forge/repos/owner/repo/issues/1/comments':
                     if self.command == 'POST': failures.append(body)
@@ -160,7 +162,7 @@ class AdapterTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); profiles = root/'profiles'; profiles.mkdir()
-            for p in ['codex-astra','claude-opus']:
+            for p in ['codex-astra','claude-opus','default']:  # Canvas's `default` gets no request label
                 (profiles/(p+'.json')).write_text(json.dumps({'id': p,'agent_kind':'acp','acp_model':p}))
             (root/'token').write_text('test-only')
             (root/'settings').write_text(json.dumps({'revision':1,'primary':'codex-astra','fallback':'claude-opus'}))
@@ -253,6 +255,9 @@ class AdapterTests(unittest.TestCase):
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(success,output)
+            if github:
+                self.assertIn('review-this:claude-opus', label_reads, 'every reviewer profile gets its request label')
+                self.assertNotIn('review-this:default', label_reads, "Canvas's default profile gets no request label")
             self.assertEqual(echo_errors, [], 'every echo webhook reaches the receiver')
             if two:
                 self.assertEqual(starts, [], "the webhook of the start's own label change started a review")

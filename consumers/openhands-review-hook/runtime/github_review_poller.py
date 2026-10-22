@@ -54,8 +54,8 @@ host:
 GitHub labels are per-repo and adding by name silently 404s when the label
 does not exist, so the poller creates what it needs on first use AND, for
 every repo with an open PR in scope, the full request-label set
-(L_REQUEST plus one variant per agent profile) so requesters can pick a
-reviewer without creating labels themselves.
+(L_REQUEST plus one variant per agent profile, except Canvas's `default`)
+so requesters can pick a reviewer without creating labels themselves.
 """
 import json
 import re
@@ -176,10 +176,12 @@ def ensure_label(repo, name):
 
 
 def ensure_request_labels(repo):
-    """Make every request label (plain + one per profile) exist in `repo`."""
+    """Make every request label (plain + one per profile) exist in `repo`. Canvas starts its
+    chats from the `default` profile and may repoint it on its own, so a label for it would
+    name a reviewer whose model changes silently; one that exists is still served."""
     if repo in labeled_repos:
         return
-    profiles = sorted(f[:-5] for f in os.listdir(PROFILES_DIR) if f.endswith(".json"))
+    profiles = sorted(f[:-5] for f in os.listdir(PROFILES_DIR) if f.endswith(".json") and f != "default.json")
     for name in [L_REQUEST] + [f"{L_REQUEST}:{p}" for p in profiles]:
         ensure_label(repo, name)
     labeled_repos.add(repo)
