@@ -29,6 +29,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
   `forge-gates merge-check` shares; the output is unchanged.
 
 ### Fixed
+- Review-hook runtime tests: the receiver tests no longer print
+  `ConnectionResetError` tracebacks while passing. The test stopped the
+  receiver as soon as the run ended, while the webhook of the run's last label
+  change was still on its way, so that webhook was cut off and never handled.
+  The test now waits until every such webhook was delivered and handled, and
+  a failed one fails the test; a webhook the receiver refuses (an HTTP error)
+  fails it too, where it used to be retried as if the receiver were still
+  starting and then dropped silently.
 - The aimem process handbook says which external reviewer to request (the one
   deployed on the project's own forge, with the model its site runs) and what
   holds where none is deployed: the local high review is the pre-merge gate,
