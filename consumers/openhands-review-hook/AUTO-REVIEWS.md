@@ -8,6 +8,11 @@ the Canvas Extensions backend API (verified on Agent Canvas 1.17.0).
 
 The primary profile handles `review-this`. A single explicit
 `review-this:<profile>` label overrides it; multiple explicit labels are rejected.
+The GitHub poller creates one such label per agent profile in every repository
+it polls, except for Canvas's `default` profile: Canvas starts its chats from
+that profile and may repoint it to another model on its own, so a label for it
+would name a reviewer that changes silently. A `review-this:default` label that
+already exists is still served like any other.
 A plain `review-this` on a PR whose newest review is of an earlier head is not
 reviewed again when the change has the same patch identity at both heads (the
 `verify-delivery` digest of the forge's three-dot compare diff, so a base-only
