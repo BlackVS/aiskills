@@ -17,6 +17,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+class FakeServer(ThreadingHTTPServer):
+    """The fakes' server. A test stops the adapter at its end, sometimes with a request to the
+    fake still open: that connection reset is the test's own doing, not an error to print."""
+
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            super().handle_error(request, client_address)
+
+
 class AdapterTests(unittest.TestCase):
     def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False, blind=False, own=False,
                     two=False):
@@ -57,11 +66,13 @@ class AdapterTests(unittest.TestCase):
         labels_at_start = frozenset(labels)
         request_deletes = []
         echo = []  # OWN, TWO: sends the webhook of a label change the fake forge applied
+        echo_threads, echo_errors = [], []  # each sender, and what failed in one (asserted in the test's thread)
         seen = []  # the PR's labels after every change the fake forge applied
         def report():
             seen.append(frozenset(labels))
             if echo:
-                threading.Thread(target=echo[0], daemon=True).start()
+                sender = threading.Thread(target=echo[0], daemon=True)
+                echo_threads.append(sender); sender.start()
         starts, failures, errors = [], [], []
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
         blind_left = [3 if blind else 0]
@@ -145,7 +156,7 @@ class AdapterTests(unittest.TestCase):
                 if link: self.send_header('Link', link)
                 self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
 
-        server = ThreadingHTTPServer(('127.0.0.1', 0), Fake)
+        server = FakeServer(('127.0.0.1', 0), Fake)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); profiles = root/'profiles'; profiles.mkdir()
@@ -166,20 +177,41 @@ class AdapterTests(unittest.TestCase):
                 REVIEW_RUNS_DIR=str(root), PYTHONUNBUFFERED='1')
             script = 'github_review_poller.py' if github else 'review_hook.py'
             proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name(script))],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
-            def request(sender='someone', listed=('review-this',)):
+            def request(sender='someone', listed=('review-this',), action='label_updated'):
                 if github:
                     return  # the poller finds the request label on its own
-                body = json.dumps({'action':'label_updated','repository':{'full_name':'owner/repo'},'sender':{'login':sender},
+                body = json.dumps({'action':action,'repository':{'full_name':'owner/repo'},'sender':{'login':sender},
                                    'pull_request':{'number':1,'title':'test','labels':[{'name': n} for n in listed]}}).encode()
                 hook = urllib.request.Request(f'http://127.0.0.1:{hook_port}/hooks/gitea',data=body,
                     headers={'X-Gitea-Signature':hmac.new(b'test-only',body,hashlib.sha256).hexdigest()})
                 for _ in range(40):
                     try:
                         with urllib.request.urlopen(hook,timeout=2) as response: self.assertEqual(response.status,204)
-                        break
+                        return
+                    except urllib.error.HTTPError:
+                        raise  # an answer, not a receiver still starting: a refused webhook fails the test
                     except urllib.error.URLError: time.sleep(.05)
+                self.fail('the receiver never accepted the webhook')
+            def send_echo():
+                try:
+                    request('someone' if own == 'other' else 'test-bot', sorted(labels))
+                except BaseException as e:
+                    echo_errors.append(repr(e))
+            def settle():
+                """Every echo delivered and handled before the receiver stops. The receiver serves one
+                webhook at a time, so its answer to a webhook that changes nothing comes only after the
+                last echo was handled; handling one can send more, so repeat until none is new."""
+                count = -1
+                while count != len(echo_threads):
+                    count = len(echo_threads)
+                    for sender in echo_threads[:]:
+                        sender.join(10)
+                    try:
+                        request('someone', (), action='synchronized')
+                    except BaseException as e:
+                        echo_errors.append(repr(e))
             if (own or two) and own != 'quiet':  # Gitea reports each label change as the token's account, with the labels it left
-                echo.append(lambda: request('someone' if own == 'other' else 'test-bot', sorted(labels)))
+                echo.append(send_echo)
             try:
                 request('test-bot' if own == 'idle' else 'someone')
                 if two:  # the start fails on the second label; the first removal's webhook comes back
@@ -216,9 +248,12 @@ class AdapterTests(unittest.TestCase):
                     request('test-bot')  # asked again from the token's account
                     success = done.wait(12)
             finally:
+                if echo:
+                    settle()  # stopping the receiver earlier reset the last echo's connection
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(success,output)
+            self.assertEqual(echo_errors, [], 'every echo webhook reaches the receiver')
             if two:
                 self.assertEqual(starts, [], "the webhook of the start's own label change started a review")
                 self.assertEqual([f['body'].split('\n')[0] for f in failures],
@@ -344,7 +379,7 @@ class AdapterTests(unittest.TestCase):
                 else: errors.append((self.command, path))
                 payload = raw if raw is not None else json.dumps(result).encode()
                 self.send_response(200); self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
-        server = ThreadingHTTPServer(('127.0.0.1', 0), Fake)
+        server = FakeServer(('127.0.0.1', 0), Fake)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); profiles = root/'profiles'; profiles.mkdir()
@@ -377,7 +412,11 @@ class AdapterTests(unittest.TestCase):
                         try:
                             with urllib.request.urlopen(request, timeout=2) as response: self.assertEqual(response.status, 204)
                             break
+                        except urllib.error.HTTPError:
+                            raise  # an answer, not a receiver still starting
                         except urllib.error.URLError: time.sleep(.05)
+                    else:
+                        self.fail('the receiver never accepted the webhook')
                 success = outcome.wait(12)
                 for _ in range(requests - 1):
                     if not success:
@@ -561,7 +600,7 @@ class AdapterTests(unittest.TestCase):
                 self.send_response(200); self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
 
-        server = ThreadingHTTPServer(('127.0.0.1', 0), Fake)
+        server = FakeServer(('127.0.0.1', 0), Fake)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); profiles = root/'profiles'; profiles.mkdir()
@@ -634,7 +673,11 @@ class AdapterTests(unittest.TestCase):
                         try:
                             with urllib.request.urlopen(request,timeout=2) as response: self.assertEqual(response.status,204)
                             break
+                        except urllib.error.HTTPError:
+                            raise  # an answer, not a receiver still starting
                         except urllib.error.URLError: time.sleep(.05)
+                    else:
+                        self.fail('the receiver never accepted the webhook')
                 def recorded():
                     try: return runs_file.is_file() and 'conv-1' in runs_file.read_text()
                     except OSError: return False
