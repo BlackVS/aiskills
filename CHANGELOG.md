@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-10-22
+
 ### Added
 - `forge-gates`, a new skill that reads the review gates before the merge
   from the forge (GitHub, Gitea, GitLab), so agents stop writing their own
