@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+- The aimem process set moved to the aimem repository, where it is
+  `processes/aimem/` (aimem commit
+  `4811a8800ec5f038e52bdf8c516f736e00c91036`; aimem v0.10.14 is the first
+  release that carries it). Here `processes/aimem/` now holds only a pointer
+  README with the select command against the aimem repository; the directory
+  is removed in the release after this one. Selections pinned to an ai-skills commit
+  keep working, since a hub stores the files of the commit it selected.
+
 ## [1.34.0] - 2026-10-22
 
 ### Added
