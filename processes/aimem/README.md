@@ -1,46 +1,27 @@
-# aimem process set
+# aimem process set: moved to the aimem repository
 
-The manifest at `processes/aimem/manifest.json` is an aimem v0.6.0-compatible
-process set. Its handbook and READY/DONE checklists form one bootstrap bounded
-at 12 KiB. The two JSON templates are examples: replace their placeholders and
-supply the project and a unique idempotency key when creating a task. Do not
-submit placeholder text or treat a template as a ready-to-run request.
+The aimem reference process set (manifest, handbook, READY/DONE checklists
+and task templates) now lives in the aimem repository, at
+[`processes/aimem/`](https://github.com/BlackVS/aimem/tree/master/processes/aimem).
+It moved there because it is bound to aimem: the manifest format aimem reads,
+templates in aimem's task shape and a handbook of aimem's Kanban states. The
+set was added there by commit
+[`4811a8800ec5f038e52bdf8c516f736e00c91036`](https://github.com/BlackVS/aimem/commit/4811a8800ec5f038e52bdf8c516f736e00c91036).
 
-This set follows aimem's project policy. Other projects must review their own
-rules before selecting it; a shared process does not override project rules or
-owner instructions. Only oh-code-review is required. QA and writing skills may
-be used when appropriate but are not mandatory for every task.
-
-Review changes to all referenced files together. After merge, select the full
-40-character merged commit, not a moving branch name. On the hub host:
+Select it from the aimem repository. The manifest path defaults to
+`processes/aimem/manifest.json`, which is where the set lives there:
 
 ```sh
-aimem process select REPOSITORY_HTTPS_URL MERGED_COMMIT processes/aimem/manifest.json --ref main -p aimem
+aimem process select https://github.com/BlackVS/aimem.git <release tag, v0.10.14 or later> -p <project>
 ```
 
-The initial selection expects no existing commit. To replace an existing
-selection, add `--expect PREVIOUS_COMMIT`; re-read after a conflict instead of
-retrying with a guessed value. Keep the previous reference for a deliberate
-rollback, using the current commit as the expected value.
+v0.10.14 is the first aimem release that carries the set. A full 40-character
+commit of the aimem repository that contains the set works as well.
 
-From each participating checkout on every agent machine:
+Selections pinned to an ai-skills commit keep working. A hub stores the files
+of the commit it selected, and forge tarballs are per commit, so moving the
+set does not change what an existing selection serves. Replace such a
+selection with one from the aimem repository when convenient.
 
-```sh
-aimem task-token show-source
-aimem process show
-aimem process show --template task
-aimem process show --template investigation
-```
-
-Confirm the intended project, repository, commit and manifest; the complete
-handbook; all six READY and six DONE items; and required-skill availability.
-A successful command exit alone is insufficient: `process show` also prints
-explicit unavailable notices with a successful exit. Test a fresh cache and a
-session with no recalled facts. Use an isolated hub/state for denial, missing
-assets and offline-cache tests; never interrupt a production hub to simulate
-failure. Restart old agent sessions after upgrading clients. OpenCode clients
-without a session-start integration must run `aimem process show` explicitly.
-
-The hub stores only this Git reference. No skills are installed by selection or
-by hooks, and cached process documents never authorize task writes. Templates,
-handbook and checklists must all come from the same pinned commit.
+This directory holds only this pointer. It will be removed in the release
+after the one that ships it.
