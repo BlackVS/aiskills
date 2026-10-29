@@ -19,8 +19,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
   request, one squash commit; tasks no finer than S; findings grouped per
   surface; L and XL split no finer than M. The pull request lifecycle names
   an option a project may declare in its AGENTS.md: the coordinating agent
-  session merges an ordinary pull request once both reviews are READY and CI
-  is green, while sensitive and release pull requests stay with the person;
+  session merges an ordinary pull request once the reviews its gates require
+  are READY and CI is green, while sensitive and release pull requests stay with the person;
   verify-delivery then needs `--allow-bot-merge` for a bot account.
 - The aimem process set moved to the aimem repository, where it is
   `processes/aimem/` (aimem commit
