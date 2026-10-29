@@ -233,8 +233,9 @@ The sections below explain what each tool does with the files.
 ## Review gates
 
 `agents/review-gates.md` says which review level each gate uses (pre-push
-medium, pre-merge max, sensitive surfaces ultra, docs-only high) and the rules
-around it. `--agents-md` / `-AgentsMd` writes it into the agent instructions as
+medium; pre-merge high by the implementer, with a second local reader for a
+change of size M or more or on a sensitive surface; docs-only high), how
+finely work is split into pull requests, and the rules around it. `--agents-md` / `-AgentsMd` writes it into the agent instructions as
 a managed block between `<!-- aiskills:review-gates start -->` and `end`
 markers; re-running replaces the block and leaves the rest of the file alone.
 A block written before 1.27.0, when the set was named `ai-skills`, carries the

@@ -10,6 +10,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 ## [Unreleased]
 
 ### Changed
+- The review gates take a change's size and surface. An XS or S change on an
+  ordinary surface gets the implementer's high review at the final head and
+  the external review, with no second local reader; a change of size M or
+  more, or on a sensitive surface, keeps the second reader. verify-delivery's
+  default of two required reviews is met by the implementer's review as the
+  local one. A granularity rule sits beside the table: one task, one pull
+  request, one squash commit; tasks no finer than S; findings grouped per
+  surface; L and XL split no finer than M. The pull request lifecycle names
+  an option a project may declare in its AGENTS.md: the coordinating agent
+  session merges an ordinary pull request once the reviews its gates require
+  are READY and CI is green, while sensitive and release pull requests stay with the person;
+  verify-delivery then needs `--allow-bot-merge` for a bot account.
 - The aimem process set moved to the aimem repository, where it is
   `processes/aimem/` (aimem commit
   `4811a8800ec5f038e52bdf8c516f736e00c91036`; aimem v0.10.14 is the first

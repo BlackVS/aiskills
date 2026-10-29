@@ -16,10 +16,24 @@ in Claude Code `/oh-code-review max` also works. The levels:
 | Gate | Level |
 | --- | --- |
 | Pre-push, every push | **medium**, run inline by the reviewer itself, no sub-agents. Cheap, keeps the rhythm; its misses are what the next gate exists for. |
-| Pre-merge local review, posted to the PR | **high**: one pass plus verification, no fan-out. Where an external reviewer (hands) is deployed it carries the pre-merge weight and the local pass is the second reader from another model family. |
+| Pre-merge local review, XS or S on an ordinary surface | **high** by the implementer at the final head, posted to the PR: one pass plus verification, no fan-out. No second local reader. Where an external reviewer (hands) is deployed it carries the pre-merge weight, and the implementer's pass is the reader from the other model family. |
+| Pre-merge local review, M and up, or a sensitive surface | The implementer's **high** as above, plus a second local reader where one is deployed: a coordinating session's own **high** at the same head. |
 | Pre-merge re-review after fixes | **high** on the delta only, naming the new head; re-trigger the external reviewer, which costs nothing on the local side. Not needed after a base-only update with an unchanged patch identity (see the PR lifecycle below). |
 | Docs-only PRs | **high**. |
 | `max` and `ultra` | Only when the person asks, for example a security or installer change right before a production deploy. No gate chooses them: a fan-out costs on the order of a million tokens per pass, and in practice the external reviewer finds the blockers that matter while the fan-out's own catch is test adequacy, which a single pass finds as well. |
+
+The pre-merge rows take two inputs: the task's size (XS, S, M, L, XL) and
+its surface, which is ordinary unless the change touches the sensitive list in
+the rules below (a repository may extend that list in its AGENTS.md). A change
+that meets either condition of the second row takes it. verify-delivery's
+default of two required reviews, the local and the external one, is met by
+the implementer's high review as the local one; a second local reader adds a
+review and replaces none.
+
+Granularity: one board task is one pull request, and lands as one commit on
+the base by squash merge. A task is no finer than S. A review's findings go
+into one follow-up task per surface, not one task per finding. An L or XL task
+is split into parts no finer than M.
 
 Rules:
 
@@ -102,7 +116,17 @@ Pull request lifecycle:
   external review is re-requested, and a PR already marked ready goes back
   to a draft with the prefix until the gates are green again.
 - The merge stays with the person. An agent never merges, even when every
-  gate is green.
+  gate is green, unless the project's AGENTS.md declares otherwise. A project
+  may declare that the coordinating agent session merges an **ordinary** pull
+  request (no sensitive surface, not a release preparation) once every review
+  its pre-merge row requires is `READY_FOR_HUMAN_MERGE` at the head and CI is
+  green there. A pull request on a sensitive surface, and a release
+  preparation, stay with the person, and the implementing agent never merges
+  its own pull request. Without the declaration the merge is the person's.
+  verify-delivery's merge check requires a person account: where the agent
+  merges through a bot or app account, the delivery check runs with
+  `--allow-bot-merge`, and `--merger <account>` pins the merge to that
+  account.
 
 External reviewer labels (hands / OpenHands, where deployed — org-wide on the
 Gitea orgs a hands site covers, and on GitHub repos hands polls):
