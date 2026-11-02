@@ -28,7 +28,7 @@ names the skill to install.
 
 `PR` is a pull or merge request URL, `owner/repo#N`, or `owner/repo` with
 `--number`. Each command also takes every option of `verify-delivery`
-(`--forge`, `--api-base`, `--token-env`, `--anonymous`, `--review`,
+(`--forge`, `--api-base`, `--forge-user`, `--token-env`, `--anonymous`, `--review`,
 `--required-reviews`, `--review-author`, `--trust-any-author`,
 `--verdict-pattern`, `--known-flaky`, ...), with the same meaning; read that
 skill's SKILL.md for them. Gitea needs `--api-base`, and Gitea and GitLab need
@@ -122,7 +122,8 @@ delivered.
 
 The first rule that applies gives the token:
 
-1. `--anonymous`: none. The GitHub CLI is never asked.
+1. `--anonymous`: none. Neither the GitHub CLI nor Git's credential helper
+   is asked.
 2. `--token-env VAR`: the file named by `VAR`.
 3. The forge's default variable, when set: `GITHUB_TOKEN_FILE`,
    `GITEA_TOKEN_FILE` or `GITLAB_TOKEN_FILE`, each naming a token file.
@@ -134,9 +135,15 @@ The first rule that applies gives the token:
    `GITHUB_ENTERPRISE_TOKEN` and `GH_HOST` in its environment, so only a login
    stored for that host is used. To use a token from the environment, write it
    to a file and pass it by rule 2 or 3.
+5. Gitea and GitLab: Git's credential helper, for the API base's host and
+   the `--forge-user` given, exactly as `verify-delivery` reads it (one
+   `git credential fill`, no shell, a timeout, no prompt).
 
-Gitea and GitLab need a token file or `--anonymous`. The token is kept in
-memory, sent only to the API base's origin (no redirect is followed, and no
+So the usual setup stores the token once: on GitHub with `gh auth login`, on
+Gitea and GitLab in the platform's credential store that `git push` over
+https uses. Rules 2 and 3 remain for a token that lives in a file. With no
+source, the script stops with a usage error that names them. The token is
+kept in memory, sent only to the API base's origin (no redirect is followed, and no
 next-page link to another host), and masked in the output.
 
 ## Exit codes

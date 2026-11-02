@@ -38,11 +38,12 @@ VERDICT_WORD = re.compile(r"(?m)^[ \t]*VERDICT[ \t]*\r?\n[ \t]*([A-Z_]+)")
 # ---------------------------------------------------------------- credentials
 
 def resolve(args, env, run):
-    """verify-delivery's resolve, plus the GitHub CLI as the last source of a GitHub token."""
+    """verify-delivery's resolve (a token file, else Git's credential helper), except that a
+    GitHub token without a token file comes from the GitHub CLI."""
     kind, api_base, _, _, _ = vd.parse_ref(args.pr, args.number, args.forge, args.api_base)
     var = {"github": "GITHUB_TOKEN_FILE", "gitlab": "GITLAB_TOKEN_FILE"}.get(kind, "GITEA_TOKEN_FILE")
     if args.anonymous or args.token_env or env.get(var) or kind != "github":
-        return vd.resolve(args, env)
+        return vd.resolve(args, env, run)
     args.anonymous = True  # resolve everything but the token
     try:
         kind, api_base, owner, repo, number, _ = vd.resolve(args, env)

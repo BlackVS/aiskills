@@ -6,6 +6,7 @@ reviewed content, and CI green on the merge commit.
 Read-only: every request is an HTTP GET. It never merges, comments, labels or
 pushes. Standard library only.
 
+    python3 verify_delivery.py --pr https://github.com/OWNER/REPO/pull/7   # token from Git's credential helper
     GITHUB_TOKEN_FILE=/path/to/token python3 verify_delivery.py --pr https://github.com/OWNER/REPO/pull/7
     GITEA_TOKEN_FILE=/path/to/token  python3 verify_delivery.py --pr https://git.example.org/OWNER/REPO/pulls/7 \\
         --api-base https://git.example.org/api/v1
@@ -14,10 +15,11 @@ pushes. Standard library only.
 Prints one JSON document on stdout. Exit codes: 0 confirmed, 3 not confirmed,
 4 pending or retryable (the API was unavailable), 2 usage error. See SKILL.md.
 """
-import argparse, datetime, hashlib, json, os, re, socket, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, hashlib, json, os, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 EXIT_CONFIRMED, EXIT_USAGE, EXIT_NOT_CONFIRMED, EXIT_PENDING = 0, 2, 3, 4
 TIMEOUT = 20        # seconds per request
+CREDENTIAL_TIMEOUT = 30  # seconds for Git's credential helper to answer
 MAX_PAGES = 20      # per listing; 20 pages of 50-100 items is far past any real pull request
 MAX_REF = 512       # bytes per evidence ref
 MAX_EVIDENCE = 16   # evidence entries
@@ -960,6 +962,7 @@ def add_arguments(p):
     p.add_argument("--forge", choices=("github", "gitea", "gitlab"), help="forge type (default: from the URL; github for owner/repo)")
     p.add_argument("--api-base", help="REST API base, e.g. https://git.example.org/api/v1 (required for Gitea)")
     p.add_argument("--token-env", help="environment variable naming the token FILE (default GITHUB_TOKEN_FILE, GITEA_TOKEN_FILE or GITLAB_TOKEN_FILE)")
+    p.add_argument("--forge-user", help="the user name the token is stored under in Git's credential helper (default: any)")
     p.add_argument("--anonymous", action="store_true", help="no token (public repositories; low rate limits)")
     p.add_argument("--review", action="append", default=[], metavar="NAME=REGEX",
                    help="a required review: a regex with a (?P<sha>...) group; replaces the defaults, repeatable")
@@ -988,7 +991,7 @@ class ArgParser(argparse.ArgumentParser):
         raise UsageError(re.sub(r"(invalid \w+ value|invalid choice): .*", r"\1", message))
 
 
-def resolve(args, env):
+def resolve(args, env, run=subprocess.run):
     specs = []
     for item in args.review or []:
         name, sep, rx = item.partition("=")
@@ -1036,6 +1039,8 @@ def resolve(args, env):
         raise UsageError("--api-base must be an http(s) URL")
     if api_base.startswith("http://") and not args.anonymous:
         raise UsageError("a token is only sent over https: use an https --api-base (or --anonymous)")
+    if args.forge_user is not None and (not args.forge_user or any(c in args.forge_user for c in "\r\n\0")):
+        raise UsageError("--forge-user takes a user name on one line")
     token = None
     if not args.anonymous:
         var = args.token_env or {"github": "GITHUB_TOKEN_FILE", "gitlab": "GITLAB_TOKEN_FILE"}.get(kind, "GITEA_TOKEN_FILE")
@@ -1044,16 +1049,50 @@ def resolve(args, env):
         # A token can look like a variable name, so a --token-env value is never repeated.
         shown = "the variable named by --token-env" if args.token_env else var
         path = env.get(var)
-        if not path:
+        if path:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    token = f.read().strip()
+            except OSError:
+                raise UsageError(f"the token file named by {shown} cannot be read")
+            if not token:
+                raise UsageError(f"the token file named by {shown} is empty")
+        elif args.token_env:
             raise UsageError(f"set {shown} to the path of a file holding a read-only token (or pass --anonymous)")
-        try:
-            with open(path, encoding="utf-8") as f:
-                token = f.read().strip()
-        except OSError:
-            raise UsageError(f"the token file named by {shown} cannot be read")
-        if not token:
-            raise UsageError(f"the token file named by {shown} is empty")
+        else:
+            host = credential_host(api_base)
+            token = credential_token(host, args.forge_user, env, run)
+            if not token:
+                raise UsageError(f"no token for {host}: store one for https://{host} in Git's credential helper, "
+                                 f"set {var} to the path of a file holding a read-only token, or pass --anonymous")
     return kind, api_base, owner, repo, number, token
+
+
+def credential_host(api_base):
+    """The host Git's credential helper keeps the token under: the API base's host and port, and
+    github.com for https://api.github.com."""
+    host = urllib.parse.urlsplit(api_base).netloc.rpartition("@")[2].lower()
+    return "github.com" if host == "api.github.com" else host
+
+
+def credential_token(host, user, env, run=subprocess.run):
+    """The password Git's credential helper stores for https://HOST (under USER when given), or
+    None. One `git credential fill`, with no shell, a timeout and every prompt switched off, so a
+    missing entry fails instead of asking. The token travels on the helper's stdout, never on a
+    command line, and is kept in memory only; git's stderr is discarded."""
+    clean = {k: v for k, v in env.items() if k.upper() not in ("GIT_ASKPASS", "SSH_ASKPASS")}
+    clean.update(GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    query = f"protocol=https\nhost={host}\n" + (f"username={user}\n" if user else "") + "\n"
+    try:
+        r = run(["git", "-c", "core.askPass=", "-c", "credential.interactive=false", "credential", "fill"],
+                input=query.encode("utf-8"), env=clean, capture_output=True, timeout=CREDENTIAL_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    fields = dict(line.partition("=")[::2] for line in (r.stdout or b"").decode("utf-8", "replace").splitlines())
+    token = fields.get("password", "").strip()
+    return token if token and not any(c.isspace() for c in token) else None
 
 
 def emit(doc, stdout, token):
@@ -1063,7 +1102,7 @@ def emit(doc, stdout, token):
     stdout.write(text + "\n")
 
 
-def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.sleep):
+def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.sleep, run=subprocess.run):
     env = os.environ if env is None else env
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     token = None
@@ -1072,7 +1111,7 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
             args = build_parser().parse_args(argv)
         except SystemExit as e:  # --help
             return EXIT_USAGE if e.code else 0
-        kind, api_base, owner, repo, number, token = resolve(args, env)
+        kind, api_base, owner, repo, number, token = resolve(args, env, run)
     except UsageError as e:
         doc, code = failure(e)
     else:

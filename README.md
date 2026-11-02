@@ -483,14 +483,15 @@ base-only update the same patch identity), and CI on the merge commit is green. 
 uses only the Python standard library and works against GitHub, Gitea and GitLab (merge requests):
 
 ```bash
-GITHUB_TOKEN_FILE=/path/to/read-only-token python3 skills/verify-delivery/verify_delivery.py \
-  --pr https://github.com/OWNER/REPO/pull/123
+python3 skills/verify-delivery/verify_delivery.py --pr https://github.com/OWNER/REPO/pull/123
 ```
 
 It prints one JSON document (`verdict`, `checks`, and `evidence` only when
 confirmed) and exits 0 confirmed, 3 not confirmed, 4 pending or retryable, 2
-usage error. The token is read from the file an environment variable names,
-never from the command line, and never appears in the output. Review patterns,
+usage error. The token is read from Git's credential helper (the store
+`git push` over https uses), or from the file an environment variable names
+when one is set; never from the command line, and it never appears in the
+output. Review patterns,
 review author allowlists, the required count, a merger allowlist, bot accounts and known-flaky checks are
 options; `SKILL.md` documents them and how to read the result. The helper is
 tested offline against recorded API responses for all three forges
@@ -511,9 +512,10 @@ python3 skills/forge-gates/scripts/forge_gates.py gates --pr https://github.com/
 correlated with the latest request label ends it too). `gates` says whether
 the head is ready: open, not a draft, the required reviews READY at the head
 (or carried from an older head whose change is the same), CI green at the
-head. `merge-check` prints `verify-delivery`'s document. On GitHub, without a
-token file, the token comes from `gh auth token --hostname` for the API's own
-host, with the CLI's global token variables removed. Tests:
+head. `merge-check` prints `verify-delivery`'s document. Without a token
+file, the token comes on GitHub from `gh auth token --hostname` for the API's
+own host, with the CLI's global token variables removed, and on Gitea and
+GitLab from Git's credential helper, as `verify-delivery` reads it. Tests:
 `tests/test_forge_gates.py`.
 
 ## Compatibility rules
