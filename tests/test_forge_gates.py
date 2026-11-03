@@ -775,6 +775,19 @@ class Credentials(Gates, unittest.TestCase):
         self.assertNotIn(stored, out.getvalue() + err.getvalue())
 
 
+class VerdictWord(unittest.TestCase):
+    """gates reports the word under VERDICT the way verify-delivery reads it: blank lines may come between."""
+
+    def test_blank_lines_before_the_word(self):
+        for body in ("VERDICT\nRETURN_TO_IMPLEMENTATION\n", "VERDICT\n\nRETURN_TO_IMPLEMENTATION\n",
+                     "VERDICT\r\n\r\n  \r\nRETURN_TO_IMPLEMENTATION\r\n"):
+            with self.subTest(body=body):
+                self.assertEqual(fg.VERDICT_WORD.search(body).group(1), "RETURN_TO_IMPLEMENTATION")
+
+    def test_prose_is_not_the_word(self):
+        self.assertIsNone(fg.VERDICT_WORD.search("VERDICT\nnot decided yet\n"))
+
+
 class MergeCheck(unittest.TestCase):
     """merge-check is verify-delivery's document and exit code."""
 

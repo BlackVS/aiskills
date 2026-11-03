@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+- `verify-delivery`: the default verdict pattern accepts blank lines between
+  the `VERDICT` line and `READY_FOR_HUMAN_MERGE`, a layout the external
+  reviewer sometimes writes; such a review used to read as not READY. The
+  value must still be the first non-blank line after `VERDICT`, so prose in
+  between still does not count. `forge-gates gates` reads the verdict word
+  the same way. The tests' Git environment now resets the credential helper
+  list, so a helper configured in the checkout itself never runs during them.
+
 ### Changed
 - `oh-code-review`: a review posted to a pull or merge request is written in
   English, whatever language the request used (POSTED REVIEW LANGUAGE).

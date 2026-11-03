@@ -63,8 +63,9 @@ All four must pass for the verdict `confirmed`:
    trusts**; the author is checked first, so an untrusted comment never
    counts and never displaces a trusted one, even when it is newer. By default
    two reviews are required, both in the `oh-code-review` comment format
-   (`[<reviewer> review] reviewed at head <full-sha>`, then `VERDICT` /
-   `READY_FOR_HUMAN_MERGE`):
+   (`[<reviewer> review] reviewed at head <full-sha>`, then a `VERDICT`
+   line whose first non-blank successor is `READY_FOR_HUMAN_MERGE`; blank
+   lines between the two are allowed, other text is not):
    - `local`: the pre-merge `oh-code-review` review at level high (or max,
      ultra). Its header counts in any of three forms:
      `[oh-code-review (high) review]`, `[oh-code-review high]` and
@@ -246,7 +247,7 @@ Options for the checks:
 | `--required-reviews N` | all of them | How many of the reviews must be READY. |
 | `--review-author NAME=LOGIN` (repeatable) | GitHub: `OWNER`, `MEMBER`, `COLLABORATOR`; Gitea and GitLab: none (required) | An account whose comments may give review `NAME`. A list for a review replaces the association default for it, in both directions. |
 | `--trust-any-author` | off | Accept a review from any author. Only where just trusted accounts can comment; reported as `"author_check": "disabled"`. Not combined with `--review-author`. |
-| `--verdict-pattern REGEX` | a `VERDICT` line followed by `READY_FOR_HUMAN_MERGE` | What makes a review READY. |
+| `--verdict-pattern REGEX` | a `VERDICT` line, optional blank lines, then `READY_FOR_HUMAN_MERGE` | What makes a review READY. |
 | `--merger NAME` (repeatable) | anyone | Allowlist of accounts that may merge. Compared case-insensitively. |
 | `--bot-account NAME` (repeatable) | none | Treat this account as a bot. Compared case-insensitively. |
 | `--accept-short-head-sha` | off | Accept a review that names the final head by an abbreviated SHA (posted before 1.32.1), skipping GitLab's uniqueness check too; reported as `"short_head_sha": "accepted"`. |

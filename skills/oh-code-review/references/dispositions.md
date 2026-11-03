@@ -140,6 +140,10 @@ RISK
 LOW | MEDIUM | HIGH — <short reason>
 ```
 
+Write the verdict word on the line right after `VERDICT`. `verify-delivery`
+also accepts blank lines between the two, but no other text: a `VERDICT` line
+followed by prose does not count as READY.
+
 Name the head by its full 40-digit SHA. A delivery check carries a review of an
 older head over a base-only update only when it can tell that head apart: an
 abbreviated SHA can resolve to a branch or tag of that name, and on GitHub and

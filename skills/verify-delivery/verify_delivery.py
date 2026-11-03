@@ -38,7 +38,9 @@ DEFAULT_REVIEWS = [
               rf" reviewed at head {SHA}\b"),
     ("external", rf"(?m)^\[(?!oh-code-review\b)[^\]\n]+ review\] reviewed at head {SHA}\b"),
 ]
-DEFAULT_VERDICT = r"(?m)^[ \t]*VERDICT[ \t]*\r?\n[ \t]*READY_FOR_HUMAN_MERGE\b"
+# The value is the first non-blank line after VERDICT: blank lines between them are allowed
+# (reviewers write both layouts), prose is not.
+DEFAULT_VERDICT = r"(?m)^[ \t]*VERDICT[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*READY_FOR_HUMAN_MERGE\b"
 GITHUB_PASS = {"success", "neutral", "skipped"}
 # GitHub author_association values that count as the repository trusting a review's author.
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}

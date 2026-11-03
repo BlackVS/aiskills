@@ -43,9 +43,12 @@ def git_env(tmp, helper=True, **extra):
     env = {k: v for k, v in os.environ.items()
            if not k.endswith("TOKEN_FILE") and not k.upper().startswith(("GIT_", "GCM_", "FAKE_CREDENTIAL_"))}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty), FAKE_CREDENTIAL_LOG=str(tmp / "queries"))
-    if helper:
-        command = f'!"{pathlib.Path(sys.executable).as_posix()}" "{HELPER.as_posix()}"'
-        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0=command)
+    # An empty credential.helper at command scope resets the list, so a helper the checkout itself
+    # configures (repository scope) never runs either; the fake one, when wanted, comes after it.
+    helpers = [""] + ([f'!"{pathlib.Path(sys.executable).as_posix()}" "{HELPER.as_posix()}"'] if helper else [])
+    env["GIT_CONFIG_COUNT"] = str(len(helpers))
+    for i, value in enumerate(helpers):
+        env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = "credential.helper", value
     env.update(extra)
     return env
 
@@ -1652,12 +1655,54 @@ class CredentialStore(unittest.TestCase):
             with self.subTest(api=api):
                 self.assertEqual(vd.credential_host(api), host)
 
+    def test_a_helper_of_the_checkout_never_runs(self):
+        repo = self.tmp / "repo"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, env=git_env(self.tmp, helper=False))
+        marker = self.tmp / "local-helper-ran"
+        subprocess.run(["git", "-C", str(repo), "config", "credential.helper", f"!touch '{marker.as_posix()}'"],
+                       check=True, env=git_env(self.tmp, helper=False))
+        for helper in (True, False):
+            with self.subTest(fake_helper=helper):
+                env = self.env() if helper else git_env(self.tmp, helper=False)
+                token = vd.credential_token("git.example.org", None, env,
+                                            lambda cmd, **kw: subprocess.run(cmd, cwd=repo, **kw))
+                self.assertEqual(token, self.STORED if helper else None)
+                self.assertFalse(marker.exists(), "the checkout's own credential.helper ran")
+
     def test_bad_forge_user(self):
         for bad in ("", "a\nhost=evil.example.org"):
             with self.subTest(user=bad):
                 code, doc = self.run_vd("--forge-user", bad, env=self.env())
                 self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
                 self.assertEqual(git_queries(self.tmp), [])
+
+
+class VerdictPattern(unittest.TestCase):
+    """The default verdict pattern: READY_FOR_HUMAN_MERGE as the first non-blank line after VERDICT."""
+
+    HEADER = f"[hands-bot review] reviewed at head {HEAD}\n\nBLOCKERS\n- None\n\n"
+
+    def ready(self, body):
+        return re.search(vd.DEFAULT_VERDICT, body) is not None
+
+    def test_layouts_that_count(self):
+        for name, tail in (("direct", "VERDICT\nREADY_FOR_HUMAN_MERGE\nNo blockers.\n"),
+                           ("one blank line, as hands wrote it on 2026-10-27",
+                            "VERDICT\n\nREADY_FOR_HUMAN_MERGE\n\nNo blockers; the observations do not block.\n"),
+                           ("two blank lines, one with spaces", "VERDICT\n\n   \nREADY_FOR_HUMAN_MERGE\n"),
+                           ("indented", "  VERDICT  \n\t\n  READY_FOR_HUMAN_MERGE\n")):
+            for crlf in (False, True):
+                body = self.HEADER + tail
+                with self.subTest(name, crlf=crlf):
+                    self.assertTrue(self.ready(body.replace("\n", "\r\n") if crlf else body))
+
+    def test_layouts_that_do_not(self):
+        for name, tail in (("prose first", "VERDICT\nNot ready yet.\nREADY_FOR_HUMAN_MERGE\n"),
+                           ("another verdict", "VERDICT\n\nRETURN_TO_IMPLEMENTATION\n\nREADY_FOR_HUMAN_MERGE later\n"),
+                           ("same line", "VERDICT READY_FOR_HUMAN_MERGE\n"),
+                           ("longer word", "VERDICT\n\nREADY_FOR_HUMAN_MERGE_LATER\n")):
+            with self.subTest(name):
+                self.assertFalse(self.ready(self.HEADER + tail))
 
 
 class DefaultReviews(unittest.TestCase):
