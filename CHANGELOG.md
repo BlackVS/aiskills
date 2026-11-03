@@ -9,6 +9,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+- `oh-code-review`: a review posted to a pull or merge request is written in
+  English, whatever language the request used (POSTED REVIEW LANGUAGE).
+  Posted reviews are read by other agents and later sessions, the skill's
+  dispositions and verdict words are English, and other scripts cost two to
+  three times the tokens. A review given only in the chat keeps the asker's
+  language.
+
 ## [1.35.0] - 2026-11-03
 
 ### Added
