@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-11-03
+
 ### Added
 - verify-delivery and forge-gates read the forge token from Git's
   credential helper (Git Credential Manager, the macOS Keychain, libsecret)
