@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.35.1] - 2026-11-03
+
 ### Fixed
 - The release archives store every script executable: `install.sh`,
   `boot.sh`, the skills' helpers (`forge_gates.py`, `verify_delivery.py`,
