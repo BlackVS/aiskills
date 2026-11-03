@@ -10,6 +10,13 @@ content fixes inside existing skills. The current version is in `VERSION`.
 ## [Unreleased]
 
 ### Fixed
+- The release archives store every script executable: `install.sh`,
+  `boot.sh`, the skills' helpers (`forge_gates.py`, `verify_delivery.py`,
+  the readiness report's scans) and the review-hook's entry points were
+  stored as plain files, so `./install.sh` from an extracted archive failed
+  with "Permission denied". Every tracked file that starts with `#!` is now
+  stored with mode 755; a test checks the tree on every pull request and the
+  release refuses a commit with a script that is not.
 - `verify-delivery`: the default verdict pattern accepts blank lines between
   the `VERDICT` line and `READY_FOR_HUMAN_MERGE`, a layout the external
   reviewer sometimes writes; such a review used to read as not READY. The

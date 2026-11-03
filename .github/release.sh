@@ -63,6 +63,12 @@ prepare)
   git checkout -q --detach "$commit"
   file_ver=$(tr -d '[:space:]' < VERSION)
   [ "$file_ver" = "$ver" ] || fail "VERSION at $(git rev-parse --short HEAD) says $file_ver, the release is $TAG"
+  # The archives keep Git's file modes, and the docs run the scripts directly
+  # (./install.sh): every file that starts with #! must be stored executable.
+  noexec=$(git ls-tree -r HEAD | while read -r mode _ sha path; do
+    [ "$mode" = 100644 ] && [ "$(git cat-file blob "$sha" | head -c 2)" = '#!' ] && printf ' %s' "$path"
+  done || true)
+  [ -z "$noexec" ] || fail "scripts stored without the execute bit:$noexec (git update-index --chmod=+x)"
   # The release body is the version's CHANGELOG section: roll [Unreleased]
   # into the version, in the PR that sets VERSION, before releasing.
   awk -v ver="$ver" '
@@ -84,8 +90,9 @@ publish)
   fi
   [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ] || fail "tag $TAG does not point at the checked commit"
   rm -rf dist; mkdir dist
-  git archive --format=tar.gz --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.tar.gz" "$TAG"
-  git archive --format=zip --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.zip" "$TAG"
+  # tar.umask 0022: scripts 0755 and other files 0644, whatever the runner's Git defaults to (0002)
+  git -c tar.umask=0022 archive --format=tar.gz --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.tar.gz" "$TAG"
+  git -c tar.umask=0022 archive --format=zip --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.zip" "$TAG"
   (cd dist && sha256 * > SHA256SUMS)
   # "Latest" is what the one-liners install: only the highest version gets it,
   # judged against the tags on origin now, not when this run started.
