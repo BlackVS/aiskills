@@ -32,7 +32,7 @@ GH_TIMEOUT = 15
 GITEA_DRAFT_PREFIXES = ("WIP:", "[WIP]")  # Gitea's default WORK_IN_PROGRESS_PREFIXES
 MIN_INTERVAL = 30
 SHA_TOKEN = re.compile(r"(?<![0-9A-Za-z])[0-9a-fA-F]{7,40}(?![0-9A-Za-z])")
-VERDICT_WORD = re.compile(r"(?m)^[ \t]*VERDICT[ \t]*\r?\n[ \t]*([A-Z_]+)")
+VERDICT_WORD = re.compile(r"(?m)^[ \t]*VERDICT[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*([A-Z_]+)")
 
 
 # ---------------------------------------------------------------- credentials
