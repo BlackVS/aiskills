@@ -23,6 +23,21 @@ GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
 
+class ScriptModes(unittest.TestCase):
+    """Every tracked file that starts with #! is stored executable, so the release archives (built
+    by git archive, which keeps the stored mode) run the documented commands as written. The
+    release refuses a commit that breaks this; this test catches it on the pull request."""
+
+    def test_scripts_are_stored_executable(self):
+        staged = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
+        missing = []
+        for entry in filter(None, staged.split(b"\0")):
+            meta, path = entry.split(b"\t", 1)
+            if meta.startswith(b"100644") and (ROOT / path.decode()).read_bytes()[:2] == b"#!":
+                missing.append(path.decode())
+        self.assertEqual(missing, [], "store them with git update-index --chmod=+x")
+
+
 @unittest.skipUnless(BASH and os.name != "nt", "needs a POSIX bash to put a fake gh on PATH")
 class ReleaseScript(unittest.TestCase):
     def setUp(self):
@@ -120,6 +135,22 @@ class ReleaseScript(unittest.TestCase):
         run = self.runner()
         self.release(run, "prepare", "v1.2.2", "--create"); self.release(run, "publish", "v1.2.2", "--create")
         self.assertIn("--latest=false", self.created()[0], "v1.3.0 stays latest")
+
+    def test_script_without_execute_bit_is_refused(self):
+        (self.dev / "tool.sh").write_text("#!/bin/sh\necho ok\n")
+        (self.dev / "tool.sh").chmod(0o644)
+        (self.dev / "notes.txt").write_text("plain text, no #! line\n")
+        self.commit_version("1.2.0")
+        r = self.release(self.runner(), "prepare", "v1.2.0", "--create", ok=False)
+        self.assertIn("scripts stored without the execute bit: tool.sh", r.stderr)
+        (self.dev / "tool.sh").chmod(0o755)  # what update-index --chmod=+x stores where the file system has no modes
+        self.commit_version("1.2.1")
+        run = self.runner()
+        self.release(run, "prepare", "v1.2.1", "--create"); self.release(run, "publish", "v1.2.1", "--create")
+        listing = subprocess.run(["tar", "-tvzf", str(run / "dist" / "aiskills-1.2.1.tar.gz")], capture_output=True,
+                                 text=True, check=True).stdout
+        [line] = [line for line in listing.splitlines() if line.endswith("aiskills-1.2.1/tool.sh")]
+        self.assertTrue(line.startswith("-rwxr-xr-x"), line)
 
     def test_refusals(self):
         self.commit_version("1.2.0")

@@ -63,7 +63,10 @@ installed (installers, skills, prompts, the gates block) is also checked
 against the real clients by `python3 .github/check-clients.py` (needs npm and
 network; the Clients workflow runs it on such PRs). `.gitattributes` forces
 LF for shell scripts and Markdown, and PowerShell scripts are stored with LF
-too; keep them that way.
+too; keep them that way. A file that starts with `#!` is stored executable
+(`git update-index --chmod=+x FILE` where the file system has no mode bits):
+the release archives keep Git's modes, `tests/test_release.py` checks the
+tree, and the release refuses a commit with a script that is not.
 
 ## Upstream skills
 
