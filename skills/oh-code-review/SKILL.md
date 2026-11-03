@@ -346,6 +346,16 @@ When unsure whether a name is public, leave it out. The user's own private
 instructions (global CLAUDE.md or equivalent) may list the specific
 identifiers to watch for; that list itself never goes into posted text.
 
+POSTED REVIEW LANGUAGE:
+
+A review posted as a PR/MR comment is written in English, whatever language
+the request or the conversation used. Other agents and later sessions read
+posted reviews; the dispositions, verdict words and section names are English;
+and text in other scripts costs two to three times the tokens for the same
+content. Code, paths, identifiers and quoted output stay as they are. A review
+given only in the chat, not posted, answers in the language of the person who
+asked.
+
 REVIEW SELF-IMPROVEMENT MESSAGE:
 
 When the review is delivered as a pull-request or merge-request comment and it
