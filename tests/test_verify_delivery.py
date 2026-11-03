@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "skills" / "verify-delivery"))
 import verify_delivery as vd  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures" / "verify_delivery"
+HELPER = ROOT / "tests" / "fixtures" / "credential_helper.py"
 HEAD = "3f2a9c1e5b7d4a6f8e0c2b4d6f8a0c2e4b6d8f0a"
 OLD = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
 MERGE = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
@@ -31,6 +32,28 @@ FORGES = {
               # Gitea has no author association: the default reviews need an allowlist there.
               "authors": ["--review-author", "local=author", "--review-author", "external=maintainer"]},
 }
+
+
+def git_env(tmp, helper=True, **extra):
+    """An environment in which git reads no system or global configuration, so no real
+    credential store is ever asked: only the fake helper answers, when HELPER is true. Its queries
+    are logged to TMP/queries."""
+    empty = tmp / "gitconfig"
+    empty.write_text("")
+    env = {k: v for k, v in os.environ.items()
+           if not k.endswith("TOKEN_FILE") and not k.upper().startswith(("GIT_", "GCM_", "FAKE_CREDENTIAL_"))}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty), FAKE_CREDENTIAL_LOG=str(tmp / "queries"))
+    if helper:
+        command = f'!"{pathlib.Path(sys.executable).as_posix()}" "{HELPER.as_posix()}"'
+        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0=command)
+    env.update(extra)
+    return env
+
+
+def git_queries(tmp):
+    """The queries the fake helper read, oldest first."""
+    log = tmp / "queries"
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
 
 
 class Response:
@@ -933,8 +956,8 @@ class Verify:
                 self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
 
     def test_usage_errors(self):
-        code, doc = self.run_vd(env={})
-        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"), "no token file")
+        code, doc = self.run_vd(env=git_env(self.tmp, helper=False))
+        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"), "no token file and no stored credential")
         code, doc = self.run_vd(env={FORGES[self.forge]["env"]: str(self.tmp / "missing")})
         self.assertEqual(code, 2)
         self.assertNotIn(str(self.tmp), json.dumps(doc), "the token path is not echoed")
@@ -1528,6 +1551,115 @@ class GitLab(unittest.TestCase):
         self.assertIn("--api-base is required for GitLab without a merge request URL", json.loads(out.getvalue())["error"]["message"])
 
 
+class CredentialStore(unittest.TestCase):
+    """The token's three sources, in order: the token file, Git's credential helper (a fake one,
+    run by the real git), --anonymous or a usage error naming all three."""
+
+    STORED = "stored-fixture-placeholder-token"  # what the fake helper hands out
+    CFG = FORGES["gitea"]
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="verify-delivery-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.token_file = self.tmp / "token"
+        self.token_file.write_text(TOKEN + "\n")
+        self.fake = FakeForge("gitea")
+
+    def env(self, host="git.example.org", **extra):
+        return git_env(self.tmp, FAKE_CREDENTIAL_HOST=host, FAKE_CREDENTIAL_TOKEN=self.STORED, **extra)
+
+    def run_vd(self, *extra, env, run=subprocess.run):
+        out = io.StringIO()
+        code = vd.main(["--pr", self.CFG["pr"], *self.CFG["args"], *self.CFG["authors"], *extra], env=env, stdout=out,
+                       stderr=io.StringIO(), opener=self.fake, sleep=lambda s: None, run=run)
+        self.assertNotIn(self.STORED, out.getvalue(), "the stored token never appears in the output")
+        self.assertNotIn(TOKEN, out.getvalue())
+        return code, json.loads(out.getvalue())
+
+    def sent(self):
+        return {r["headers"].get("Authorization") for r in self.fake.requests}
+
+    def test_token_file_comes_first(self):
+        code, doc = self.run_vd(env=self.env(GITEA_TOKEN_FILE=str(self.token_file)))
+        self.assertEqual(code, 0, json.dumps(doc))
+        self.assertEqual(self.sent(), {f"token {TOKEN}"})
+        self.assertEqual(git_queries(self.tmp), [], "the credential helper is not asked when a token file is set")
+
+    def test_credential_helper_without_a_token_file(self):
+        code, doc = self.run_vd(env=self.env())
+        self.assertEqual(code, 0, json.dumps(doc))
+        self.assertEqual(self.sent(), {f"token {self.STORED}"})
+        self.assertEqual(git_queries(self.tmp), [{"protocol": "https", "host": "git.example.org"}])
+
+    def test_forge_user_is_asked_for(self):
+        code, doc = self.run_vd("--forge-user", "reader", env=self.env())
+        self.assertEqual(code, 0, json.dumps(doc))
+        self.assertEqual(git_queries(self.tmp), [{"protocol": "https", "host": "git.example.org", "username": "reader"}])
+        code, doc = self.run_vd("--forge-user", "someone-else", env=self.env())
+        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"), "no token stored under that user name")
+
+    def test_nothing_stored_is_a_usage_error_naming_the_three_sources(self):
+        for env in (self.env(host="other.example.org"), git_env(self.tmp, helper=False)):
+            with self.subTest(helper="FAKE_CREDENTIAL_HOST" in env):
+                code, doc = self.run_vd(env=env)
+                self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+                for source in ("credential helper", "GITEA_TOKEN_FILE", "--anonymous"):
+                    self.assertIn(source, doc["error"]["message"])
+                self.assertEqual(self.fake.requests, [], "nothing is sent without a token")
+
+    def test_anonymous_and_token_env_never_ask_the_helper(self):
+        code, doc = self.run_vd("--anonymous", env=self.env())
+        self.assertEqual(code, 0, json.dumps(doc))
+        self.assertEqual(self.sent(), {None})
+        code, doc = self.run_vd("--token-env", "MY_TOKEN_FILE", env=self.env())
+        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"), "a named variable that is unset is an error")
+        self.assertEqual(git_queries(self.tmp), [])
+
+    def test_git_runs_once_without_a_shell_or_a_prompt(self):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append((cmd, kw))
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"username=x\npassword={self.STORED}\n".encode(), stderr=b"")
+
+        env = {"GIT_ASKPASS": "/usr/bin/askpass-gui", "SSH_ASKPASS": "/usr/bin/askpass-gui", "PATH": os.environ.get("PATH", "")}
+        code, doc = self.run_vd(env=env, run=run)
+        self.assertEqual(code, 0, json.dumps(doc))
+        [(cmd, kw)] = calls
+        self.assertEqual(cmd, ["git", "-c", "core.askPass=", "-c", "credential.interactive=false", "credential", "fill"])
+        self.assertNotIn("shell", kw)
+        self.assertEqual((kw["env"]["GIT_TERMINAL_PROMPT"], kw["env"]["GCM_INTERACTIVE"]), ("0", "never"))
+        self.assertNotIn("GIT_ASKPASS", kw["env"])
+        self.assertNotIn("SSH_ASKPASS", kw["env"])
+        self.assertEqual(kw["input"], b"protocol=https\nhost=git.example.org\n\n")
+        self.assertEqual(kw["timeout"], vd.CREDENTIAL_TIMEOUT)
+
+    def test_a_failing_or_missing_git_is_no_token(self):
+        for result in (FileNotFoundError(), subprocess.TimeoutExpired("git", 30),
+                       subprocess.CompletedProcess([], 128, stdout=b"", stderr=b"fatal: could not read Username"),
+                       subprocess.CompletedProcess([], 0, stdout=b"username=x\npassword=has space\n", stderr=b"")):
+            def run(cmd, **kw):
+                if isinstance(result, BaseException):
+                    raise result
+                return result
+            with self.subTest(result=type(result).__name__):
+                self.assertIsNone(vd.credential_token("git.example.org", None, {}, run))
+
+    def test_credential_host_is_the_api_host(self):
+        for api, host in (("https://api.github.com", "github.com"), ("https://ghe.example.org/api/v3", "ghe.example.org"),
+                          ("https://git.example.org:3000/api/v1", "git.example.org:3000"),
+                          ("https://gitlab.example.org/root/api/v4", "gitlab.example.org")):
+            with self.subTest(api=api):
+                self.assertEqual(vd.credential_host(api), host)
+
+    def test_bad_forge_user(self):
+        for bad in ("", "a\nhost=evil.example.org"):
+            with self.subTest(user=bad):
+                code, doc = self.run_vd("--forge-user", bad, env=self.env())
+                self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+                self.assertEqual(git_queries(self.tmp), [])
+
+
 class DefaultReviews(unittest.TestCase):
     """Which default review a header line counts as (#89)."""
 
@@ -1601,12 +1733,13 @@ class References(unittest.TestCase):
 
     def test_standalone_script_runs(self):
         script = ROOT / "skills" / "verify-delivery" / "verify_delivery.py"
-        env = {k: v for k, v in os.environ.items() if not k.endswith("TOKEN_FILE")}
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="verify-delivery-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        env = git_env(tmp, helper=False, PYTHONDONTWRITEBYTECODE="1")
         r = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         r = subprocess.run([sys.executable, str(script), "--pr", "acme/widgets#1"], capture_output=True, text=True, env=env)
-        self.assertEqual(r.returncode, 2)  # no token file: usage error, before any request
+        self.assertEqual(r.returncode, 2)  # no token file, nothing stored: usage error, before any request
         self.assertEqual(json.loads(r.stdout)["verdict"], "not_confirmed")
 
 

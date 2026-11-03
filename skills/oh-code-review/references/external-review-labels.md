@@ -60,7 +60,10 @@ conversation is still running, so leave a `hands-reviewing` PR alone.
   watch and act on the findings when the comment lands — never leave a
   triggered review for the user to discover. With the `forge-gates` skill
   installed, the watch is `forge_gates.py wait-review --pr <PR> --head
-  <full SHA>`, run in the background.
+  <full SHA>`, run in the background. It reads the forge token from the
+  credential store the session already uses (the GitHub CLI's login, or Git's
+  credential helper on Gitea and GitLab), and from a token file only when one
+  is set; the skill's Credentials section has the order.
 - **Matching the comment to the head while waiting:** the comment answers for
   the head you pushed when the SHA it names is a prefix of that head, 7 to 40
   hexadecimal digits, in any case. Never assume a fixed length (a reviewer

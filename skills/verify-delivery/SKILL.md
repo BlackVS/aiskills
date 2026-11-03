@@ -187,15 +187,15 @@ All four must pass for the verdict `confirmed`:
 ## How to call it
 
 The helper is `verify_delivery.py` next to this file (Python 3, standard
-library only). Give it the token as a **file** named by an environment
-variable, never on the command line:
+library only). It never takes a token on the command line. It reads one from
+Git's credential helper, the one `git push` over https uses (Git Credential
+Manager, the macOS Keychain, libsecret): store a token for the forge's host
+there once, and nothing else is needed:
 
 ```bash
-GITHUB_TOKEN_FILE=/path/to/read-only-token \
-  python3 <skill-dir>/verify_delivery.py --pr https://github.com/OWNER/REPO/pull/123
+python3 <skill-dir>/verify_delivery.py --pr https://github.com/OWNER/REPO/pull/123
 
-GITEA_TOKEN_FILE=/path/to/read-only-token \
-  python3 <skill-dir>/verify_delivery.py --pr https://git.example.org/OWNER/REPO/pulls/45 \
+python3 <skill-dir>/verify_delivery.py --pr https://git.example.org/OWNER/REPO/pulls/45 \
   --api-base https://git.example.org/api/v1 \
   --review-author local=LOCAL_REVIEWER --review-author external=EXTERNAL_REVIEWER
 
@@ -203,6 +203,25 @@ GITLAB_TOKEN_FILE=/path/to/read-only-token \
   python3 <skill-dir>/verify_delivery.py --pr https://gitlab.example.org/GROUP/REPO/-/merge_requests/67 \
   --review-author local=LOCAL_REVIEWER --review-author external=EXTERNAL_REVIEWER
 ```
+
+The token comes from the first of these that applies:
+
+1. `--anonymous`: none, for a public repository.
+2. A token file: the file the forge's variable names (`GITHUB_TOKEN_FILE`,
+   `GITEA_TOKEN_FILE` or `GITLAB_TOKEN_FILE`, as in the last example), or the
+   variable `--token-env NAME` names. A variable named by `--token-env` must
+   be set.
+3. Git's credential helper: one `git credential fill` for `https://HOST`,
+   where HOST is the API base's host (`github.com` for
+   `https://api.github.com`), under the user name `--forge-user` gives, if
+   any. It runs with no shell, a timeout and every prompt switched off
+   (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, no askpass program), so
+   a missing entry is a usage error that names the three sources instead of a
+   prompt. The token is read from git's output, never from or onto a command
+   line.
+
+The token is kept in memory, sent only to the API base's origin, and masked
+in the output.
 
 On Windows run it with `python` or `py -3`. The token needs read access to
 pull requests, comments, commits and checks (or statuses) only; on GitLab a
@@ -217,8 +236,7 @@ cannot be told from the URL; `--api-base` for GitHub Enterprise
 `https://HOST/api/v4` (under a relative URL root, give
 `https://HOST/ROOT/api/v4`: `ROOT` is then not read as part of the
 namespace), and always for Gitea, over https whenever a token is used. GitLab
-projects are addressed by their URL-encoded path (`GROUP%2FREPO`); `--token-env NAME` for a different variable; `--anonymous` for a
-public repository without a token.
+projects are addressed by their URL-encoded path (`GROUP%2FREPO`).
 
 Options for the checks:
 
@@ -261,7 +279,7 @@ One JSON document on stdout:
 | 0 | `confirmed` | Record the `evidence` entries. |
 | 3 | `not_confirmed` | Do not record delivery. Report the failed checks. |
 | 4 | `pending` | Do not record delivery. CI is running, the PR is not merged yet, or the forge (or a diff for the patch identity) was unavailable: check again later. |
-| 2 | (usage) | Fix the invocation: the reference, `--api-base`, the token file, a pattern. Also when the forge redirects or its next-page link points to another host (use the API base and repository name the forge uses now). Nothing was verified. |
+| 2 | (usage) | Fix the invocation: the reference, `--api-base`, the token (the credential helper's entry or the token file), a pattern. Also when the forge redirects or its next-page link points to another host (use the API base and repository name the forge uses now). Nothing was verified. |
 
 ## Rules
 

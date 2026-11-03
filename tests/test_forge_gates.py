@@ -751,11 +751,28 @@ class Credentials(Gates, unittest.TestCase):
     def test_gitea_and_gitlab_have_no_cli_rule(self):
         for forge in ("gitea", "gitlab"):
             with self.subTest(forge):
+                calls = []
+
+                def run(cmd, **kw):  # nothing stored: git fails as it does without an entry
+                    calls.append(cmd[0])
+                    return subprocess.CompletedProcess(cmd, 128, stdout=b"", stderr=b"")
+
                 out, err = io.StringIO(), io.StringIO()
                 code = fg.main(["gates", "--pr", self.PR[forge], *self.ARGS[forge]], env=dict(self.OVERRIDES),
-                               stdout=out, stderr=err, opener=self.fake, run=self.gh)
+                               stdout=out, stderr=err, opener=self.fake, run=run)
                 self.assertEqual(code, 2)
-                self.assertEqual(self.gh.calls, [])
+                self.assertEqual(calls, ["git"], "Git's credential helper, never gh")
+
+    def test_gitea_token_from_the_credential_helper(self):
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="forge-gates-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        stored = "stored-fixture-placeholder-token"
+        env = tvd.git_env(tmp, FAKE_CREDENTIAL_HOST="git.example.org", FAKE_CREDENTIAL_TOKEN=stored)
+        out, err = io.StringIO(), io.StringIO()
+        fg.main(["gates", "--pr", self.PR["gitea"], *self.ARGS["gitea"]], env=env, stdout=out, stderr=err,
+                opener=self.fake, run=subprocess.run)
+        self.assertEqual(tvd.git_queries(tmp), [{"protocol": "https", "host": "git.example.org"}])
+        self.assertNotIn(stored, out.getvalue() + err.getvalue())
 
 
 class MergeCheck(unittest.TestCase):

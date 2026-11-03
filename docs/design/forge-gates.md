@@ -106,7 +106,8 @@ the description alone.
 ## Credentials
 
 `gates` and `merge-check` take the same options as `verify-delivery`
-(`--pr`, `--number`, `--forge`, `--api-base`, `--token-env`, `--anonymous`).
+(`--pr`, `--number`, `--forge`, `--api-base`, `--forge-user`, `--token-env`,
+`--anonymous`).
 The token is chosen in this order, and the first rule that applies decides:
 
 1. `--anonymous`: no token at all. The GitHub CLI is never asked.
@@ -114,6 +115,10 @@ The token is chosen in this order, and the first rule that applies decides:
 3. The forge's default variable (`GITHUB_TOKEN_FILE`, `GITEA_TOKEN_FILE`,
    `GITLAB_TOKEN_FILE`), when it is set.
 4. GitHub only: the GitHub CLI, for the host the request goes to.
+5. Gitea and GitLab: Git's credential helper, read by `verify-delivery` with
+   one `git credential fill` for `https://HOST` (the API base's host, and the
+   `--forge-user` name when given), no shell, a timeout and every prompt
+   switched off.
 
 For rule 4 the API base is resolved first, exactly as `verify-delivery`
 resolves it. The host the token is asked for is then derived from that API

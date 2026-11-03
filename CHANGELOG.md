@@ -9,6 +9,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- verify-delivery and forge-gates read the forge token from Git's
+  credential helper (Git Credential Manager, the macOS Keychain, libsecret)
+  when no token file is set: one `git credential fill` for the API base's
+  host, with no shell, a timeout and every prompt switched off, so a missing
+  entry is a usage error rather than a prompt. A new `--forge-user` names the
+  user the token is stored under. A token file, when its variable is set,
+  still comes first, and forge-gates still asks the GitHub CLI for a GitHub
+  token. A token stored once in the platform's store now serves every call,
+  with no copy on disk.
+
 ### Changed
 - The review gates take a change's size and surface. An XS or S change on an
   ordinary surface gets the implementer's high review at the final head and
