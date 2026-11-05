@@ -52,6 +52,7 @@ class FakeApi:
     def __init__(self, api):
         self.base = urllib.parse.urlsplit(api).path
         self.routes, self.requests = {}, []
+        self.posts = {}  # path -> (status, body) answered to a POST; the posted bodies are recorded
 
     @staticmethod
     def key(path, query):
@@ -67,8 +68,17 @@ class FakeApi:
 
     def __call__(self, req, timeout=None):
         self.requests.append({"method": req.get_method(), "url": req.full_url, "headers": dict(req.header_items()),
-                              "timeout": timeout})
+                              "timeout": timeout, "data": req.data})
         url = urllib.parse.urlsplit(req.full_url)
+        if req.get_method() == "POST":
+            post = self.posts.get(url.path[len(self.base):], (404, {"message": "Not Found"}))
+            if isinstance(post, Exception):
+                raise post
+            status, body = post
+            data = json.dumps(body).encode()
+            if status not in (200, 201):
+                raise urllib.error.HTTPError(req.full_url, status, "error", {}, io.BytesIO(data))
+            return tvd.Response(status, data)
         status, body = self.routes.get(self.key(url.path[len(self.base):], url.query), (404, {"message": "Not Found"}))
         headers = {}
         if isinstance(body, Pages):
@@ -232,7 +242,12 @@ class Gates:
         for secret in (TOKEN, CLI_TOKEN, GLOBAL_TOKEN):
             self.assertNotIn(secret, text, "no token ever appears in the output")
         self.assertEqual(err.getvalue().count("\n"), 1, "one summary line on stderr")
-        self.assertEqual({r["method"] for r in self.fake.requests} - {"GET"}, set(), "every request is a GET")
+        posts = [r for r in self.fake.requests if r["method"] != "GET"]
+        if command == "post-review":
+            self.assertLessEqual(len(posts), 1, "post-review makes at most one write")
+            self.assertEqual({r["method"] for r in posts} - {"POST"}, set(), "and never edits")
+        else:
+            self.assertEqual(posts, [], "every request is a GET")
         return code, json.loads(out.getvalue())
 
     def gates(self, *extra, **kw):
@@ -470,6 +485,141 @@ class WaitContract(Gates):
                 self.assertEqual(self.clock.sleeps, [])
 
 
+def local_review(sha=HEAD, header="[oh-code-review (high) review]", verdict="VERDICT\nREADY_FOR_HUMAN_MERGE",
+                 attribution="Review: oh-code-review (high) via Claude Code"):
+    return (f"{header} reviewed at head {sha}\n\nCURRENT OBJECTIVE\nAdd the widget.\n\nBLOCKERS\n- None\n\n"
+            f"{verdict}\nNo blockers.\n\nRISK\nLOW\n\n{attribution}\n")
+
+
+class PostContract(Gates):
+    """post-review: a review is posted only in the form the delivery check reads, for the head."""
+
+    def setUp(self):
+        super().setUp()
+        self.posted_url = self.PR[self.forge] + ("#note_99" if self.forge == "gitlab" else "#issuecomment-99")
+        answer = {"id": 99} if self.forge == "gitlab" else {"id": 99, "html_url": self.posted_url}
+        self.comments_path = (f"{self.repo}/merge_requests/42/notes" if self.forge == "gitlab"
+                              else f"{self.repo}/issues/42/comments")
+        self.fake.posts[self.comments_path] = (201, answer)
+
+    def post(self, body, *extra, **kw):
+        f = self.tmp / "review.md"
+        f.write_text(body, encoding="utf-8")
+        return self.run_fg("post-review", "--body-file", str(f), *extra, **kw)
+
+    def posts(self):
+        return [r for r in self.fake.requests if r["method"] == "POST"]
+
+    @staticmethod
+    def failed(doc):
+        return {c["name"]: c.get("line") for c in doc["checks"] if c["status"] == "failed"}
+
+    def test_a_well_formed_review_of_the_head_is_posted_once_as_it_is(self):
+        body = local_review()
+        code, doc = self.post(body)
+        self.assertEqual((code, doc["outcome"]), (0, "posted"), json.dumps(doc, indent=1))
+        self.assertEqual(doc["comment"]["url"], self.posted_url)
+        [req] = self.posts()
+        self.assertTrue(req["url"].endswith(self.comments_path))
+        self.assertEqual(json.loads(req["data"]), {"body": body})
+        self.assertIn(TOKEN, req["headers"]["Authorization"])
+
+    def test_a_long_review_still_gives_the_comment_url(self):
+        body = local_review().replace("Add the widget.", "Add the widget. " + "ї" * 40000, 1)  # 80 kB of UTF-8 in 40000 characters
+        answer = dict(self.fake.posts[self.comments_path][1], body=body)  # the forge echoes the body back
+        self.fake.posts[self.comments_path] = (201, answer)
+        code, doc = self.post(body)
+        self.assertEqual((code, doc["comment"]["url"]), (0, self.posted_url))
+        self.assertEqual(self.post(body + "y" * 26000)[1]["checks"][-3], {"name": "size", "status": "failed",
+                                                                          "detail": "longer than 65536 characters"})
+
+    def test_what_it_posts_is_what_the_gates_count(self):
+        self.comments[1:2] = []  # no local review yet
+        self.publish_comments()
+        self.assertNotEqual(self.review_of(self.gates()[1], "local")["status"], "ready")
+        body = local_review()
+        self.assertEqual(self.post(body)[0], 0)
+        self.fake.requests.clear()
+        self.comment(body, author="author", minutes=-1, association="MEMBER")
+        self.assertEqual(self.review_of(self.gates()[1], "local")["status"], "ready")
+
+    def test_the_other_header_form_the_delivery_check_reads_is_accepted(self):
+        code, doc = self.post(local_review(header="[oh-code-review high]"), "--dry-run")
+        self.assertEqual((code, doc["outcome"]), (0, "dry_run"), json.dumps(doc, indent=1))
+
+    def test_dry_run_checks_everything_and_posts_nothing(self):
+        code, doc = self.post(local_review(), "--dry-run")
+        self.assertEqual((code, doc["outcome"]), (0, "dry_run"))
+        self.assertEqual(self.posts(), [])
+        code, doc = self.post(local_review(sha=OLD), "--dry-run")
+        self.assertEqual((code, doc["outcome"], self.failed(doc)), (3, "refused", {"head": None}))
+
+    def test_the_format_misses_are_refused_with_their_line(self):
+        cases = {
+            "abbreviated head": (local_review(sha=HEAD[:7]), {"header": 1, "head": None}),
+            "markdown header": (local_review().replace("[oh-code-review (high) review] reviewed at head",
+                                                       "## Review: oh-code-review (high) via Claude Code, head", 1),
+                                {"header": 1, "head": None}),
+            "a level the delivery check does not read": (local_review(header="[oh-code-review (medium) review]",
+                                                                      attribution="Review: oh-code-review (medium) via Claude Code"),
+                                                         {"header": 1, "head": None}),
+            "one-line verdict": (local_review(verdict="VERDICT: READY_FOR_HUMAN_MERGE (the observation does not block)."),
+                                 {"verdict": 9}),
+            "bold verdict": (local_review(verdict="**VERDICT:** `READY_FOR_HUMAN_MERGE`"), {"verdict": 9}),
+            "prose on the verdict line": (local_review(verdict="VERDICT\nREADY_FOR_HUMAN_MERGE (no blockers)"),
+                                          {"verdict": 10}),
+            "two verdicts": (local_review(verdict="VERDICT\nREADY_FOR_HUMAN_MERGE\n\nVERDICT\nREADY_FOR_HUMAN_MERGE"),
+                             {"verdict": 12}),
+            "no verdict": (local_review(verdict=""), {"verdict": None}),
+            "unknown verdict word": (local_review(verdict="VERDICT\nLGTM"), {"verdict": 10}),
+            "no attribution": (local_review(attribution=""), {"attribution": None}),
+            "attribution of another level": (local_review(attribution="Review: oh-code-review (max) via Claude Code"),
+                                             {"attribution": 16}),
+            "session link": (local_review() + "https://claude.ai/code/session_0123456789\n", {"session_links": 17}),
+            "older head": (local_review(sha=OLD), {"head": None}),
+        }
+        for name, (body, expected) in cases.items():
+            with self.subTest(case=name):
+                self.fake.requests.clear()
+                code, doc = self.post(body)
+                self.assertEqual((code, doc["outcome"]), (3, "refused"), json.dumps(doc, indent=1))
+                self.assertEqual(self.failed(doc), expected)
+                self.assertEqual(self.posts(), [])
+
+    def test_a_review_after_the_merge_is_refused(self):
+        if self.forge == "gitlab":
+            self.pr["state"] = "merged"
+        else:
+            self.pr.update(state="closed", merged=True)
+        self.publish_pr()
+        code, doc = self.post(local_review())
+        self.assertEqual((code, self.failed(doc)), (3, {"state": None}))
+        self.assertIn("ignored by the delivery check", self.check(doc, "state")["detail"])
+        self.assertEqual(self.posts(), [])
+
+    def test_deny_file_entries_are_refused_and_never_printed(self):
+        deny = self.tmp / "deny"
+        deny.write_text("# private names\n\nInternal-Hub.example\n", encoding="utf-8")
+        code, doc = self.post(local_review() + "Seen on internal-hub.example.\n", "--deny-file", str(deny))
+        self.assertEqual((code, self.failed(doc)), (3, {"deny_file": 17}))
+        self.assertNotIn("internal-hub", json.dumps(doc).lower())
+        self.assertEqual(self.post(local_review(), "--deny-file", str(deny))[0], 0)
+
+    def test_forge_refusals(self):
+        for answer, expected in ((403, 2), (500, 4)):
+            with self.subTest(status=answer):
+                self.fake.requests.clear()
+                self.fake.posts[self.comments_path] = (answer, {"message": "no"})
+                code, doc = self.post(local_review())
+                self.assertEqual((code, doc["outcome"]), (expected, "error"))
+        self.fake.posts[self.comments_path] = urllib.error.URLError("reset")
+        self.fake.requests.clear()
+        code, doc = self.post(local_review())
+        self.assertEqual(code, 4)
+        self.assertIn("may or may not have been posted", doc["error"]["message"])
+        self.assertEqual(len(self.posts()), 1, "a write is never retried")
+
+
 class GitHubGates(GatesContract, unittest.TestCase):
     forge = "github"
 
@@ -563,6 +713,16 @@ class GitHubGates(GatesContract, unittest.TestCase):
         self.assertEqual((code, doc["outcome"]), (4, "timeout"))
 
 
+class GitHubPost(PostContract, unittest.TestCase):
+    forge = "github"
+
+    def test_anonymous_only_checks(self):
+        self.assertEqual(self.post(local_review(), "--anonymous", "--dry-run", env={})[0], 0)
+        code, doc = self.post(local_review(), "--anonymous", env={})
+        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+        self.assertEqual(self.posts(), [])
+
+
 class GitHubWait(WaitContract, unittest.TestCase):
     forge = "github"
 
@@ -615,6 +775,10 @@ class GiteaGates(GatesContract, unittest.TestCase):
         self.assertIn("--review-author external=LOGIN", doc["error"]["message"])
 
 
+class GiteaPost(PostContract, unittest.TestCase):
+    forge = "gitea"
+
+
 class GiteaWait(WaitContract, unittest.TestCase):
     forge = "gitea"
 
@@ -664,6 +828,10 @@ class GitLabGates(GatesContract, unittest.TestCase):
         self.fake.set(f"{self.repo}/merge_requests/42/commits", [{"id": HEAD}, {"id": twin}, {"id": OLD}])
         code, doc = self.gates()
         self.assertEqual((code, self.review_of(doc)["status"]), (3, "not_ready"))
+
+
+class GitLabPost(PostContract, unittest.TestCase):
+    forge = "gitlab"
 
 
 class GitLabWait(WaitContract, unittest.TestCase):

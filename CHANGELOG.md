@@ -9,6 +9,22 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- `forge-gates post-review` posts the local review as one new comment, and
+  only in the form `verify-delivery` reads (#108). Line 1 must be the review
+  header the delivery check's pattern reads, with the head's full SHA, and
+  that SHA must be the open pull request's current head. `VERDICT` stands
+  alone with only the verdict word on its next non-blank line (a `VERDICT:`
+  one-liner is named with its line number), the attribution line is present
+  at the header's level, and no session link or `--deny-file` entry appears.
+  It never edits a comment and never retries a write; `--dry-run` runs every
+  check and posts nothing. Twice a READY review had been invisible to the
+  delivery check because of its layout, and an edit after the merge cannot
+  repair that.
+- `verify-delivery`, `oh-code-review` and the review-gates block say to post
+  the review before the merge and never to edit it afterwards, and point to
+  `post-review`.
+
 ## [1.35.1] - 2026-11-03
 
 ### Fixed

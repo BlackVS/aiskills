@@ -1,6 +1,6 @@
 ---
 name: forge-gates
-description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher. wait-review waits for the external reviewer's answer for the head just pushed (any SHA abbreviation, trusted authors only, a correlated failure comment ends the wait); gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green at the head); merge-check gives verify-delivery's delivery verdict. Read-only; JSON on stdout. Use when an agent must wait for the external review, or decide whether to mark a pull request ready.
+description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the head just pushed (any SHA abbreviation, trusted authors only, a correlated failure comment ends the wait); gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green at the head); merge-check gives verify-delivery's delivery verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution. Read-only except post-review; JSON on stdout. Use when an agent must wait for the external review, post its own review, or decide whether to mark a pull request ready.
 ---
 
 # Forge gates
@@ -11,9 +11,11 @@ the current head is ready for a person to merge. Do not write your own watcher
 for either: the rules here are the ones `verify-delivery` applies at the end,
 from the same code.
 
-The helper is read-only. Every request is an HTTP `GET`: it never labels,
-comments, pushes or merges. Request the review (the `review-this` label), mark
-the pull request ready and merge as the gates describe; this skill only reads.
+The helper is read-only except `post-review`. Every other request is an HTTP
+`GET`; `post-review` makes at most one `POST`, which creates one comment, and
+never edits or deletes one. Nothing here labels, pushes or merges. Request the
+review (the `review-this` label), mark the pull request ready and merge as the
+gates describe.
 
 It needs the `verify-delivery` skill next to it, in the same skills directory:
 `scripts/forge_gates.py` imports its module. The installers add it whenever
@@ -25,6 +27,7 @@ names the skill to install.
     python3 scripts/forge_gates.py wait-review --pr PR --head SHA [--wait-for NAME] [--timeout S] [--interval S]
     python3 scripts/forge_gates.py gates --pr PR
     python3 scripts/forge_gates.py merge-check --pr PR
+    python3 scripts/forge_gates.py post-review --pr PR --body-file FILE [--deny-file FILE] [--dry-run]
 
 `PR` is a pull or merge request URL, `owner/repo#N`, or `owner/repo` with
 `--number`. Each command also takes every option of `verify-delivery`
@@ -118,6 +121,48 @@ Exactly the document and exit code `verify-delivery` produces for the same
 options: use it after the merge, before recording the pull request as
 delivered.
 
+### post-review
+
+Posts the review in `--body-file` (UTF-8, posted exactly as it is) as one new
+comment on the pull request, and only when the delivery check will read it.
+Write the review to a file, run this, and never post it any other way. Every
+check runs before anything is written, and each one is reported in `checks`
+with the `line` it failed on:
+
+- `header`: line 1 is the header of the review named by `--post-as` (default
+  `local`), as the delivery check's pattern for it reads it: for the default,
+  `[oh-code-review (high) review]`, `[oh-code-review high]` (or `max`,
+  `ultra`) or `[oh-code-review review]`, then `reviewed at head` and the full
+  40-digit SHA. An abbreviated SHA or another layout fails.
+- `verdict`: exactly one line `VERDICT`, and the next non-blank line holds only
+  `READY_FOR_HUMAN_MERGE`, `RETURN_TO_IMPLEMENTATION` or `REVIEW_COULD_NOT_RUN`.
+  A line such as `VERDICT: READY_FOR_HUMAN_MERGE` or `**VERDICT:**` fails with
+  its line number, and a READY verdict must also match `--verdict-pattern`.
+- `attribution`: a line `Review: oh-code-review (<level>) via <client>`, at the
+  header's level when the header names one.
+- `session_links`: no link into an agent's session or conversation
+  (claude.ai, chatgpt.com).
+- `deny_file`: no entry of `--deny-file` appears, matched as text in any case
+  (one entry per line; blank lines and `#` lines are skipped). Use it for
+  private host and deployment names; the entries are never printed.
+- `size`: at most 65536 characters.
+- `state`: the pull request is open. A review posted after the merge is
+  ignored by the delivery check, so it is refused.
+- `head`: the header's SHA is the pull request's current head.
+
+| `outcome` | When | Exit |
+| --- | --- | --- |
+| `posted` | every check passed and the comment was created; `comment.url` | 0 |
+| `dry_run` | `--dry-run`: every check passed, nothing was posted | 0 |
+| `refused` | a check failed; nothing was posted | 3 |
+| `error` | the forge refused the comment or did not answer | 2 (token) or 4 |
+
+The comment is never retried: when the forge does not answer, it may or may
+not have been posted, and the error says to look at the pull request first. A
+review that needs a correction is a new comment naming the head, never an edit.
+Posting needs a token that may comment (the credential rules below);
+`--anonymous` works only with `--dry-run`.
+
 ## Credentials
 
 The first rule that applies gives the token:
@@ -153,3 +198,4 @@ next-page link to another host), and masked in the output.
 | `wait-review` | review found | failed, moved, closed, merged | timeout | usage error |
 | `gates` | ready | not ready | pending | usage error |
 | `merge-check` | confirmed | not confirmed | pending | usage error |
+| `post-review` | posted, or would post (`--dry-run`) | refused | the forge refused or did not answer | usage error, or the token may not comment |

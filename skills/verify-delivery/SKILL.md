@@ -16,8 +16,15 @@ merges, comments, labels or pushes. Do not add any of that around it: this
 skill confirms, it does not act.
 
 Before the merge, use the `forge-gates` skill instead: `wait-review` waits for
-the external review of a head, and `gates` says whether the head is ready to
-be marked ready. Its `merge-check` prints exactly this skill's document.
+the external review of a head, `gates` says whether the head is ready to be
+marked ready, and `post-review` posts the local review only in the form this
+check reads. Its `merge-check` prints exactly this skill's document.
+
+Two consequences of the reviewed-head rule below, which sessions otherwise
+learn by failing: post the review **before** the merge, and never edit it
+afterwards. A review posted or edited after the merge is ignored, so a format
+slip cannot be repaired then; the delivery then rests on the other reviews.
+Before the merge, correct a slip with a new comment naming the head.
 
 ## What it checks
 
