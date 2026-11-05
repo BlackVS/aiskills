@@ -9,6 +9,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+- Review runner: a review conversation that the codex ACP agent ends with
+  `exceeded retry limit, last status: 429` (a finish, not an error event)
+  counts as a rate limit and starts the configured fallback, instead of
+  failing as "finished without posting a review". Only the conversation's
+  last agent action is read, and its message must be exactly that text.
+- Review runner: a review written by the fallback profile gets a note on the
+  PR from the runner naming the fallback and the primary profile, and the
+  journal's `review done` line gains `fallback-from=<primary>`, so a switch is
+  visible whatever the review itself says.
+- `forge-gates wait-review`: a UUID in a failure comment, such as the
+  conversation id hands names, no longer reads as an abbreviated SHA of
+  another head, so the failure ends the wait instead of running to the
+  timeout.
+
 ### Removed
 - `processes/aimem/`, which since 1.35.0 held only a pointer to the aimem
   process set's new home in the aimem repository (#98). The README's process

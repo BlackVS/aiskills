@@ -14,11 +14,21 @@ from unittest.mock import patch
 
 import review_policy
 from review_control import Handler
-from review_runner import Runner, RunStore, limit_error, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
+from review_runner import Runner, RunStore, limit_error, limit_finish, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
 
 HEAD = 'a' * 40
 QUOTA = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'ACPPromptError',
                     'detail': 'limit: {"errorKind": "rate_limit"}'}]}
+
+
+def finish_event(message, timestamp='2'):
+    """The agent's last action, as agent-canvas returns it for an ACP agent's finish."""
+    return {'source': 'agent', 'kind': 'ActionEvent', 'timestamp': timestamp,
+            'action': {'kind': 'FinishAction', 'message': message}}
+
+
+# what codex-acp 1.10.0 ended a review with when OpenAI kept answering 429
+FINISH_429 = {'items': [finish_event('exceeded retry limit, last status: 429 Too Many Requests\n\n')]}
 
 
 class PolicyTests(unittest.TestCase):
@@ -1361,6 +1371,61 @@ class RunnerTests(unittest.TestCase):
     def test_generic_error_does_not_fallback(self):
         starts, labels, failures = self.execute(quota=False)
         self.assertEqual(len(starts), 1); self.assertTrue(failures); self.assertFalse(labels)
+
+    def test_the_runner_says_on_the_pr_that_the_fallback_wrote_the_review(self):
+        # the fallback model is asked to say so too, but only the runner's note is certain
+        starts, labels, failures = self.execute()
+        self.assertEqual(len(starts), 2); self.assertFalse(failures)
+        self.assertEqual(len(self.notes), 1)
+        self.assertIn('fallback profile `claude-opus`', self.notes[0][-1]); self.assertIn('`codex-astra`', self.notes[0][-1])
+        self.assertIn('review done: owner/repo#1 profile=claude-opus fallback-from=codex-astra', self.logs)
+
+    def test_a_held_fallback_review_names_the_primary_in_the_journal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp)/'runs.json')
+            held = self.record(attempt=1, profile='claude-opus', conversation='2', posted=True)
+            self.execute(quota=False, resume=held, runs=store)
+            self.assertIn('review done (posted before the restart): owner/repo#1 profile=claude-opus '
+                          'fallback-from=codex-astra', self.logs)
+
+    def test_a_review_by_the_primary_gets_no_fallback_note(self):
+        starts, labels, failures = self.execute(quota=False, completed_first=True)
+        self.assertEqual(len(starts), 1); self.assertFalse(failures); self.assertFalse(self.notes)
+        self.assertIn('review done: owner/repo#1 profile=codex-astra', self.logs)
+
+    def test_a_finish_on_the_429_retry_limit_falls_back(self):
+        # codex-acp ends the turn with its retry-limit text instead of an error event: the
+        # conversation is `finished`, and only that last agent action marks it rate-limited
+        starts, labels, failures = self.execute(quota=False, finished=True, error_events=FINISH_429)
+        self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra', 'claude-opus'])
+        self.assertFalse(failures); self.assertEqual(len(self.notes), 1)
+        self.assertIn('review ended on a 429 retry limit: owner/repo#1 conversation=1', self.logs)
+
+    def test_a_finish_on_the_429_retry_limit_without_a_fallback_says_so(self):
+        starts, labels, failures = self.execute(quota=False, finished=True, error_events=FINISH_429, fallback=None)
+        self.assertEqual(len(starts), 1); self.assertFalse(labels)
+        self.assertEqual(failures[0][-1], 'quota or rate limit reached; no fallback applies')
+
+    def test_any_other_finish_without_a_review_is_a_miss(self):
+        for message in ['Review done.', 'The API said: exceeded retry limit, last status: 429 Too Many Requests',
+                        'exceeded retry limit, last status: 4290', 'exceeded retry limit, last status: 503 Service Unavailable']:
+            with self.subTest(message=message):
+                events = {'items': [finish_event(message)]}
+                starts, labels, failures = self.execute(quota=False, finished=True, error_events=events)
+                self.assertEqual(len(starts), 1); self.assertFalse(self.notes)
+                self.assertIn('finished without posting a review', failures[0][-1])
+
+    def test_limit_finish_reads_only_the_last_agent_action(self):
+        retry = finish_event('exceeded retry limit, last status: 429 Too Many Requests\n\n', '2')
+        later = {'source': 'agent', 'kind': 'ActionEvent', 'timestamp': '3', 'action': {'kind': 'ExecuteBashAction'}}
+        state = {'source': 'environment', 'kind': 'ConversationStateUpdateEvent', 'timestamp': '4'}
+        self.assertTrue(limit_finish({'items': [retry, state]}))  # environment events after it do not count
+        self.assertTrue(limit_finish({'items': [finish_event('exceeded retry limit, last status: 429')]}))
+        self.assertFalse(limit_finish({'items': [retry, later]}))
+        self.assertFalse(limit_finish({'items': [dict(retry, source='user')]}))
+        self.assertFalse(limit_finish({'items': [dict(retry, action='exceeded retry limit, last status: 429')]}))
+        self.assertFalse(limit_finish({'items': [finish_event(None)]}))
+        self.assertFalse(limit_finish({'items': []}))
 
     def test_explicit_other_model_does_not_fallback(self):
         starts, _, failures = self.execute(selected='claude-fable')

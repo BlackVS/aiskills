@@ -61,7 +61,12 @@ request at once (the failure names the conversation so it can be inspected in
 Canvas) instead of holding the working label for the whole watch.
 On a confirmed quota or rate-limit error the runtime starts one fresh conversation, retaining
 the same PR head and recording the original and fallback models in its prompt
-and service log. The fallback review must disclose the switch. A rate-limit event confirms throttling, not exhausted credits; the fallback message does not claim otherwise. No loops, no
+and service log. The fallback review must disclose the switch, and the runtime
+itself adds a note under it naming the fallback and the primary profile (journal:
+`review done: ... fallback-from=<primary>`). A conversation that finishes because
+the codex ACP agent's retries ran out on HTTP 429 (its last action is the finish
+message `exceeded retry limit, last status: 429 ...`, not an error event) counts
+as a rate-limit error (journal: `review ended on a 429 retry limit`). A rate-limit event confirms throttling, not exhausted credits; the fallback message does not claim otherwise. No loops, no
 retry on generic errors, unknown startup outcomes or timeouts. If the head
 changes, request a new review. A completed review is recognized by head and
 verdict, not merely the presence of the bot marker.

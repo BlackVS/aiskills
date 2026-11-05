@@ -53,7 +53,8 @@ Run it in the background right after adding the request label.
   comment never ends the wait.
 - A failure comment of the reviewer (`--failure-pattern`, default
   `could not run`) ends the wait only when its author is trusted, it names
-  the head or no SHA at all, and it is newer than the latest time the request
+  the head or no SHA at all (the groups of a UUID, such as the conversation
+  id a failure names, are no SHA), and it is newer than the latest time the request
   label (`--request-label`, default `review-this`, `review-this:<profile>`
   included) was added, read from the label events. Where those cannot be
   read, the start of the wait is used, and the result says

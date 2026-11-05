@@ -74,6 +74,7 @@ class AdapterTests(unittest.TestCase):
                 sender = threading.Thread(target=echo[0], daemon=True)
                 echo_threads.append(sender); sender.start()
         starts, failures, errors = [], [], []
+        fallback_notes = []  # the runner's note that the fallback wrote the review
         label_reads = []  # the repository labels the adapter looked up
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
         blind_left = [3 if blind else 0]
@@ -138,7 +139,8 @@ class AdapterTests(unittest.TestCase):
                     label_reads.append(urllib.parse.unquote(path.split('/')[-1]))
                     result = {'name': path.split('/')[-1]}
                 elif path == '/forge/repos/owner/repo/issues/1/comments':
-                    if self.command == 'POST': failures.append(body)
+                    if self.command == 'POST':
+                        (fallback_notes if 'ran on the fallback profile' in body.get('body', '') else failures).append(body)
                     query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                     if query.get('page') == ['2']:
                         result = [{'user': {'login': 'test-bot'}, 'body': f'[test-bot review] reviewed at head {head}\n\nVERDICT\nREADY_FOR_HUMAN_MERGE'}]
@@ -255,6 +257,9 @@ class AdapterTests(unittest.TestCase):
                 proc.terminate(); output = proc.communicate(timeout=5)[0]
                 server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(success,output)
+            self.assertLessEqual(len(fallback_notes), 1, 'the fallback note is posted once')
+            if not (two or refused or blocked or stuck or lost or kept or own):
+                self.assertEqual(len(fallback_notes), 1, 'the runner says the fallback wrote the review')
             if github:
                 self.assertIn('review-this:claude-opus', label_reads, 'every reviewer profile gets its request label')
                 self.assertNotIn('review-this:default', label_reads, "Canvas's default profile gets no request label")
