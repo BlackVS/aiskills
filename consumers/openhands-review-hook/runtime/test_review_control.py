@@ -14,11 +14,21 @@ from unittest.mock import patch
 
 import review_policy
 from review_control import Handler
-from review_runner import Runner, RunStore, limit_error, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
+from review_runner import Runner, RunStore, limit_error, limit_finish, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
 
 HEAD = 'a' * 40
 QUOTA = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'ACPPromptError',
                     'detail': 'limit: {"errorKind": "rate_limit"}'}]}
+
+
+def finish_event(message, timestamp='2'):
+    """The agent's last action, as agent-canvas returns it for an ACP agent's finish."""
+    return {'source': 'agent', 'kind': 'ActionEvent', 'timestamp': timestamp,
+            'action': {'kind': 'FinishAction', 'message': message}}
+
+
+# what codex-acp 1.10.0 ended a review with when OpenAI kept answering 429
+FINISH_429 = {'items': [finish_event('exceeded retry limit, last status: 429 Too Many Requests\n\n')]}
 
 
 class PolicyTests(unittest.TestCase):
@@ -421,14 +431,20 @@ class RunnerTests(unittest.TestCase):
                 primary='codex-astra', fallback='claude-opus', secondary=None, llm_refs=None, explicit=False,
                 profile_info=None, prompt_text='model={model} label={label}', runs=None, resume=None, on_comments=None, usage_id=None,
                 break_after_completion=None, fail=None, on_app=None, on_events=None, on_pulls=None, on_label=None,
-                short_review=False, status=None):
+                short_review=False, status=None, on_pr=None):
         starts, labels, failures, calls = [], [], [], {'comments': 0}
         self.notes = notes = []
+        # the notes on the PR, which every comment read returns: those posted here and ON_PR's
+        self.on_pr = on_pr = list(on_pr or [])
         def note(*args):
             if break_after_completion == 'note':
                 raise OSError('forge down')
             notes.append(args)
+            on_pr.append({'body': f'\u26a0\ufe0f [hands-bot review] note: {args[-1]}'})
         def api(path):
+            answer = forge(path)
+            return answer + on_pr if isinstance(answer, list) else answer
+        def forge(path):
             if '/pulls/' in path:
                 if on_pulls:
                     on_pulls()
@@ -884,7 +900,7 @@ class RunnerTests(unittest.TestCase):
             starts, labels, failures = self.execute(runs=store, on_comments=lambda: seen.append([r['conversation'] for r in store.load()]))
             self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra', 'claude-opus'])
             self.assertTrue(labels); self.assertFalse(failures)
-            self.assertEqual(seen, [['1'], []])  # watched with the primary's record, then with none at all
+            self.assertEqual(seen, [['1'], [], []])  # watched with the primary's record, then with none at all (and the note's read)
             self.assertEqual(store.writes, 3); self.assertIn('injected', logs[-1])
             starts, labels, failures = self.execute(resume=self.record(attempt=1, profile='claude-opus', conversation='2'), completed_first=True, quota=False)
             self.assertEqual(starts, []); self.assertTrue(labels)  # and a recorded fallback resumes as itself
@@ -1361,6 +1377,105 @@ class RunnerTests(unittest.TestCase):
     def test_generic_error_does_not_fallback(self):
         starts, labels, failures = self.execute(quota=False)
         self.assertEqual(len(starts), 1); self.assertTrue(failures); self.assertFalse(labels)
+
+    def test_the_runner_says_on_the_pr_that_the_fallback_wrote_the_review(self):
+        # the fallback model is asked to say so too, but only the runner's note is certain
+        starts, labels, failures = self.execute()
+        self.assertEqual(len(starts), 2); self.assertFalse(failures)
+        self.assertEqual(len(self.notes), 1)
+        self.assertIn('fallback profile `claude-opus`', self.notes[0][-1]); self.assertIn('`codex-astra`', self.notes[0][-1])
+        self.assertIn('review done: owner/repo#1 profile=claude-opus fallback-from=codex-astra', self.logs)
+
+    FALLBACK_NOTE = {'body': f'\u26a0\ufe0f [hands-bot review] note: the review of {HEAD} above ran on the fallback '
+                             'profile `claude-opus`: the primary profile `codex-astra` hit a quota or rate limit.'}
+
+    def test_a_held_fallback_review_gets_its_note_after_the_restart(self):
+        # held before the note was posted (the forge was down through the deadline): the start posts it
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp)/'runs.json')
+            held = self.record(attempt=1, profile='claude-opus', conversation='2', posted=True)
+            starts, labels, failures = self.execute(quota=False, resume=held, runs=store)
+            self.assertEqual((starts, failures, len(self.notes)), ([], [], 1))
+            self.assertIn(f'the review of {HEAD} above ran on the fallback profile `claude-opus`', self.notes[0][-1])
+            self.assertIn('review done (posted before the restart): owner/repo#1 profile=claude-opus '
+                          'fallback-from=codex-astra', self.logs)
+
+    def test_a_held_fallback_review_whose_note_is_there_gets_no_second(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = RunStore(Path(temp)/'runs.json')
+            held = self.record(attempt=1, profile='claude-opus', conversation='2', posted=True)
+            starts, labels, failures = self.execute(quota=False, resume=held, runs=store, on_pr=[self.FALLBACK_NOTE])
+            self.assertEqual((starts, failures, self.notes), ([], [], []))
+            self.assertEqual(labels[-1][-2:], ('hands-reviewing', False))
+
+    def test_a_resumed_fallback_whose_note_is_there_gets_no_second(self):
+        # restarted after the note, before the done label: the resumed watch completes without a second
+        starts, labels, failures = self.execute(quota=False, completed_first=True, on_pr=[self.FALLBACK_NOTE],
+                                                resume=self.record(attempt=1, profile='claude-opus', conversation='2'))
+        self.assertEqual((starts, failures, self.notes), ([], [], []))
+        self.assertIn('review done: owner/repo#1 profile=claude-opus fallback-from=codex-astra', self.logs)
+
+    def test_a_note_for_another_head_or_inside_a_review_does_not_count(self):
+        other = {'body': self.FALLBACK_NOTE['body'].replace(HEAD, 'b' * 40)}
+        quoted = {'body': f'[hands-bot review] reviewed at head {'c' * 40}\n\n' + self.FALLBACK_NOTE['body']}
+        starts, labels, failures = self.execute(quota=False, completed_first=True, on_pr=[other, quoted],
+                                                resume=self.record(attempt=1, profile='claude-opus', conversation='2'))
+        self.assertEqual((starts, failures, len(self.notes)), ([], [], 1))
+
+    def test_a_swap_the_forge_fails_does_not_repeat_the_note(self):
+        starts, labels, failures = self.execute(on_label=self.raising_once(self.http_error(502)))
+        self.assertEqual((len(starts), failures, len(self.notes)), (2, [], 1))
+        self.assertEqual(labels[-1][-2:], ('hands-reviewing', False))
+
+    def test_a_note_the_forge_cannot_read_for_is_tried_again_before_the_label(self):
+        # the comments read for the note fails once: no label yet; the next poll posts it, then labels
+        reads = []
+        def comment_read_down():
+            reads.append(1)
+            if len(reads) == 3:  # the primary's watch read, the fallback's, then the note's check
+                raise self.http_error(502)
+        starts, labels, failures = self.execute(on_comments=comment_read_down)
+        self.assertEqual((len(starts), failures, len(self.notes)), (2, [], 1))
+        self.assertIn('fallback note failed, retrying at the next poll: owner/repo#1: HTTPError', self.logs)
+
+    def test_a_review_by_the_primary_gets_no_fallback_note(self):
+        starts, labels, failures = self.execute(quota=False, completed_first=True)
+        self.assertEqual(len(starts), 1); self.assertFalse(failures); self.assertFalse(self.notes)
+        self.assertIn('review done: owner/repo#1 profile=codex-astra', self.logs)
+
+    def test_a_finish_on_the_429_retry_limit_falls_back(self):
+        # codex-acp ends the turn with its retry-limit text instead of an error event: the
+        # conversation is `finished`, and only that last agent action marks it rate-limited
+        starts, labels, failures = self.execute(quota=False, finished=True, error_events=FINISH_429)
+        self.assertEqual([s['agent_profile_id'] for s in starts], ['codex-astra', 'claude-opus'])
+        self.assertFalse(failures); self.assertEqual(len(self.notes), 1)
+        self.assertIn('review ended on a 429 retry limit: owner/repo#1 conversation=1', self.logs)
+
+    def test_a_finish_on_the_429_retry_limit_without_a_fallback_says_so(self):
+        starts, labels, failures = self.execute(quota=False, finished=True, error_events=FINISH_429, fallback=None)
+        self.assertEqual(len(starts), 1); self.assertFalse(labels)
+        self.assertEqual(failures[0][-1], 'quota or rate limit reached; no fallback applies')
+
+    def test_any_other_finish_without_a_review_is_a_miss(self):
+        for message in ['Review done.', 'The API said: exceeded retry limit, last status: 429 Too Many Requests',
+                        'exceeded retry limit, last status: 4290', 'exceeded retry limit, last status: 503 Service Unavailable']:
+            with self.subTest(message=message):
+                events = {'items': [finish_event(message)]}
+                starts, labels, failures = self.execute(quota=False, finished=True, error_events=events)
+                self.assertEqual(len(starts), 1); self.assertFalse(self.notes)
+                self.assertIn('finished without posting a review', failures[0][-1])
+
+    def test_limit_finish_reads_only_the_last_agent_action(self):
+        retry = finish_event('exceeded retry limit, last status: 429 Too Many Requests\n\n', '2')
+        later = {'source': 'agent', 'kind': 'ActionEvent', 'timestamp': '3', 'action': {'kind': 'ExecuteBashAction'}}
+        state = {'source': 'environment', 'kind': 'ConversationStateUpdateEvent', 'timestamp': '4'}
+        self.assertTrue(limit_finish({'items': [retry, state]}))  # environment events after it do not count
+        self.assertTrue(limit_finish({'items': [finish_event('exceeded retry limit, last status: 429')]}))
+        self.assertFalse(limit_finish({'items': [retry, later]}))
+        self.assertFalse(limit_finish({'items': [dict(retry, source='user')]}))
+        self.assertFalse(limit_finish({'items': [dict(retry, action='exceeded retry limit, last status: 429')]}))
+        self.assertFalse(limit_finish({'items': [finish_event(None)]}))
+        self.assertFalse(limit_finish({'items': []}))
 
     def test_explicit_other_model_does_not_fallback(self):
         starts, _, failures = self.execute(selected='claude-fable')

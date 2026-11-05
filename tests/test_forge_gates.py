@@ -423,6 +423,28 @@ class WaitContract(Gates):
         code, doc = self.wait("--timeout", "60")
         self.assertEqual((code, doc["outcome"], doc["correlation"]), (4, "timeout", "label"))
 
+    def test_a_conversation_uuid_in_the_failure_is_no_head(self):
+        # hands names the conversation; its first group, `e039be33`, is not a SHA of another head
+        del self.comments[2]
+        self.comment("⚠️ The external review could not run: the review conversation finished without posting "
+                     "a review (conversation e039be33-d709-48d9-bd77-fb3fe84e4025); re-add the label.", minutes=-5)
+        code, doc = self.wait()
+        self.assertEqual((code, doc["outcome"]), (3, "reviewer_failed"), json.dumps(doc))
+
+    def test_an_upper_case_uuid_beside_this_head_is_no_other_head(self):
+        del self.comments[2]
+        self.comment(f"⚠️ The external review could not run for {HEAD[:7]} "
+                     "(conversation E039BE33-D709-48D9-BD77-FB3FE84E4025).", minutes=-5)
+        code, doc = self.wait()
+        self.assertEqual((code, doc["outcome"]), (3, "reviewer_failed"), json.dumps(doc))
+
+    def test_a_uuid_does_not_hide_another_head_beside_it(self):
+        del self.comments[2]
+        self.comment(f"⚠️ The external review could not run for {NEW[:8]} "
+                     "(conversation e039be33-d709-48d9-bd77-fb3fe84e4025).", minutes=-5)
+        code, doc = self.wait("--timeout", "60")
+        self.assertEqual((code, doc["outcome"]), (4, "timeout"))
+
     def test_failure_naming_another_head_does_not_count(self):
         del self.comments[2]
         self.comment(f"⚠️ The external review could not run for {NEW[:8]}.", minutes=-5)

@@ -36,6 +36,8 @@ GH_TIMEOUT = 15
 GITEA_DRAFT_PREFIXES = ("WIP:", "[WIP]")  # Gitea's default WORK_IN_PROGRESS_PREFIXES
 MIN_INTERVAL = 30
 SHA_TOKEN = re.compile(r"(?<![0-9A-Za-z])[0-9a-fA-F]{7,40}(?![0-9A-Za-z])")
+# A UUID in its 8-4-4-4-12 form: its first group alone looks like an abbreviated SHA.
+UUID = re.compile(r"(?<![0-9A-Za-z-])[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?![0-9A-Za-z-])")
 VERDICT_WORD = re.compile(r"(?m)^[ \t]*VERDICT[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*([A-Z_]+)")
 VERDICTS = ("READY_FOR_HUMAN_MERGE", "RETURN_TO_IMPLEMENTATION", "REVIEW_COULD_NOT_RUN")
 VERDICT_LINE = re.compile(r"[ \t]*VERDICT[ \t]*")
@@ -304,8 +306,10 @@ def label_added(forge, kind, number, label):
 
 def names_head(body, head):
     """Whether a failure comment can be about HEAD: it names no SHA, or one that HEAD starts with.
-    A run of 7 or more digits only is a SHA only at full length (it is more often a number)."""
-    shas = [t.lower() for t in SHA_TOKEN.findall(body or "") if len(t) == 40 or re.search(r"[a-fA-F]", t)]
+    A run of 7 or more digits only is a SHA only at full length (it is more often a number), and
+    the groups of a UUID (a conversation or run id the comment names) are no SHA at all."""
+    text = UUID.sub(" ", body or "")
+    shas = [t.lower() for t in SHA_TOKEN.findall(text) if len(t) == 40 or re.search(r"[a-fA-F]", t)]
     return not shas or any(head.startswith(s) for s in shas)
 
 
