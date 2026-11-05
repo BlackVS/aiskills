@@ -9,6 +9,13 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Removed
+- `processes/aimem/`, which since 1.35.0 held only a pointer to the aimem
+  process set's new home in the aimem repository (#98). The README's process
+  set paragraph links there; selections pinned to an earlier ai-skills
+  commit keep working, since a hub stores the files of the commit it
+  selected. `NOTICE.md` no longer lists `processes/`.
+
 ## [1.36.0] - 2026-11-05
 
 ### Added

@@ -574,9 +574,10 @@ file. Expect small diffs from the `oh-` renames and cross-reference updates.
 a Git-pinned handbook, READY/DONE checklists and task templates for aimem
 session bootstrap, lives in the aimem repository and is selected from there
 (`aimem process select https://github.com/BlackVS/aimem.git <release tag> -p <project>`).
-It used to be here; [`processes/aimem/`](processes/aimem/README.md) now holds
-only a pointer and is removed in the release after the one that ships it.
-Selecting a process does not install or update skills.
+ai-skills carried a copy up to 1.34.0 and a pointer in 1.35.0 and 1.36.0.
+Selections pinned to one of those ai-skills commits keep working, since a hub
+stores the files of the commit it selected. Selecting a process does not
+install or update skills.
 
 ## License
 
