@@ -543,9 +543,18 @@ class PostContract(Gates):
         self.comment(body, author="author", minutes=-1, association="MEMBER")
         self.assertEqual(self.review_of(self.gates()[1], "local")["status"], "ready")
 
-    def test_the_other_header_form_the_delivery_check_reads_is_accepted(self):
-        code, doc = self.post(local_review(header="[oh-code-review high]"), "--dry-run")
-        self.assertEqual((code, doc["outcome"]), (0, "dry_run"), json.dumps(doc, indent=1))
+    def test_every_header_form_the_delivery_check_reads_is_posted_and_counted(self):
+        self.comments[1:2] = []  # no local review yet
+        for header in ("[oh-code-review high]", "[oh-code-review review]"):  # the level-less form names no level
+            with self.subTest(header=header):
+                body = local_review(header=header)
+                code, doc = self.post(body, "--dry-run")
+                self.assertEqual((code, doc["outcome"]), (0, "dry_run"), json.dumps(doc, indent=1))
+                self.assertEqual(self.post(body)[0], 0)
+                self.fake.requests.clear()
+                self.comments[1:] = []
+                self.comment(body, author="author", minutes=-1, association="MEMBER")
+                self.assertEqual(self.review_of(self.gates()[1], "local")["status"], "ready")
 
     def test_dry_run_checks_everything_and_posts_nothing(self):
         code, doc = self.post(local_review(), "--dry-run")

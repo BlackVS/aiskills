@@ -41,7 +41,8 @@ VERDICTS = ("READY_FOR_HUMAN_MERGE", "RETURN_TO_IMPLEMENTATION", "REVIEW_COULD_N
 VERDICT_LINE = re.compile(r"[ \t]*VERDICT[ \t]*")
 # A line that tries to be the verdict in another layout: "VERDICT: X", "**VERDICT:** X", "## VERDICT".
 VERDICT_LOOKALIKE = re.compile(r"[ \t>#*_`-]*VERDICT\b")
-LEVEL = re.compile(r"\[oh-code-review(?: \((?P<a>[a-z]+)\) review| (?P<b>[a-z]+))\]")
+# The level a header names; "[oh-code-review review]" names none.
+LEVEL = re.compile(r"\[oh-code-review(?: \((?P<a>low|medium|high|max|ultra)\) review| (?P<b>low|medium|high|max|ultra))\]")
 ATTRIBUTION = re.compile(r"(?m)^Review: oh-code-review \((?P<level>low|medium|high|max|ultra)\) via \S.*$")
 # Links into an agent's private workspace: dead for every other reader of a pull request.
 SESSION_URL = re.compile(r"https?://(?:[a-z0-9-]+\.)*(?:claude\.ai|chatgpt\.com|chat\.openai\.com)/\S+", re.I)
