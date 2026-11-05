@@ -346,6 +346,18 @@ When unsure whether a name is public, leave it out. The user's own private
 instructions (global CLAUDE.md or equivalent) may list the specific
 identifiers to watch for; that list itself never goes into posted text.
 
+POSTING THE REVIEW:
+
+Post the review before the merge, and never edit one once it is posted: the
+delivery check (`verify-delivery`) ignores a review posted or edited after the
+merge, and a fix after posting is a new review comment naming the head. Where
+the `forge-gates` skill is installed, post with `forge_gates.py post-review
+--pr <PR> --body-file <file>` instead of a raw API call. It posts the text only
+when line 1 is the header with the head's full SHA, the pull request is open at
+that head, `VERDICT` stands alone with the verdict alone on the next line, the
+attribution line is present, and no session link (or `--deny-file` entry)
+appears; `--dry-run` runs the same checks without posting.
+
 POSTED REVIEW LANGUAGE:
 
 A review posted as a PR/MR comment is written in English, whatever language

@@ -80,6 +80,12 @@ Rules:
   commands, logs, and evidence blocks. Describe environments generically
   ("the primary hub", "a peer hub", "a named backend"); when unsure whether a
   name is public, leave it out.
+- Post the local review before the merge and never edit it afterwards: the
+  delivery check ignores a review posted or edited after the merge. Where the
+  `forge-gates` skill is installed, post it with `forge_gates.py post-review
+  --pr <PR> --body-file <file>`, which refuses a header without the head's
+  full SHA, a `VERDICT` not alone on its line, a missing attribution or a
+  session link, instead of a raw API call.
 
 Pull request lifecycle:
 
