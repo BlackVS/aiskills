@@ -110,6 +110,10 @@ def limit_error(events):
     return False
 
 
+# The runner's note that the fallback wrote a review, after `the review of <head> `.
+FALLBACK_NOTE = 'above ran on the fallback profile'
+
+
 # The codex ACP agent ends its turn with this text when OpenAI answers 429 until
 # its retries run out: a finish, not an error event, so limit_error cannot see it
 # (observed with @agentclientprotocol/codex-acp 1.10.0). The whole message must
@@ -387,14 +391,15 @@ class Runner:
         self.run(record['repo'], record['num'], record.get('title', ''), record['label'],
                  record['profile'], prompt_file, workspaces, resume=record)
 
-    def _complete(self, repo, num, head, profile, conv_id=None, switch=None, last=False, fallback_from=None):
+    def _complete(self, repo, num, head, profile, conv_id=None, switch=None, last=False, fallback_from=None, since=None):
         """Label a posted review done; True once handled. False when the forge could not be
         reached for it (a transient error, logged): the watch tries again at the next poll, so
         a review that is on the PR is never failed for a brief outage. Both label writes are
         idempotent: the removal is guarded by a read of the labels, and adding is a set union.
         LAST: the try at the deadline, after which nothing is tried again.
         FALLBACK_FROM: the profile whose quota or rate limit started this fallback
-        review; the runner itself says so on the PR, whatever the review says."""
+        review; the runner itself says so on the PR before the done label, whatever the
+        review says (`_note_fallback`; SINCE is the run's comment window start)."""
         then = 'the deadline has passed' if last else 'retrying at the next poll'
         current = self._watched(repo, num, lambda: self.api(f'/repos/{repo}/pulls/{num}'), then=then)
         if current is MISSED:
@@ -402,15 +407,10 @@ class Runner:
         if current.get('state') != 'open' or current['head']['sha'] != head:
             self.fail(repo, num, 'the review is stale because the pull request changed or closed')
             return True
-        if fallback_from and self.note and (repo, num, head) not in self.fallback_noted:
-            # before the done label, so whoever reacts to the label finds the note already there; once,
-            # though a swap the forge fails is tried again at the next poll
-            self.fallback_noted.add((repo, num, head))
-            try:
-                self.note(repo, num, f'the review above ran on the fallback profile `{profile}`: the primary profile '
-                                     f'`{fallback_from}` hit a quota or rate limit. Re-add the label for a review by the primary.')
-            except Exception as error:  # the review stands; the journal's done line says what ran
-                self.log(f'fallback note not posted: {repo}#{num}: {type(error).__name__}')
+        # before the done label, so whoever reacts to the label finds the note already there
+        if fallback_from and self._watched(repo, num, lambda: self._note_fallback(repo, num, head, profile, fallback_from, since),
+                                           'fallback note', then) is MISSED:
+            return False
         def swap():
             self.set_label(repo, num, self.done, True)  # on before working comes off: never no label
             self.set_label(repo, num, self.working, False)
@@ -420,6 +420,33 @@ class Runner:
         if switch and conv_id:
             self._verify_switch(repo, num, profile, conv_id, switch)
         return True
+
+    def _note_fallback(self, repo, num, head, profile, fallback_from, since=None):
+        """Say on the PR that the fallback profile wrote the review of HEAD, once per head. The PR's
+        comments are the record, not this process: a note already there (the bot's, naming HEAD) is
+        not posted again, so a restart, or a swap the forge failed and the next poll repeats, never
+        doubles it. A transient forge error is raised for the caller to try again; any other is
+        logged, and the review stands without the note (the journal's done line still says what ran)."""
+        if not self.note or (repo, num, head) in self.fallback_noted:
+            return
+        try:
+            path = f'/repos/{repo}/issues/{num}/comments' + (f'?since={since}' if since else '')
+            if not any(self._is_fallback_note(c, head) for c in self.api(path) or []):
+                self.note(repo, num, f'the review of {head} {FALLBACK_NOTE} `{profile}`: the primary '
+                                     f'profile `{fallback_from}` hit a quota or rate limit. Re-add the label for a review '
+                                     'by the primary.')
+        except Exception as error:
+            if transient(error):
+                raise
+            self.log(f'fallback note not posted: {repo}#{num}: {type(error).__name__}')
+            return
+        self.fallback_noted.add((repo, num, head))
+
+    def _is_fallback_note(self, comment, head):
+        if self.bot and comment.get('user', {}).get('login') != self.bot:
+            return False
+        body = comment.get('body', '')  # a note never starts with the marker line, a review always does
+        return not body.startswith(self.marker) and f'the review of {head} {FALLBACK_NOTE}' in body
 
     def _hold_posted(self, record):
         """Keep the run on disk, marked posted, when its review is on the PR but `working` could not be
@@ -435,7 +462,8 @@ class Runner:
 
     def _label_posted(self, record):
         """After a restart: label done the review a held run posted. Nothing is said on the PR, which
-        has the review and was never told otherwise. The run's labels are still its own: a later
+        has the review and was never told otherwise, except the fallback note (`_note_fallback`) when
+        the fallback wrote it and the note is not there yet. The run's labels are still its own: a later
         request replaces or clears the record. A PR that moved or closed meanwhile loses `working`
         only, since the review is not of its head. A forge that is still unreachable keeps the record
         for the next start; any other error is logged, never reported as a failed review."""
@@ -446,6 +474,9 @@ class Runner:
                 self.set_label(repo, num, self.working, False)
                 self.log(f'posted review is stale, not labelled done: {repo}#{num} the pull request changed or closed')
                 return
+            fell_from = record['choices'][0] if record.get('attempt') and record.get('choices') else None
+            if fell_from:
+                self._note_fallback(repo, num, head, record['profile'], fell_from, record.get('since'))
             self.set_label(repo, num, self.done, True)  # on before working comes off: never no label
             self.set_label(repo, num, self.working, False)
         except Exception as error:
@@ -455,7 +486,6 @@ class Runner:
             else:
                 self.log(f'posted review not labelled: {repo}#{num}: {type(error).__name__}')
             return
-        fell_from = record['choices'][0] if record.get('attempt') and record.get('choices') else None
         self.log(f'review done (posted before the restart): {repo}#{num} profile={record["profile"]}'
                  + (f' fallback-from={fell_from}' if fell_from else ''))
 
@@ -720,7 +750,7 @@ class Runner:
                     continue
                 if any(valid_review(c, self.marker, head, self.bot) for c in comments or []):
                     posted = True
-                    if self._complete(repo, num, head, profile, conv_id, switch, fallback_from=fell_from):
+                    if self._complete(repo, num, head, profile, conv_id, switch, fallback_from=fell_from, since=since):
                         return
                     continue
                 info = self._watched(repo, num, lambda: self.app_api(f'/api/conversations/{conv_id}'))
@@ -737,7 +767,7 @@ class Runner:
                         posted = True
                         # completed here, not on another iteration: the deadline may have passed (if the
                         # forge fails it, the deadline below tries once more)
-                        if self._complete(repo, num, head, profile, conv_id, switch, fallback_from=fell_from):
+                        if self._complete(repo, num, head, profile, conv_id, switch, fallback_from=fell_from, since=since):
                             return
                         continue
                     self.log(f'review finished without posting: {repo}#{num} conversation={conv_id}')
@@ -788,7 +818,7 @@ class Runner:
                         return
                     posted = any(valid_review(c, self.marker, head, self.bot) for c in comments or [])
                 if posted:  # the forge kept failing the label swap: one last try, then say what happened
-                    if self._complete(repo, num, head, profile, conv_id, switch, last=True, fallback_from=fell_from):
+                    if self._complete(repo, num, head, profile, conv_id, switch, last=True, fallback_from=fell_from, since=since):
                         return
                     # Not a failure: the review stands. A note (no retry advice, never a review), not fail().
                     self.log(f'review posted, not labelled done: {repo}#{num} the forge was unreachable until the deadline')

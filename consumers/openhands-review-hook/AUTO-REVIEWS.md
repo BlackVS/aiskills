@@ -62,7 +62,8 @@ Canvas) instead of holding the working label for the whole watch.
 On a confirmed quota or rate-limit error the runtime starts one fresh conversation, retaining
 the same PR head and recording the original and fallback models in its prompt
 and service log. The fallback review must disclose the switch, and the runtime
-itself adds a note under it naming the fallback and the primary profile (journal:
+itself adds a note under it naming the head, the fallback and the primary profile,
+once per head and before the done label, also after a restart (journal:
 `review done: ... fallback-from=<primary>`). A conversation that finishes because
 the codex ACP agent's retries ran out on HTTP 429 (its last action is the finish
 message `exceeded retry limit, last status: 429 ...`, not an error event) counts

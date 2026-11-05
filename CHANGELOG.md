@@ -16,9 +16,12 @@ content fixes inside existing skills. The current version is in `VERSION`.
   failing as "finished without posting a review". Only the conversation's
   last agent action is read, and its message must be exactly that text.
 - Review runner: a review written by the fallback profile gets a note on the
-  PR from the runner naming the fallback and the primary profile, and the
-  journal's `review done` line gains `fallback-from=<primary>`, so a switch is
-  visible whatever the review itself says.
+  PR from the runner naming the head, the fallback and the primary profile,
+  posted before the done label and once per head: the PR's comments are the
+  record, so a restart or a repeated label swap never doubles it, and a run
+  labelled after a restart posts it if it is missing. The journal's
+  `review done` line gains `fallback-from=<primary>`, so a switch is visible
+  whatever the review itself says.
 - `forge-gates wait-review`: a UUID in a failure comment, such as the
   conversation id hands names, no longer reads as an abbreviated SHA of
   another head, so the failure ends the wait instead of running to the
