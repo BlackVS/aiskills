@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-11-05
+
 ### Added
 - `forge-gates post-review` posts the local review as one new comment, and
   only in the form `verify-delivery` reads (#108). Line 1 must be the review
