@@ -28,11 +28,11 @@ import argparse, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfil
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CLIENTS = {  # key: (npm package, executable inside the prefix)
-    "claude": ("@anthropic-ai/claude-code@2.1.283", "bin/claude"),
-    "codex": ("@openai/codex@0.157.1", "bin/codex"),
-    "opencode1": ("opencode-ai@1.18.32", "bin/opencode"),
-    "opencode2": ("@opencode/cli@2.0.18", "bin/opencode"),
-    "gemini": ("@google/gemini-cli@0.61.0", "bin/gemini"),
+    "claude": ("@anthropic-ai/claude-code@2.1.322", "bin/claude"),
+    "codex": ("@openai/codex@0.167.0", "bin/codex"),
+    "opencode1": ("opencode-ai@1.19.5", "bin/opencode"),
+    "opencode2": ("@opencode/cli@2.2.6", "bin/opencode"),
+    "gemini": ("@google/gemini-cli@0.67.0", "bin/gemini"),
 }
 CORE = {"architecture-review", "oh-code-review", "oh-technical-writing"}
 MARKER = "aiskills:review-gates start"

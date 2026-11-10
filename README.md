@@ -185,11 +185,11 @@ install, a Claude Code only install, a user-level install with
 
 | Client | Version checked | Skills | Review-gates block |
 | --- | --- | --- | --- |
-| Claude Code | 2.1.283 | `~/.claude/skills`, `<repo>/.claude/skills` | `~/.claude/CLAUDE.md`; `CLAUDE.md` → `@AGENTS.md` |
-| Codex | 0.157.1 | `~/.agents/skills`, `<repo>/.agents/skills` | `~/.codex/AGENTS.md`; `AGENTS.md` |
-| OpenCode 1.x | 1.18.32 | all of the above; prompts as `/` commands | `~/.config/opencode/AGENTS.md`; `AGENTS.md` |
-| OpenCode v2 | 2.0.18 | all of the above; prompts as `/` commands | `~/.config/opencode/AGENTS.md`; `AGENTS.md` |
-| Gemini CLI | 0.61.0 | `~/.agents/skills`, `<repo>/.agents/skills` (project skills in trusted folders only) | `~/.gemini/GEMINI.md`; `GEMINI.md` → `@AGENTS.md` |
+| Claude Code | 2.1.322 | `~/.claude/skills`, `<repo>/.claude/skills` | `~/.claude/CLAUDE.md`; `CLAUDE.md` → `@AGENTS.md` |
+| Codex | 0.167.0 | `~/.agents/skills`, `<repo>/.agents/skills` | `~/.codex/AGENTS.md`; `AGENTS.md` |
+| OpenCode 1.x | 1.19.5 | all of the above; prompts as `/` commands | `~/.config/opencode/AGENTS.md`; `AGENTS.md` |
+| OpenCode v2 | 2.2.6 | all of the above; prompts as `/` commands | `~/.config/opencode/AGENTS.md`; `AGENTS.md` |
+| Gemini CLI | 0.67.0 | `~/.agents/skills`, `<repo>/.agents/skills` (project skills in trusted folders only) | `~/.gemini/GEMINI.md`; `GEMINI.md` → `@AGENTS.md` |
 
 ### Cloud agents (Claude Code on the web, other hosted sessions)
 
@@ -406,7 +406,7 @@ https://opencode.ai/v2/docs/commands/ and https://opencode.ai/v2/docs/migrate-v1
 (checked 2026-09-24); v1: https://opencode.ai/docs/skills/ (checked 2026-09-05).
 Exercised with OpenCode 1.18.3 on Windows (`opencode debug skill` lists the
 skills from all three project directories and from the user-level ones), and
-on Linux by the Clients workflow with 1.18.32 and v2.0.18: both list the
+on Linux by the Clients workflow with 1.19.5 and v2.2.6: both list the
 skills from `.agents/skills` and, when that is the only copy, from
 `~/.claude/skills`, and both register the prompts in
 `~/.config/opencode/commands` as `/` commands. v2 installs separately from
