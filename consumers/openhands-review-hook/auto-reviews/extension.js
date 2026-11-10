@@ -71,10 +71,10 @@ export function activate(host) {
     </style><h1>Auto Reviews</h1>
       <p>Choose a provider, model and reasoning effort for automatic pull request reviews.</p>
       <div data-feedback><span data-spinner aria-hidden="true"></span><span role="status" aria-live="polite">Loading saved settings and provider connections…</span><span data-elapsed aria-hidden="true"></span></div>
-      <form data-review><p data-warning="settings" role="alert"></p><fieldset><legend>Primary reviewer</legend><label>Provider <select name="primaryProvider"></select></label><label>Model <select name="primaryModel"></select></label><label>Reasoning effort <select name="primaryEffort"></select></label><p data-warning="primary" role="alert"></p></fieldset>
-      <fieldset><legend>Secondary reading profile</legend><label>Provider <select name="secondaryProvider"></select></label><label>Model <select name="secondaryModel"></select></label><label>Reasoning effort <select name="secondaryEffort"></select></label><p data-secondary-hint></p><p data-warning="secondary" role="alert"></p></fieldset>
+      <form data-review><p data-warning="settings" role="alert"></p><fieldset><legend>Primary reviewer</legend><label>Provider <select name="primaryProvider"></select></label><label>Model <select name="primaryModel"></select></label><label>Reasoning effort <select name="primaryEffort"></select></label><p data-warning="primary" role="alert"></p><p data-advisory="primary" role="status"></p></fieldset>
+      <fieldset><legend>Secondary reading profile</legend><label>Provider <select name="secondaryProvider"></select></label><label>Model <select name="secondaryModel"></select></label><label>Reasoning effort <select name="secondaryEffort"></select></label><p data-secondary-hint></p><p data-warning="secondary" role="alert"></p><p data-advisory="secondary" role="status"></p></fieldset>
       <p>With a secondary profile the review runs in combined mode: the conversation reads the PR on the secondary (fast) profile, then switches to the primary for the review pass, verification and write-up, and the primary signs the review. None keeps the single-profile review.</p>
-      <fieldset><legend>Fallback reviewer</legend><label>Provider <select name="fallbackProvider"></select></label><label>Model <select name="fallbackModel"></select></label><label>Reasoning effort <select name="fallbackEffort"></select></label><p data-warning="fallback" role="alert"></p></fieldset>
+      <fieldset><legend>Fallback reviewer</legend><label>Provider <select name="fallbackProvider"></select></label><label>Model <select name="fallbackModel"></select></label><label>Reasoning effort <select name="fallbackEffort"></select></label><p data-warning="fallback" role="alert"></p><p data-advisory="fallback" role="status"></p></fieldset>
       <p>On a confirmed quota or rate-limit error, retry once with the fallback, then stop.</p>
       <p>Settings apply to new reviews. An explicit reviewer label on a PR overrides the primary; fallback applies only when that reviewer is the configured primary. Canvas's conversation model is independent.</p>
       <button type="submit">Save settings</button> <button type="button" data-revert title="Discard unsaved edits and restore your last loaded or saved selections">Revert changes</button> <button type="button" data-reload title="Fetch saved settings and available models from the server; discards unsaved edits">Reload</button><span data-unsaved aria-live="polite"></span></form>
@@ -133,6 +133,7 @@ export function activate(host) {
       if (!allowed && picker.value) {  // the cleared choice takes its warning with it: nothing is left to replace
         picker.value = ''; select('secondary', 'Model').replaceChildren(); select('secondary', 'Effort').replaceChildren();
         root.querySelector('[data-warning="secondary"]').textContent = '';
+        root.querySelector('[data-advisory="secondary"]').textContent = '';
       }
       picker.disabled = busy || !allowed;
       select('secondary', 'Model').disabled = busy || !allowed || !picker.value;
@@ -234,9 +235,11 @@ export function activate(host) {
             settings.problems?.[role] ? `Saved ${role} profile "${name}" cannot run: ${settings.problems[role]}. ${fix}`
             : current?.problem ? `Saved ${role} profile "${name}" references ${current.problem}. ${fix}`
             : name && !current ? `Saved ${role} profile "${name}" no longer exists. ${fix}`
-            : current && !providers.some(p => p.id === current.provider) ? `The provider of saved ${role} profile "${name}" is not available. ${fix}`
-            // a profile that runs, but on the adapter version its own launch command pins
-            : current?.warning ? `Saved ${role} profile "${name}": ${current.warning}.` : '';
+            : current && !providers.some(p => p.id === current.provider) ? `The provider of saved ${role} profile "${name}" is not available. ${fix}` : '';
+          // Advisory, never blocking: the profile runs, on the adapter version its own launch command pins.
+          // It has its own line, which validSelection() does not read, so Save stays available.
+          root.querySelector(`[data-advisory="${role}"]`).textContent =
+            current?.warning && !root.querySelector(`[data-warning="${role}"]`).textContent ? `Saved ${role} profile "${name}": ${current.warning}.` : '';
           if (current) {
             if (!providers.some(p => p.id === current.provider)) picker.add(new Option(current.provider + ' (unavailable)', current.provider));
             picker.value = current.provider;
@@ -261,12 +264,14 @@ export function activate(host) {
             if (choice && ![...picker.options].some(option => option.value === choice.provider)) continue;
             picker.value = choice ? choice.provider : '';
             root.querySelector(`[data-warning="${role}"]`).textContent = '';
+            root.querySelector(`[data-advisory="${role}"]`).textContent = '';
             root.querySelector('[data-warning="settings"]').textContent = '';
             try { await models(role, choice?.model, choice?.effort); } catch { failures.push(role); }
           }
           syncSecondary();
         }
-        const attention = [...roles, 'settings'].some(role => root.querySelector(`[data-warning="${role}"]`).textContent);
+        const attention = [...roles, 'settings'].some(role => root.querySelector(`[data-warning="${role}"]`).textContent)
+          || roles.some(role => root.querySelector(`[data-advisory="${role}"]`).textContent);
         message(failures.length ? 'Could not fetch ' + failures.join(' and ') + ' models. Check the provider connection in Canvas, then reload.'
           : attention ? 'A saved profile needs attention; see the warning under its role.' : 'Current automatic review settings.');
       } catch { message('Could not load settings. Check the connection and reload.'); }
@@ -275,6 +280,7 @@ export function activate(host) {
     for (const role of roles) {
       select(role, 'Provider').onchange = async () => {
         root.querySelector(`[data-warning="${role}"]`).textContent = '';
+        root.querySelector(`[data-advisory="${role}"]`).textContent = '';
         root.querySelector('[data-warning="settings"]').textContent = '';
         lock(true); message('Fetching available models…');
         try { await models(role); message('Models loaded. Save to apply your selection.'); }
@@ -291,7 +297,7 @@ export function activate(host) {
       lock(true); message('Saving settings…');
       try {
         const data = await request('/api/review-control/settings', 'PUT', {revision, primary, secondary, fallback});
-        if (!disposed) { revision = data.settings.revision; rememberSaved(); for (const slot of [...roles, 'settings']) root.querySelector(`[data-warning="${slot}"]`).textContent = ''; }
+        if (!disposed) { revision = data.settings.revision; rememberSaved(); for (const slot of [...roles, 'settings']) root.querySelector(`[data-warning="${slot}"]`).textContent = ''; for (const role of roles) root.querySelector(`[data-advisory="${role}"]`).textContent = ''; }
         message('Saved. New reviews will use these settings.');
       } catch (error) {  // the settings API's own text (a full profile store, a changed revision) says what to do
         const text = error?.response?.error;

@@ -200,6 +200,25 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result['shim'], {'provider': 'acp:claude-code', 'model': 'fable', 'effort': None, 'switch': False})
         self.assertNotIn('warning', result['builtin'])
 
+    def test_the_app_shows_a_pin_warning_without_blocking_save(self):
+        # The repository has no DOM harness for the app, so this holds its source to the contract:
+        # Save is gated by validSelection(), which reads the blocking `data-warning` lines only; the
+        # pin warning goes to the role's own `data-advisory` line and never into a `data-warning`.
+        import re
+        source = (Path(__file__).resolve().parent.parent / 'auto-reviews' / 'extension.js').read_text(encoding='utf-8')
+        valid = re.search(r'function validSelection\(\) \{(.*?)\n    \}', source, re.S)[1]
+        self.assertIn('data-warning', valid)
+        self.assertNotIn('advisory', valid)
+        for role in ('primary', 'secondary', 'fallback'):
+            self.assertIn(f'<p data-warning="{role}" role="alert"></p><p data-advisory="{role}" role="status"></p>', source)
+        blocking = re.search(r'\[data-warning="\$\{role\}"\]`\)\.textContent =\n(.*?);\n', source, re.S)[1]
+        self.assertNotIn('current?.warning', blocking, 'the pin warning never fills a blocking line')
+        advisory = re.search(r'\[data-advisory="\$\{role\}"\]`\)\.textContent =\n(.*?);\n', source, re.S)[1]
+        self.assertIn('current?.warning', advisory)
+        # every place that clears a role's blocking line on a new choice or a save clears its advisory too
+        self.assertEqual(source.count('[data-advisory="${role}"]`).textContent = \'\''), 3)
+        self.assertIn('[data-advisory="secondary"]\').textContent = \'\'', source)
+
     def test_inventory_rows_say_which_are_editable_and_carry_the_connection_id(self):
         from types import SimpleNamespace
         from canvas_discovery import inventory
