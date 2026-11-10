@@ -45,6 +45,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
   the command `claude-agent-acp`. The section also covers the bind-mount
   inode trap and model ids that a newer adapter drops. `UPDATING.md`'s
   Unreleased row tells a site to check its profiles.
+- The client versions the Clients workflow checks, and the README table
+  that names them: Claude Code 2.1.322 (was 2.1.283), Codex 0.167.0
+  (0.157.1), OpenCode 1.19.5 (1.18.32), OpenCode v2 2.2.6 (2.0.18) and
+  Gemini CLI 0.67.0 (0.61.0).
+- CI times `socket.getfqdn("127.0.0.1")`, and its review-hook runtime step
+  runs verbosely and reports its 20 slowest tests (`-v --durations 20`), to
+  find why the step takes about 950 s on some macOS runners against about
+  125 s elsewhere.
 
 ### Removed
 - `processes/aimem/`, which since 1.35.0 held only a pointer to the aimem
