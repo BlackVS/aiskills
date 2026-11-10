@@ -18,6 +18,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
   command to use instead (the adapter's binary). It does not block reviews.
 
 ### Fixed
+- The review-hook runtime step took about 950 s on GitHub's macOS runners
+  against about 125 s elsewhere: `HTTPServer.server_bind` looks up the
+  server's name with `socket.getfqdn`, and `getfqdn("127.0.0.1")` took 35 s
+  there (it took 0.0 s on Ubuntu and 0.04 s on Windows). Each Gitea adapter
+  test pays for that when it starts `review_hook.py`. The receivers
+  (`review_hook.py`, `review_control.py`) and the tests' servers now use a
+  `LocalHTTPServer` that skips the lookup; they listen on a loopback address
+  and never use the name.
 - Review runner: a review conversation that the codex ACP agent ends with
   `exceeded retry limit, last status: 429` (a finish, not an error event)
   counts as a rate limit and starts the configured fallback, instead of
@@ -49,10 +57,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
   that names them: Claude Code 2.1.322 (was 2.1.283), Codex 0.167.0
   (0.157.1), OpenCode 1.19.5 (1.18.32), OpenCode v2 2.2.6 (2.0.18) and
   Gemini CLI 0.67.0 (0.61.0).
-- CI times `socket.getfqdn("127.0.0.1")`, and its review-hook runtime step
-  runs verbosely and reports its 20 slowest tests (`-v --durations 20`), to
-  find why the step takes about 950 s on some macOS runners against about
-  125 s elsewhere.
+- CI's review-hook runtime step runs verbosely and reports its 20 slowest
+  tests (`-v --durations 20`).
 
 ### Removed
 - `processes/aimem/`, which since 1.35.0 held only a pointer to the aimem

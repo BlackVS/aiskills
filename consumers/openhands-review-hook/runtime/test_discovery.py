@@ -5,7 +5,8 @@ from pathlib import Path
 import threading
 import unittest
 import urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from review_control import LocalHTTPServer
 from unittest.mock import patch
 
 from canvas_discovery import api_models, acp_models, session_models, probe, server_environment, split_codex_model, effort_options, normalize_effort, profile_name, _stem, bare_model, model_string, effort_body
@@ -60,7 +61,7 @@ class DiscoveryTests(unittest.TestCase):
                 else:
                     self.send_response(200); self.end_headers()
                     self.wfile.write(json.dumps({'data': [{'id': 'b'}, {'id': 'a'}, {'id': 'b'}]}).encode())
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         url = f'http://127.0.0.1:{server.server_port}'
         try:

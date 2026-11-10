@@ -7,7 +7,8 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from review_control import LocalHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,7 +34,7 @@ class CanvasIntegrationTests(unittest.TestCase):
                     self.send_response(401); self.end_headers(); return
                 self.send_response(200); self.end_headers()
                 self.wfile.write(b'{"data":[{"id":"test-model"}]}')
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         try:
             cipher, connections, _ = stores()
@@ -164,8 +165,8 @@ class CanvasIntegrationTests(unittest.TestCase):
                     self.send_response(401); self.end_headers(); return
                 self.send_response(200); self.end_headers()
                 self.wfile.write(b'{"data":[{"id":"chain-model"}]}')
-        provider = HTTPServer(('127.0.0.1', 0), Provider)
-        control = HTTPServer(('127.0.0.1', 0), review_control.Handler)
+        provider = LocalHTTPServer(('127.0.0.1', 0), Provider)
+        control = LocalHTTPServer(('127.0.0.1', 0), review_control.Handler)
         threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (provider, control)]
         for thread in threads: thread.start()
         with tempfile.TemporaryDirectory() as temp:

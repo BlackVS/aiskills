@@ -35,12 +35,8 @@ jobs:
           python-version: '3.12'
       - name: Installers, boot, changelog, skills
         run: python -m unittest discover -s . -p "test_*.py" -t . -v
-      - name: Name lookup timing (diagnostic)
-        # HTTPServer.server_bind calls socket.getfqdn on its address; a slow reverse lookup would
-        # cost every test server and receiver started by the runtime tests
-        run: python -c "import socket, time; t = time.perf_counter(); n = socket.getfqdn('127.0.0.1'); print('getfqdn(127.0.0.1) =', repr(n), 'in', round(time.perf_counter() - t, 2), 's')"
       - name: Review-hook runtime
-        # -v and --durations: which tests make this step take ~950 s on some macOS runners
+        # -v and --durations: the slowest tests show in every run
         run: python -m unittest discover -s consumers/openhands-review-hook/runtime -p "test_*.py" -v --durations 20
       - name: Example sites render
         run: python consumers/openhands-review-hook/render.py --check
