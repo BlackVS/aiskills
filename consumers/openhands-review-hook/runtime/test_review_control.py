@@ -8,7 +8,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from http.server import HTTPServer
+from review_control import LocalHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -141,7 +141,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_control_reports_problems_with_settings(self):
         review_policy.settings_path().write_text(json.dumps({'revision': 2, 'primary': 'ghost', 'fallback': None}))
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         try:
             url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
@@ -175,7 +175,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual((saved['revision'], review_policy.read_settings()['primary']), (1, 'claude-opus'))
 
     def test_connection_probe_authenticated_and_does_not_save(self):
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         url = f'http://127.0.0.1:{server.server_port}/api/review-control/test-provider'
         body = json.dumps({'base_url': 'https://example.com', 'api_key': 'test-only'}).encode()
@@ -206,7 +206,7 @@ class PolicyTests(unittest.TestCase):
                     unread.append(self.connection.recv(1, socket.MSG_PEEK))  # b'': the client closed, nothing left
                 except BlockingIOError:
                     unread.append(None)  # open, nothing waiting
-        server = HTTPServer(('127.0.0.1', 0), Peek)
+        server = LocalHTTPServer(('127.0.0.1', 0), Peek)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         # more than the handler's read buffer takes with the headers (io.DEFAULT_BUFFER_SIZE), with a rest
         # that stays within the drain's bound, whatever the Python's default buffer size
@@ -260,7 +260,7 @@ class PolicyTests(unittest.TestCase):
     def test_json_endpoints_refuse_bad_bodies_before_any_discovery(self):
         import http.client
         import subprocess
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         def send(method, path, body=b'', **headers):
             connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=10)
@@ -313,7 +313,7 @@ class PolicyTests(unittest.TestCase):
         import io
         import subprocess
         from types import SimpleNamespace
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         base = f'http://127.0.0.1:{server.server_port}/api/review-control'
         headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
@@ -349,7 +349,7 @@ class PolicyTests(unittest.TestCase):
     def test_a_full_profile_store_answers_409_with_the_helper_counts_and_saves_nothing(self):
         import io
         from types import SimpleNamespace
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
         headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
@@ -372,7 +372,7 @@ class PolicyTests(unittest.TestCase):
         finally: server.shutdown(); server.server_close(); thread.join()
 
     def test_settings_with_secondary_prepare_a_switch_profile(self):
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
         headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
@@ -406,8 +406,25 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(review_policy.read_settings()['revision'], 1)  # nothing saved
         finally: server.shutdown(); server.server_close(); thread.join()
 
+    def test_the_receivers_servers_make_no_reverse_lookup(self):
+        # HTTPServer.server_bind names the server with socket.getfqdn, which took 35 s on GitHub's
+        # macOS runners; the receivers listen on loopback and never use the name
+        with patch('socket.getfqdn', side_effect=AssertionError('reverse lookup')):
+            server = LocalHTTPServer(('127.0.0.1', 0), Handler)
+        try:
+            self.assertEqual((server.server_name, server.server_port), server.server_address[:2])
+        finally:
+            server.server_close()
+        # review_hook.py starts its server at import, so its copy of the class is held to the same source
+        hook = (Path(__file__).with_name('review_hook.py')).read_text(encoding='utf-8')
+        control = (Path(__file__).with_name('review_control.py')).read_text(encoding='utf-8')
+        bind = 'def server_bind(self):\n        socketserver.TCPServer.server_bind(self)\n        self.server_name, self.server_port = self.server_address[:2]\n'
+        self.assertIn(bind, hook); self.assertIn(bind, control)
+        self.assertIn('\nLocalHTTPServer(("127.0.0.1", int(os.environ.get("HOOK_PORT", "8081"))), Handler).serve_forever()', hook)
+        self.assertNotIn('\nHTTPServer(', hook)
+
     def test_authenticated_http(self):
-        server = HTTPServer(('127.0.0.1', 0), Handler)
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
         try:

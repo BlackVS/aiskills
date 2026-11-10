@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+import socketserver
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from canvas_discovery import normalize_effort, probe_shape
@@ -67,6 +68,17 @@ def log_unavailable(what, error):
 
 MAX_DRAIN = 64 << 10  # bytes of an unread request body read before the close
 DRAIN_SECONDS = 1.0   # at most this long: the server is single-threaded
+
+
+class LocalHTTPServer(HTTPServer):
+    """An HTTPServer that skips the reverse lookup HTTPServer.server_bind makes for its
+    server_name (socket.getfqdn): it listens on a loopback address and never uses the name,
+    and the lookup can take 35 s on a host whose resolver stalls on it (observed on GitHub's
+    macOS runners)."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -238,4 +250,4 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    HTTPServer(('127.0.0.1', int(os.environ.get('REVIEW_CONTROL_PORT', '8082'))), Handler).serve_forever()
+    LocalHTTPServer(('127.0.0.1', int(os.environ.get('REVIEW_CONTROL_PORT', '8082'))), Handler).serve_forever()

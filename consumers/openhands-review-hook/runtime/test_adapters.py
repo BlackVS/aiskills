@@ -13,6 +13,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,6 +21,10 @@ from pathlib import Path
 class FakeServer(ThreadingHTTPServer):
     """The fakes' server. A test stops the adapter at its end, sometimes with a request to the
     fake still open: that connection reset is the test's own doing, not an error to print."""
+
+    def server_bind(self):  # no reverse lookup (35 s on some macOS runners), as LocalHTTPServer
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
