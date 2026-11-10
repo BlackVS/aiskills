@@ -9,6 +9,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- Auto Reviews warns on a saved reviewer role whose account profile pins
+  its adapter in its own launch command (`<package>@<version>`, for example
+  `npx -y @agentclientprotocol/claude-agent-acp@0.76.0`). Such a profile
+  ignores the adapter the site installs on `PATH`, and a newer model can
+  fail when a review starts. The warning names the pinned version and the
+  command to use instead (the adapter's binary). It does not block reviews.
+
 ### Fixed
 - Review runner: a review conversation that the codex ACP agent ends with
   `exceeded retry limit, last status: 429` (a finish, not an error event)

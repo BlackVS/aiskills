@@ -154,6 +154,52 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://api.openai.com/v1'})['ok'])
             query.assert_called_with('https://api.openai.com/v1', 'saved-key')
 
+    def test_pinned_adapter_reads_a_fixed_package_version(self):
+        from canvas_discovery import pinned_adapter
+        self.assertEqual(pinned_adapter('npx -y @agentclientprotocol/claude-agent-acp@0.76.0'),
+                         ('@agentclientprotocol/claude-agent-acp', '0.76.0'))
+        self.assertEqual(pinned_adapter('npx -y --package=@agentclientprotocol/claude-agent-acp@0.102.1-preview.1 claude-agent-acp'),
+                         ('@agentclientprotocol/claude-agent-acp', '0.102.1-preview.1'))
+        self.assertEqual(pinned_adapter('npx -y some-acp@2.0.0'), ('some-acp', '2.0.0'))
+        for command in ('claude-agent-acp', '/usr/local/bin/claude-agent-acp', 'npx -y @agentclientprotocol/claude-agent-acp',
+                        'npx -y @agentclientprotocol/claude-agent-acp@latest', 'agent --mail user@example.org', 'npx "unbalanced', '', None):
+            with self.subTest(command=command):
+                self.assertIsNone(pinned_adapter(command))  # no version, a tag, an address, unparsable
+
+    def test_pin_warning_names_the_pin_and_the_command_to_use(self):
+        from canvas_discovery import pin_warning
+        warning = pin_warning('npx -y @agentclientprotocol/claude-agent-acp@0.76.0', 'claude-agent-acp')
+        self.assertIn('pins @agentclientprotocol/claude-agent-acp 0.76.0', warning)
+        self.assertTrue(warning.endswith('set its command to `claude-agent-acp` in Canvas'))
+        self.assertNotIn('set its command', pin_warning('npx -y other-acp@1.0.0', None))
+        self.assertIsNone(pin_warning('claude-agent-acp', 'claude-agent-acp'))
+
+    def test_selections_warn_on_a_profile_whose_command_pins_its_adapter(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from canvas_discovery import selections
+        profiles = {
+            'pinned.json': SimpleNamespace(name='pinned', agent_kind='acp', acp_server='custom', acp_model='fable',
+                                           acp_command='npx -y @agentclientprotocol/claude-agent-acp@0.76.0'),
+            'shim.json': SimpleNamespace(name='shim', agent_kind='acp', acp_server='custom', acp_model='fable',
+                                         acp_command='claude-agent-acp'),
+            'builtin.json': SimpleNamespace(name='builtin', agent_kind='acp', acp_server='codex', acp_model='gpt-6-astra/high',
+                                            acp_command=None),
+        }
+        agents = SimpleNamespace(list=lambda: list(profiles), load=profiles.get)
+        acp = ModuleType('openhands.sdk.settings.acp_providers')
+        acp.detect_acp_provider_by_command = lambda argv: SimpleNamespace(key='claude-code', binary_name='claude-agent-acp')
+        modules = {'openhands': ModuleType('openhands'), 'openhands.sdk': ModuleType('openhands.sdk'),
+                   'openhands.sdk.settings': ModuleType('openhands.sdk.settings'), 'openhands.sdk.settings.acp_providers': acp}
+        with patch.dict(sys.modules, modules), patch('canvas_discovery.stores', return_value=(None, None, None)), \
+             patch('canvas_discovery.agent_store', return_value=agents), patch('canvas_discovery.generated_origins', return_value={}):
+            result = selections()
+        self.assertEqual(result['pinned']['provider'], 'acp:claude-code')
+        self.assertIn('pins @agentclientprotocol/claude-agent-acp 0.76.0', result['pinned']['warning'])
+        self.assertNotIn('problem', result['pinned'], 'a pinned profile still runs: a warning, never a problem')
+        self.assertEqual(result['shim'], {'provider': 'acp:claude-code', 'model': 'fable', 'effort': None, 'switch': False})
+        self.assertNotIn('warning', result['builtin'])
+
     def test_inventory_rows_say_which_are_editable_and_carry_the_connection_id(self):
         from types import SimpleNamespace
         from canvas_discovery import inventory

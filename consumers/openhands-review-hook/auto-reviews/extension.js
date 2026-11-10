@@ -234,7 +234,9 @@ export function activate(host) {
             settings.problems?.[role] ? `Saved ${role} profile "${name}" cannot run: ${settings.problems[role]}. ${fix}`
             : current?.problem ? `Saved ${role} profile "${name}" references ${current.problem}. ${fix}`
             : name && !current ? `Saved ${role} profile "${name}" no longer exists. ${fix}`
-            : current && !providers.some(p => p.id === current.provider) ? `The provider of saved ${role} profile "${name}" is not available. ${fix}` : '';
+            : current && !providers.some(p => p.id === current.provider) ? `The provider of saved ${role} profile "${name}" is not available. ${fix}`
+            // a profile that runs, but on the adapter version its own launch command pins
+            : current?.warning ? `Saved ${role} profile "${name}": ${current.warning}.` : '';
           if (current) {
             if (!providers.some(p => p.id === current.provider)) picker.add(new Option(current.provider + ' (unavailable)', current.provider));
             picker.value = current.provider;

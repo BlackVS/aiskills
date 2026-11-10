@@ -218,6 +218,10 @@ copy of an existing profile of the same provider with only the model changed,
 so one versioned command spreads to every profile made after it. Give such a profile the command `claude-agent-acp` (the SDK still
 detects it as the Claude provider), or the built-in server without a command,
 which the Codex profiles use. Then bumping the wrapper updates every profile.
+Auto Reviews warns on a saved role whose profile's command pins its adapter
+package to a version (`<package>@<version>`, also as npx's `--package=`) and
+names the command to use instead. The warning does not block reviews: such
+a profile still runs, on the version it pins.
 
 Two operator traps:
 
