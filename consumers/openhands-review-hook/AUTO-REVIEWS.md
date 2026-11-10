@@ -213,8 +213,9 @@ custom` with `acp_command: npx -y @agentclientprotocol/claude-agent-acp@<old>`)
 bypasses the wrapper. Auto Reviews still lists the newer models, and picking
 one fails when the conversation starts, for example: `API Error: 400 Claude
 Code <old> does not support this model; version <new> or newer is required`.
-Saving a model in Auto Reviews changes only the profile's model, never its
-command. Give such a profile the command `claude-agent-acp` (the SDK still
+Auto Reviews never changes a command. A new account profile it saves is a
+copy of an existing profile of the same provider with only the model changed,
+so one versioned command spreads to every profile made after it. Give such a profile the command `claude-agent-acp` (the SDK still
 detects it as the Claude provider), or the built-in server without a command,
 which the Codex profiles use. Then bumping the wrapper updates every profile.
 

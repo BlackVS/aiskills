@@ -32,7 +32,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
   site". Auto Reviews lists account models from the adapter on the
   container's `PATH`, while an agent profile with its own versioned launch
   command bypasses a site's pinned adapter and fails on newer models (Claude
-  Code answers 400 "does not support this model"). Such profiles should use
+  Code answers 400 "does not support this model"), and Auto Reviews copies
+  that command into every new profile of the provider. Such profiles should use
   the command `claude-agent-acp`. The section also covers the bind-mount
   inode trap and model ids that a newer adapter drops. `UPDATING.md`'s
   Unreleased row tells a site to check its profiles.
