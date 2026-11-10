@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-11-10
+
 ### Added
 - Auto Reviews warns on a saved reviewer role whose account profile pins
   its adapter in its own launch command (`<package>@<version>`, for example
