@@ -333,6 +333,38 @@ def switch_fields(switch):
                       if switch or tool.name != SWITCH_LLM_TOOL]}
 
 
+# An npm package spec with a fixed version, as a launch command names it: `@scope/name@1.2.3`,
+# also as npx's `--package=@scope/name@1.2.3`.
+PINNED_PACKAGE = re.compile(r'(?:--package=)?((?:@[^/\s@]+/)?[^/\s@]+)@(\d[^\s]*)')
+
+
+def pinned_adapter(command):
+    """(package, version) when an ACP launch command names its adapter package at a fixed version,
+    else None. Such a profile runs that version whatever adapter the site installs on PATH."""
+    import shlex
+    try:
+        tokens = shlex.split(command or '')
+    except ValueError:  # unbalanced quotes: nothing to read
+        return None
+    for token in tokens:
+        match = PINNED_PACKAGE.fullmatch(token)
+        if match:
+            return match[1], match[2]
+    return None
+
+
+def pin_warning(command, binary):
+    """The warning for an account profile whose own launch command pins its adapter (None when it
+    does not). It is a warning, not a problem: the profile runs, but on its pinned adapter, which can
+    reject a model the site's adapter lists, and Auto Reviews copies the command into new profiles."""
+    pinned = pinned_adapter(command)
+    if not pinned:
+        return None
+    fix = f'; set its command to `{binary}` in Canvas' if binary else ''
+    return (f'its own launch command pins {pinned[0]} {pinned[1]}, so it ignores the adapter installed on PATH '
+            f'and a newer model can fail when a review starts{fix}')
+
+
 def selections():
     from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
     import shlex
@@ -342,11 +374,13 @@ def selections():
     result = {}
     for filename in agents.list():
         agent = agents.load(filename)
+        warning = None
         if agent.agent_kind == 'acp':
             server = agent.acp_server
             if server == 'custom' and agent.acp_command:
                 detected = detect_acp_provider_by_command(shlex.split(agent.acp_command))
                 server = detected.key if detected else server
+                warning = pin_warning(agent.acp_command, getattr(detected, 'binary_name', None))
             provider = 'acp:' + server
             model, effort = split_codex_model(agent.acp_model) if server == 'codex' else (agent.acp_model, None)
             switch = False
@@ -365,6 +399,8 @@ def selections():
             effort = getattr(llm, 'reasoning_effort', None) or API_DEFAULT_EFFORT
             switch = has_switch(agent)
         result[agent.name] = {'provider': provider, 'model': model, 'effort': effort, 'switch': switch}
+        if warning:
+            result[agent.name]['warning'] = warning
     return result
 
 
