@@ -27,6 +27,17 @@ content fixes inside existing skills. The current version is in `VERSION`.
   another head, so the failure ends the wait instead of running to the
   timeout.
 
+### Changed
+- `AUTO-REVIEWS.md`: a new section, "Account adapter version: one pin per
+  site". Auto Reviews lists account models from the adapter on the
+  container's `PATH`, while an agent profile with its own versioned launch
+  command bypasses a site's pinned adapter and fails on newer models (Claude
+  Code answers 400 "does not support this model"), and Auto Reviews copies
+  that command into every new profile of the provider. Such profiles should use
+  the command `claude-agent-acp`. The section also covers the bind-mount
+  inode trap and model ids that a newer adapter drops. `UPDATING.md`'s
+  Unreleased row tells a site to check its profiles.
+
 ### Removed
 - `processes/aimem/`, which since 1.35.0 held only a pointer to the aimem
   process set's new home in the aimem repository (#98). The README's process

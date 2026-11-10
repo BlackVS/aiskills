@@ -197,6 +197,39 @@ connection does not migrate these references or change Canvas's default model.
 Do not remove an older profile until its default-model and reviewer references
 have been migrated and any required compatibility proxy has been preserved.
 
+### Account adapter version: one pin per site
+
+Auto Reviews lists a Claude or Codex account's models by asking the account
+adapter on the container's `PATH` (`claude-agent-acp`, `codex-acp`), so the
+list is whatever that adapter's version knows. The adapter an agent-canvas
+image bundles can lag behind the models: agent-canvas 1.27.1 bundles
+`claude-agent-acp` 0.63.0. A site that needs newer models pins a newer adapter
+in one place: a small wrapper mounted over the binary on `PATH`, for example
+`exec npx -y @agentclientprotocol/claude-agent-acp@<version> "$@"`.
+
+Every agent profile must then reach the adapter through that binary. A
+profile with its own launch command that names a version (`acp_server:
+custom` with `acp_command: npx -y @agentclientprotocol/claude-agent-acp@<old>`)
+bypasses the wrapper. Auto Reviews still lists the newer models, and picking
+one fails when the conversation starts, for example: `API Error: 400 Claude
+Code <old> does not support this model; version <new> or newer is required`.
+Auto Reviews never changes a command. A new account profile it saves is a
+copy of an existing profile of the same provider with only the model changed,
+so one versioned command spreads to every profile made after it. Give such a profile the command `claude-agent-acp` (the SDK still
+detects it as the Claude provider), or the built-in server without a command,
+which the Codex profiles use. Then bumping the wrapper updates every profile.
+
+Two operator traps:
+
+- A wrapper bind-mounted as a single file keeps the inode it had when the
+  container started. An editor or `sed -i` that writes a new file leaves the
+  container on the old version. Write the file in place (`cat > wrapper`), or
+  restart the container while no review runs.
+- A new adapter can drop a model id that an existing profile names (0.102.0
+  no longer advertises `opus[1m]`). After a bump, compare each profile's model
+  with the list Auto Reviews shows, and run a tiny no-tools conversation on
+  each account profile in use.
+
 ## Install
 
 Do this while both review services are idle. Back up existing receiver scripts,
