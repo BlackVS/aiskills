@@ -274,7 +274,9 @@ to look for; the disposition defines *what it does to this PR*):
 - A wrong data structure, >3-level nesting, breaking change, real security flaw,
   dependency downgrade or supply-chain risk is a **BLOCKER only if the four-part
   test holds** for this PR's acceptance criteria. Otherwise it is a FOLLOW_UP
-  (with boundary and first increment) or, for design taste, an OBSERVATION.
+  (with its surface and the outcome that closes it; follow-ups on one surface
+  are one task, `references/dispositions.md`) or, for design taste, an
+  OBSERVATION.
 - Simplifications, eliminated special cases and pragmatism notes are
   CURRENT_SCOPE_IMPROVEMENT when small and related to the objective, else FOLLOW_UP.
 - Style is not reported at all. Linters exist for a reason. Never post "fine" or

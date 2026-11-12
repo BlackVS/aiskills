@@ -17,7 +17,7 @@ failure path.
 | --- | --- | --- |
 | `BLOCKER` | Concrete, reproducible failure of a **named current acceptance criterion**, fixable without materially expanding the frozen scope, and the candidate does not work or cannot work safely under the documented threat model while it stands. | The only disposition that returns the PR to implementation. |
 | `CURRENT_SCOPE_IMPROVEMENT` | Small useful change related to the objective, not required for acceptance. | None, unless the owner explicitly promotes it. After the candidate is frozen it normally becomes a FOLLOW_UP. |
-| `FOLLOW_UP` | Valid issue outside the current acceptance criteria. Must name the affected **boundary** and the **smallest independently testable first increment**. | None. Starts a separate task. Never implementation advice for this PR. |
+| `FOLLOW_UP` | Valid issue outside the current acceptance criteria. Must name its **surface** (the component or contract a reviewer reads as a whole) and the **outcome** that closes it. | None. Goes into the follow-up task for its surface (see "Follow-ups are grouped per surface"). Never implementation advice for this PR. |
 | `OBSERVATION` | Useful context, no concrete required change. | None. |
 | `REJECTED` | Disproved, duplicate, or outside the documented threat model. Include the evidence. | None. |
 | `RISK_ACCEPTED` | A concrete risk the owner explicitly accepted, with the reason. Recorded, not invented by the reviewer. | None. |
@@ -38,7 +38,19 @@ failure path.
 Generalized hardening, architectural redesign, compatibility expansion, extra
 recovery mechanisms, unrelated refactoring, and speculative edge cases fail test 3
 or 4 and are therefore FOLLOW_UP or OBSERVATION, whatever their severity.
+
 A finding without a concrete failure path can never be BLOCKER.
+
+## Follow-ups are grouped per surface
+
+Every pull request has a fixed cost (a CI run, the reviews, the merge and the CI
+run after it), so a review's follow-ups never become one task each. The
+follow-ups of one review that share a surface become one task, and they are
+added to an open task for that surface when one exists. Each follow-up names the
+outcome that closes it: the complete, verifiable result, which together with the
+rest of its group is a task of size S or larger. It does not name the smallest
+possible first step. Whether a large group is split further is decided by the
+project's decomposition rule, not by the review.
 
 ## Missing frozen scope
 
@@ -83,8 +95,8 @@ invalidate the review of the reviewed head.
  "summary": "<one sentence>",
  "failure_path": "<concrete state/input -> observed failure, or null>",
  "acceptance_criterion": "<the named criterion a BLOCKER violates, else null>",
- "boundary": "<affected component/contract, required for FOLLOW_UP>",
- "first_increment": "<smallest independently testable next step, required for FOLLOW_UP>",
+ "surface": "<the component/contract a reviewer reads as a whole, required for FOLLOW_UP>",
+ "outcome": "<the complete, verifiable result that closes it, required for FOLLOW_UP>",
  "confidence": "confirmed|confirmed-runtime|plausible|plausible-runtime|rejected-runtime",
  "assumption": "<runtime-dependent only: the external fact not established by source, else null>",
  "reproducer": "<runtime-dependent only: smallest safe non-mutating check at the real boundary, else null>",
@@ -120,8 +132,8 @@ CURRENT-SCOPE IMPROVEMENTS
 FOLLOW-UPS
 - [FOLLOW_UP] [CONFIRMED|PLAUSIBLE] <summary> (severity: high)
   Failure path: <specific path>
-  Boundary: <component/contract>
-  First increment: <smallest independently testable next step>
+  Surface: <component/contract>
+  Outcome: <the complete, verifiable result that closes it>
 
 OBSERVATIONS
 - [OBSERVATION] <context>

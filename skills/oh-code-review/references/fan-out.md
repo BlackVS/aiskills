@@ -64,8 +64,8 @@ one object per finding, in the structured-finding shape of
   "summary": "<one sentence>",
   "failure_path": "<concrete inputs/state -> observed failure, or null>",
   "acceptance_criterion": "<named criterion a BLOCKER violates, else null>",
-  "boundary": "<affected component/contract, required for FOLLOW_UP, else null>",
-  "first_increment": "<smallest independently testable next step, required for FOLLOW_UP, else null>",
+  "surface": "<the component/contract a reviewer reads as a whole, required for FOLLOW_UP, else null>",
+  "outcome": "<the complete, verifiable result that closes it, required for FOLLOW_UP, else null>",
   "confidence": "confirmed|confirmed-runtime|plausible|plausible-runtime|rejected-runtime",
   "assumption": "<runtime-dependent only, else null>", "reproducer": "<runtime-dependent only, else null>",
   "current_evidence": "<runtime-dependent only, else null>", "unverified_is_criteria_failure": false}]
