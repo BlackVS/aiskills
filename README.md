@@ -176,7 +176,7 @@ have no manifest.
 | --- | --- | --- | --- |
 | Linux | `install.sh` | `~/.claude/skills`, `~/.agents/skills` | exercised (tests in `tests/test_install.py`, CI on `ubuntu-latest`) |
 | Windows | `install.ps1` (PowerShell 5.1+) or `install.sh` under Git Bash | `%USERPROFILE%\.claude\skills`, `%USERPROFILE%\.agents\skills` | exercised (CI on `windows-latest`, one-liner under Windows PowerShell 5.1); Codex 0.156 lists the installed skills |
-| macOS | `install.sh` | same as Linux | exercised in CI (tests and the one-liner on `macos-latest`) |
+| macOS | `install.sh` | same as Linux | exercised before every release (tests and the one-liner on `macos-latest` in the release workflow) |
 
 Clients, checked by `.github/check-clients.py` (the Clients workflow): each
 client lists what it discovered, without a model call, after a user-level

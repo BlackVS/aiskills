@@ -7,12 +7,17 @@
 #       GITHUB_REF_NAME, INPUT_VERSION), append TAG and CREATE to $GITHUB_ENV.
 #       A manual run must come from main, and its version input must be one
 #       MAJOR.MINOR.PATCH value and nothing else.
+#   release.sh commit vX.Y.Z [--create]
+#       Print the commit to release: the existing tag, or with --create the
+#       tip of origin/main. Refuses a commit that is not on main.
 #   release.sh prepare vX.Y.Z [--create]
 #       Check out the commit to release and write release_notes.md. The commit
 #       is the existing tag, or with --create the tip of origin/main (the tag
 #       is created by "publish"). Refuses a commit not on main, a VERSION that
 #       differs from the tag, a missing CHANGELOG section and a release that
-#       already exists.
+#       already exists. With RELEASE_COMMIT set (what "commit" printed, the
+#       commit the macOS checks ran on) the commit is that one: --create takes
+#       it even after main moved on, and a tag elsewhere is refused.
 #   release.sh publish vX.Y.Z [--create]
 #       Create and push the tag if needed (--create), build the archives, and
 #       publish the release; it is marked latest only when no higher vX.Y.Z tag
@@ -48,18 +53,28 @@ ver=${TAG#v}
 has_tag() { git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum -- "$@"; else shasum -a 256 -- "$@"; fi; }
 
-case "$cmd" in
-prepare)
+target() {
   git fetch -q --force origin '+refs/heads/main:refs/remotes/origin/main' '+refs/tags/*:refs/tags/*'
   if has_tag; then
     commit=$(git rev-parse "$TAG^{commit}")
   elif [ "$create" = --create ]; then
-    commit=$(git rev-parse origin/main)
+    commit=${RELEASE_COMMIT:-$(git rev-parse origin/main)}
   else
     fail "tag $TAG does not exist"
   fi
+  [ -z "${RELEASE_COMMIT:-}" ] || [ "$commit" = "$RELEASE_COMMIT" ] ||
+    fail "$TAG points at $(git rev-parse --short "$commit"), not at the commit the checks ran on ($RELEASE_COMMIT)"
   git merge-base --is-ancestor "$commit" origin/main ||
     fail "$TAG points at $(git rev-parse --short "$commit"), which is not on main; merge first, then release"
+}
+
+case "$cmd" in
+commit)
+  target
+  echo "$commit"
+  ;;
+prepare)
+  target
   git checkout -q --detach "$commit"
   file_ver=$(tr -d '[:space:]' < VERSION)
   [ "$file_ver" = "$ver" ] || fail "VERSION at $(git rev-parse --short HEAD) says $file_ver, the release is $TAG"
@@ -104,6 +119,6 @@ publish)
     --title "aiskills $ver" --notes-file release_notes.md
   ;;
 *)
-  fail "usage: release.sh resolve | prepare|publish vX.Y.Z [--create]"
+  fail "usage: release.sh resolve | commit|prepare|publish vX.Y.Z [--create]"
   ;;
 esac

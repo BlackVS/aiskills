@@ -4,6 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow runs these jobs on macos-latest at the commit it
+  # releases. GitHub's macOS runners can go unassigned for long stretches, so
+  # macOS stops a release, never a pull request or a push to main.
+  workflow_call:
+    inputs:
+      os:
+        description: 'JSON list of runners'
+        type: string
+        required: true
+      ref:
+        description: 'The commit to check out and install'
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -17,18 +30,20 @@ concurrency:
 
 jobs:
   # The checks AGENTS.md asks for before every commit, on every platform the
-  # installers support. The installer and boot tests run the bash installer
+  # installers support (macOS in the release workflow, see workflow_call
+  # above). The installer and boot tests run the bash installer
   # everywhere (Git Bash on Windows) and the PowerShell one wherever
   # PowerShell is found (Windows PowerShell on Windows, pwsh on the others).
   tests:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(inputs.os || '["ubuntu-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -47,14 +62,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(inputs.os || '["ubuntu-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     env:
       PR_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-      PR_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR_REF: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Default install (latest release)
         if: runner.os != 'Windows'

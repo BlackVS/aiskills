@@ -77,8 +77,9 @@ class ReleaseScript(unittest.TestCase):
         self.git(self.tmp, "clone", "-q", str(self.origin), str(path))
         return path
 
-    def release(self, clone, cmd, tag, *args, ok=True):
-        r = subprocess.run([BASH, str(SCRIPT), cmd, tag, *args], cwd=clone, env=self.env, capture_output=True, text=True)
+    def release(self, clone, cmd, tag, *args, ok=True, **env):
+        r = subprocess.run([BASH, str(SCRIPT), cmd, tag, *args], cwd=clone, env=dict(self.env, **env),
+                           capture_output=True, text=True)
         self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
         return r
 
@@ -113,6 +114,36 @@ class ReleaseScript(unittest.TestCase):
         self.release(run, "publish", "v1.2.0")
         [args] = self.created()
         self.assertIn("--latest=true", args, "no higher tag exists yet")
+
+    def test_commit_names_what_prepare_checks_out(self):
+        tagged = self.commit_version("1.2.0", tag=True)
+        head = self.commit_version("1.3.0")
+        run = self.runner()
+        self.assertEqual(self.release(run, "commit", "v1.2.0").stdout.strip(), tagged)
+        self.assertEqual(self.release(run, "commit", "v1.3.0", "--create").stdout.strip(), head)
+        self.assertIn("tag v1.3.0 does not exist", self.release(run, "commit", "v1.3.0", ok=False).stderr)
+        self.release(run, "prepare", "v1.3.0", "--create")
+        self.assertEqual(self.git(run, "rev-parse", "HEAD"), head)
+
+    def test_release_publishes_the_checked_commit_after_main_moved_on(self):
+        checked = self.commit_version("1.2.0")
+        run = self.runner()
+        commit = self.release(run, "commit", "v1.2.0", "--create").stdout.strip()
+        self.assertEqual(commit, checked)
+        (self.dev / "later.txt").write_text("merged while the macOS checks ran\n")
+        self.git(self.dev, "add", "later.txt"); self.git(self.dev, "commit", "-q", "-m", "later")
+        self.git(self.dev, "push", "-q", "origin", "main")
+        self.release(run, "prepare", "v1.2.0", "--create", RELEASE_COMMIT=commit)
+        self.assertEqual(self.git(run, "rev-parse", "HEAD"), checked)
+        self.release(run, "publish", "v1.2.0", "--create")
+        self.assertEqual(self.git(self.origin, "rev-parse", "v1.2.0^{commit}"), checked)
+
+    def test_tag_elsewhere_than_the_checked_commit_is_refused(self):
+        tagged = self.commit_version("1.2.0", tag=True)
+        other = self.commit_version("1.3.0")
+        r = self.release(self.runner(), "prepare", "v1.2.0", ok=False, RELEASE_COMMIT=other)
+        self.assertIn("not at the commit the checks ran on", r.stderr)
+        self.release(self.runner(), "prepare", "v1.2.0", RELEASE_COMMIT=tagged)
 
     def test_stale_snapshot_does_not_take_latest(self):
         # The v1.2.0 run checks out before v1.3.0 exists; v1.3.0 is tagged and

@@ -80,7 +80,13 @@ in the `NOTICE.md` table.
 
 Changes go through pull requests on GitHub. `main` is PR-only (a ruleset
 rejects direct pushes and requires the CI checks; `.github/rulesets/` holds
-the rulesets as importable JSON), and release tags cannot be moved. The review gates are the ones the
+the rulesets as importable JSON), and release tags cannot be moved.
+The required checks run on Linux and Windows. macOS runs only in the
+release workflow, which calls CI's tests and one-liner jobs on
+`macos-latest` at the commit it releases and publishes nothing if they
+fail: GitHub's macOS runners can go unassigned for long stretches, and a
+Mac-only break should stop a release, never a merge. A change that only
+macOS would exercise is tested on a Mac before the push. The review gates are the ones the
 set itself defines in `agents/review-gates.md`, with the `oh-code-review`
 skill:
 

@@ -28,10 +28,8 @@
         "required_status_checks": [
           { "context": "tests (ubuntu-latest)", "integration_id": 15368 },
           { "context": "tests (windows-latest)", "integration_id": 15368 },
-          { "context": "tests (macos-latest)", "integration_id": 15368 },
           { "context": "oneliner (ubuntu-latest)", "integration_id": 15368 },
-          { "context": "oneliner (windows-latest)", "integration_id": 15368 },
-          { "context": "oneliner (macos-latest)", "integration_id": 15368 }
+          { "context": "oneliner (windows-latest)", "integration_id": 15368 }
         ]
       }
     }

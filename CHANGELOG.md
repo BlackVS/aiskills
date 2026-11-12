@@ -9,6 +9,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+- CI on pull requests and on `main` runs on Linux and Windows only. The
+  release workflow runs the tests and the one-liner install on `macos-latest`
+  at the commit it releases, before it publishes, so a Mac-only failure stops
+  the release. GitHub's macOS runners went unassigned for long stretches and
+  held merges until someone re-ran the job. The `main` ruleset in
+  `.github/rulesets/main.json` no longer requires the macOS checks.
+
 ## [1.37.0] - 2026-11-10
 
 ### Added
