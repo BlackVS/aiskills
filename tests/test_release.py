@@ -114,6 +114,16 @@ class ReleaseScript(unittest.TestCase):
         [args] = self.created()
         self.assertIn("--latest=true", args, "no higher tag exists yet")
 
+    def test_commit_names_what_prepare_checks_out(self):
+        tagged = self.commit_version("1.2.0", tag=True)
+        head = self.commit_version("1.3.0")
+        run = self.runner()
+        self.assertEqual(self.release(run, "commit", "v1.2.0").stdout.strip(), tagged)
+        self.assertEqual(self.release(run, "commit", "v1.3.0", "--create").stdout.strip(), head)
+        self.assertIn("tag v1.3.0 does not exist", self.release(run, "commit", "v1.3.0", ok=False).stderr)
+        self.release(run, "prepare", "v1.3.0", "--create")
+        self.assertEqual(self.git(run, "rev-parse", "HEAD"), head)
+
     def test_stale_snapshot_does_not_take_latest(self):
         # The v1.2.0 run checks out before v1.3.0 exists; v1.3.0 is tagged and
         # published while it waits. It must not mark v1.2.0 latest.

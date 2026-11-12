@@ -29,7 +29,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The commit this run releases: the tag, or main's tip when the run creates
+  # the tag. The macOS checks below run against it.
+  target:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the release
+        run: bash .github/release.sh resolve
+      - id: commit
+        name: The commit to release
+        run: |
+          commit=$(bash .github/release.sh commit "$TAG" $CREATE)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  # CI's tests and one-liner jobs on macOS, which pull requests and pushes to
+  # main do not wait for (GitHub's macOS runners can go unassigned for long
+  # stretches): a Mac-only failure stops the release instead.
+  macos:
+    needs: target
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      os: '["macos-latest"]'
+      ref: ${{ needs.target.outputs.commit }}
+
   release:
+    needs: macos
     runs-on: ubuntu-latest
     env:
       GH_REPO: ${{ github.repository }}
