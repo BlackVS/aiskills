@@ -10,6 +10,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 ## [Unreleased]
 
 ### Changed
+- oh-code-review groups follow-ups per surface, and a follow-up names the
+  outcome that closes it instead of the smallest first increment. A new
+  section of `references/dispositions.md`, "Follow-ups are grouped per
+  surface", says that the follow-ups of one review that share a surface
+  become one task, added to an open task for that surface when one exists,
+  sized S or larger with its group. **Structured findings rename two keys:**
+  `boundary` is now `surface` and `first_increment` is now `outcome`, and the
+  text format's `Boundary:` and `First increment:` lines are now `Surface:`
+  and `Outcome:`. Automation that reads the old keys must rename them. The
+  "Code review gates" block (`agents/review-gates.md`), which `--agents-md`
+  writes into agent instructions, says the same, and its granularity line
+  now matches the decomposition rule: work is not cut finer than S, an XS
+  outcome stays one task, and L or XL work is split only where a reviewer
+  could not read a part whole.
 - CI on pull requests and on `main` runs on Linux and Windows only. The
   release workflow runs the tests and the one-liner install on `macos-latest`
   at the commit it releases, before it publishes, so a Mac-only failure stops

@@ -31,9 +31,11 @@ the implementer's high review as the local one; a second local reader adds a
 review and replaces none.
 
 Granularity: one board task is one pull request, and lands as one commit on
-the base by squash merge. A task is no finer than S. A review's findings go
-into one follow-up task per surface, not one task per finding. An L or XL task
-is split into parts no finer than M.
+the base by squash merge. Work is not cut finer than S; an outcome that is XS
+on its own stays one task. A review's findings go into one follow-up task per
+surface, not one task per finding. Large scope alone does not require a split:
+an L or XL task is split only where a reviewer could not read a part whole,
+into parts no finer than M.
 
 Rules:
 
@@ -53,8 +55,9 @@ Rules:
   named acceptance criterion violated, fixable in scope, unsafe if left —
   returns the PR to implementation; the verdict is `READY_FOR_HUMAN_MERGE`
   whenever there is no BLOCKER, even with follow-ups. Do not act on a
-  FOLLOW_UP inside the current PR: it starts a separate task (the review names
-  its boundary and smallest first increment). Metadata-only triage, rejection
+  FOLLOW_UP inside the current PR: it goes into the follow-up task for its
+  surface, and the review names the surface and the outcome that closes it, not
+  a smallest first step. Metadata-only triage, rejection
   with evidence or owner risk acceptance never needs a re-review; a changed
   source commit does.
 - A finding is a hypothesis. One that rests on a fact outside the reviewed

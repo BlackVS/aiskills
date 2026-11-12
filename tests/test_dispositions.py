@@ -36,8 +36,17 @@ def validate(f):
         else:
             assert f["confidence"] in ("confirmed", "confirmed-runtime"), "only a confirmed finding can be a BLOCKER"
     if f["disposition"] == "FOLLOW_UP":
-        assert f.get("boundary") and f.get("first_increment"), "FOLLOW_UP needs boundary and first increment"
+        assert f.get("surface") and f.get("outcome"), "FOLLOW_UP needs its surface and the outcome that closes it"
     return f
+
+
+def follow_up_tasks(findings):
+    """A review's follow-ups become one task per surface, never one task per finding."""
+    tasks = {}
+    for f in findings:
+        if f["disposition"] == "FOLLOW_UP":
+            tasks.setdefault(f["surface"], []).append(f)
+    return tasks
 
 
 def verdict(findings, ran=True):
@@ -91,7 +100,7 @@ def render(bot, sha, objective, findings, risk, ran=True):
     lines = ["[%s review] reviewed at head %s" % (bot, sha), "", "CURRENT OBJECTIVE", objective, "",
              "BLOCKERS", *bullets("BLOCKER", (("failure_path", "Failure path"), ("acceptance_criterion", "Violated criterion"))), "",
              "CURRENT-SCOPE IMPROVEMENTS", *bullets("CURRENT_SCOPE_IMPROVEMENT"), "",
-             "FOLLOW-UPS", *bullets("FOLLOW_UP", (("failure_path", "Failure path"), ("boundary", "Boundary"), ("first_increment", "First increment"))), "",
+             "FOLLOW-UPS", *bullets("FOLLOW_UP", (("failure_path", "Failure path"), ("surface", "Surface"), ("outcome", "Outcome"))), "",
              "OBSERVATIONS", *bullets("OBSERVATION"), "", "REJECTED", *bullets("REJECTED"), "", "RISK ACCEPTED", *bullets("RISK_ACCEPTED"), "",
              "VERDICT", v + ("" if v != "READY_FOR_HUMAN_MERGE" or not findings else " — follow-ups and observations do not block"), "",
              "RISK", "%s — %s" % (risk[0], risk[1])]
@@ -100,14 +109,14 @@ def render(bot, sha, objective, findings, risk, ran=True):
 
 def F(disposition, severity="medium", confidence="confirmed", **kw):
     base = {"file": "a.py", "line": 1, "severity": severity, "disposition": disposition, "summary": "s", "failure_path": None,
-            "acceptance_criterion": None, "boundary": None, "first_increment": None, "confidence": confidence,
+            "acceptance_criterion": None, "surface": None, "outcome": None, "confidence": confidence,
             "assumption": None, "reproducer": None, "current_evidence": None, "unverified_is_criteria_failure": False}
     base.update(kw)
     return base
 
 
 BLOCK = dict(failure_path="input X -> crash", acceptance_criterion="AC1: must not crash on X")
-FUP = dict(boundary="storage layer", first_increment="add a unit test for the retry path")
+FUP = dict(surface="storage layer", outcome="the retry path recovers from a dropped connection, with tests")
 
 
 class VerdictTests(unittest.TestCase):
@@ -136,10 +145,24 @@ class BlockerGatingTests(unittest.TestCase):
         with self.assertRaises(AssertionError): validate(F("BLOCKER", "critical", acceptance_criterion="AC1"))          # no failure path
         with self.assertRaises(AssertionError): validate(F("BLOCKER", "critical", failure_path="x -> y"))                 # no named criterion
         with self.assertRaises(AssertionError): validate(F("BLOCKER", "critical", confidence="plausible", **BLOCK))     # not confirmed
-    def test_follow_up_requires_boundary_and_first_increment(self):
-        with self.assertRaises(AssertionError): validate(F("FOLLOW_UP", boundary="x"))
+    def test_follow_up_requires_surface_and_outcome(self):
+        with self.assertRaises(AssertionError): validate(F("FOLLOW_UP", surface="x"))
         f = validate(F("FOLLOW_UP", **FUP)); r = render("bot", "abc", "o", [f], ("LOW", "ok"))
-        self.assertIn("Boundary: storage layer", r); self.assertIn("First increment: add a unit test", r)
+        self.assertIn("Surface: storage layer", r); self.assertIn("Outcome: the retry path recovers", r)
+    def test_follow_ups_are_one_task_per_surface(self):
+        fs = [validate(F("FOLLOW_UP", summary="a", **FUP)), validate(F("FOLLOW_UP", summary="b", **FUP)),
+              validate(F("FOLLOW_UP", summary="c", surface="CLI", outcome="the CLI reports the error")), validate(F("OBSERVATION"))]
+        tasks = follow_up_tasks(fs)
+        self.assertEqual(sorted(tasks), ["CLI", "storage layer"]); self.assertEqual([f["summary"] for f in tasks["storage layer"]], ["a", "b"])
+    def test_reference_text_asks_for_the_outcome_not_the_smallest_step(self):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        for rel in ("skills/oh-code-review/references/dispositions.md", "skills/oh-code-review/references/fan-out.md",
+                    "skills/oh-code-review/SKILL.md", "agents/review-gates.md", "prompts/code-review.md"):
+            text = open(os.path.join(root, rel), encoding="utf-8").read()
+            self.assertNotIn("first_increment", text, rel); self.assertNotIn("smallest independently testable", text, rel)
+            self.assertNotIn("smallest first increment", text, rel)
+        d = open(os.path.join(root, "skills/oh-code-review/references/dispositions.md"), encoding="utf-8").read()
+        self.assertIn("## Follow-ups are grouped per surface", d); self.assertIn('"surface"', d); self.assertIn('"outcome"', d)
     def test_disposition_is_an_enum_not_prose(self):
         with self.assertRaises(AssertionError): validate(F("blocker-ish", **BLOCK))
         with self.assertRaises(AssertionError): validate(F("Needs rework", **BLOCK))

@@ -24,5 +24,6 @@ Frozen scope for this PR (findings do not change it):
 Output: the disposition-grouped format from references/dispositions.md. Only a
 BLOCKER (concrete failure path + named criterion) returns the PR to
 implementation; everything else is CURRENT_SCOPE_IMPROVEMENT, FOLLOW_UP (with
-boundary and first increment), OBSERVATION, REJECTED or RISK_ACCEPTED. End with
+its surface and the outcome that closes it, one task per surface), OBSERVATION,
+REJECTED or RISK_ACCEPTED. End with
 VERDICT and RISK.
