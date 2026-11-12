@@ -65,7 +65,7 @@ jobs:
       ref: ${{ needs.target.outputs.commit }}
 
   release:
-    needs: macos
+    needs: [target, macos]
     runs-on: ubuntu-latest
     env:
       GH_REPO: ${{ github.repository }}
@@ -84,6 +84,7 @@ jobs:
       - name: Check the commit, VERSION and CHANGELOG
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.target.outputs.commit }}   # the commit macOS passed on
         run: |
           cp .github/release.sh "$RUNNER_TEMP/release.sh"
           bash "$RUNNER_TEMP/release.sh" prepare "$TAG" $CREATE

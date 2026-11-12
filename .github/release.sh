@@ -15,7 +15,9 @@
 #       is the existing tag, or with --create the tip of origin/main (the tag
 #       is created by "publish"). Refuses a commit not on main, a VERSION that
 #       differs from the tag, a missing CHANGELOG section and a release that
-#       already exists.
+#       already exists. With RELEASE_COMMIT set (what "commit" printed, the
+#       commit the macOS checks ran on) the commit is that one: --create takes
+#       it even after main moved on, and a tag elsewhere is refused.
 #   release.sh publish vX.Y.Z [--create]
 #       Create and push the tag if needed (--create), build the archives, and
 #       publish the release; it is marked latest only when no higher vX.Y.Z tag
@@ -56,10 +58,12 @@ target() {
   if has_tag; then
     commit=$(git rev-parse "$TAG^{commit}")
   elif [ "$create" = --create ]; then
-    commit=$(git rev-parse origin/main)
+    commit=${RELEASE_COMMIT:-$(git rev-parse origin/main)}
   else
     fail "tag $TAG does not exist"
   fi
+  [ -z "${RELEASE_COMMIT:-}" ] || [ "$commit" = "$RELEASE_COMMIT" ] ||
+    fail "$TAG points at $(git rev-parse --short "$commit"), not at the commit the checks ran on ($RELEASE_COMMIT)"
   git merge-base --is-ancestor "$commit" origin/main ||
     fail "$TAG points at $(git rev-parse --short "$commit"), which is not on main; merge first, then release"
 }
