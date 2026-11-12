@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-11-12
+
 ### Changed
 - oh-code-review groups follow-ups per surface, and a follow-up names the
   outcome that closes it instead of the smallest first increment. A new
