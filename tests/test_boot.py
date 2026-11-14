@@ -522,6 +522,14 @@ class ExportCases(ReleaseFixture):
         self.write_manifest(self.MANIFEST.replace("\n", "\r\n"))
         self.assert_from_export(self.run_export(self.path(self.export) + "/"))
 
+    def test_a_filesystem_root_export_stays_an_export(self):
+        # the root normalizes to an empty prefix; the install must still read only the export, and fail there
+        root = "/" if os.name != "nt" else os.path.splitdrive(str(self.tmp))[0] + "\\"
+        prefix = root.rstrip("/\\")
+        self.assert_refused_quietly(self.run_export(root), f"could not read {prefix}/MANIFEST")
+        self.assert_refused_quietly(self.run_export(root, AI_SKILLS_REF="v9.9.9"),
+                                    f"could not read {prefix}/aiskills/v9.9.9/aiskills-9.9.9.tar.gz")
+
     def test_an_explicit_release_needs_no_manifest(self):
         (self.export / "MANIFEST").unlink()
         self.assert_from_export(self.run_export(AI_SKILLS_REF="v9.9.9"))

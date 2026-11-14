@@ -66,9 +66,9 @@ if ($export) {
               ([IO.Path]::DirectorySeparatorChar -eq '/' -and $export.StartsWith('/')))) {
         throw "ERROR: AI_SKILLS_EXPORT must be an absolute directory, a \\host\share path or an https:// URL, not '$export'; nothing was installed"
     }
-    $export = $export.TrimEnd('/', '\')
+    $export = $export.TrimEnd('/', '\')   # '/' becomes '': the paths below are "$export/...", still absolute
 }
-if (-not $ref -and -not $env:AI_SKILLS_ARCHIVE -and -not $export) {
+if (-not $ref -and -not $env:AI_SKILLS_ARCHIVE -and -not $env:AI_SKILLS_EXPORT) {
     if ($base) {
         $ref = 'main'
     } elseif ($env:AI_SKILLS_TOKEN) {
@@ -137,7 +137,7 @@ try {
     if ($env:AI_SKILLS_ARCHIVE) {
         Write-Host "Unpacking aiskills from $env:AI_SKILLS_ARCHIVE ..."
         Copy-Item $env:AI_SKILLS_ARCHIVE $tgz
-    } elseif ($export) {
+    } elseif ($env:AI_SKILLS_EXPORT) {
         # one file of the export: over https, or copied from a directory
         function Get-ExportFile([string]$Source, [string]$OutFile) {
             if ($Source -like 'https://*') { Invoke-WebRequest $Source -OutFile $OutFile -UseBasicParsing }

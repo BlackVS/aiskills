@@ -67,7 +67,7 @@ if [ -n "$EXPORT" ]; then
     http://*) fail "AI_SKILLS_EXPORT must be an https:// URL or an absolute directory; plain http is refused: $EXPORT; nothing was installed" ;;
     *) fail "AI_SKILLS_EXPORT must be an absolute directory or an https:// URL, not '$EXPORT'; nothing was installed" ;;
   esac
-  EXPORT=${EXPORT%/}
+  EXPORT=${EXPORT%/}   # "/" becomes "": the paths below are "$EXPORT/...", still absolute
 fi
 # download OUT URL [curl options]: fetch URL into OUT. On failure WHY says what stopped it:
 # not found (HTTP 404), another HTTP status from the server, or no answer at all (a transport error).
@@ -82,7 +82,7 @@ download() {
   esac
   return 1
 }
-if [ -z "$REF" ] && [ -z "${AI_SKILLS_ARCHIVE:-}" ] && [ -z "$EXPORT" ]; then
+if [ -z "$REF" ] && [ -z "${AI_SKILLS_ARCHIVE:-}" ] && [ -z "${AI_SKILLS_EXPORT:-}" ]; then
   if [ -n "$BASE" ]; then
     REF=main
   else
@@ -153,7 +153,7 @@ TGZ="$DEST/src.tar.gz"
 if [ -n "${AI_SKILLS_ARCHIVE:-}" ]; then
   echo "Unpacking aiskills from $AI_SKILLS_ARCHIVE ..."
   cp "$AI_SKILLS_ARCHIVE" "$TGZ"
-elif [ -n "$EXPORT" ]; then
+elif [ -n "${AI_SKILLS_EXPORT:-}" ]; then
   # get SOURCE OUT: one file of the export, from https only (no redirect to http) or a local directory
   get() {
     case "$1" in
