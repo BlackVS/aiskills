@@ -608,7 +608,9 @@ class BashBootExport(ExportCases, unittest.TestCase):
     def test_curl_is_held_to_https_redirects_included(self):
         # curl is told to stay on https, redirects included
         self.run_export("https://files.example.invalid/aiforge", FAKE_MANIFEST=str(self.export / "MANIFEST"))
-        for call in self.calls():
+        calls = self.calls()
+        self.assertTrue(calls, "curl was called")
+        for call in calls:
             self.assertIn("--proto =https --proto-redir =https", call)
 
 

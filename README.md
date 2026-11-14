@@ -4,8 +4,8 @@ Skills taken from `OpenHands/extensions` (see `UPSTREAM.txt` for the commit),
 plus skills written here. The upstream skills carry an `oh-` prefix so they
 never shadow built-in skills of the same name (Claude Code ships its own
 `/code-review`, and the OpenHands public catalog has `code-review`,
-`code-simplifier`, ...). `architecture-review`, `verify-delivery` and `forge-gates`
-are local and unprefixed.
+`code-simplifier`, ...). `architecture-review`, `verify-delivery`, `forge-gates`
+and `aiforge-export` are local and unprefixed.
 All use the common `SKILL.md` format (YAML
 frontmatter with `name` and `description`, then instructions), so the same folder
 works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
@@ -22,6 +22,7 @@ works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
 | `oh-learn-from-code-review` | extensions (`learn-from-code-review`) | Distill merged-PR review feedback into repo skills and the `custom-codereview-guide` the reviewer reads; Gitea+GitHub; AI-reviewer comments included as signal. |
 | `verify-delivery` | written here | Confirm from the forge (GitHub, Gitea or GitLab) that a PR was delivered: reviews READY at the final head, merged by a person, merged tree equal to the reviewed one, CI green on the merge commit. Read-only helper, JSON verdict and evidence. |
 | `forge-gates` | written here | The review gates before the merge, read from the forge: wait for the external reviewer's answer for a head (`wait-review`), whether the current head is ready for a person to merge (`gates`), `verify-delivery`'s verdict (`merge-check`), and the local review posted only in the form the delivery check reads (`post-review`). Read-only except `post-review`, which creates one comment; needs `verify-delivery` next to it, which the installers add. |
+| `aiforge-export` | written here | On a connected machine, write the one directory a closed network installs aimem, aicrew and aiskills from: each release's files and `SHA256SUMS`, checked as they download, the chosen platforms' binaries, `MANIFEST` and a `README.txt` with the install commands. The format is `docs/aiforge-export.md`. |
 
 `prompts/` holds ready-to-fill prompts for each skill. The command stubs the
 upstream ships were only "read SKILL.md, then `$ARGUMENTS`", so they were replaced
@@ -104,6 +105,25 @@ same skills; user-level installs follow the person across projects.
   `.tar.gz`, your own file, with no release check.
 
 ### Closed network: install from an aiforge export
+
+The flow has three steps:
+
+1. On a connected machine, write the export with the `aiforge-export`
+   skill's helper. It takes the latest releases of aimem, aicrew and
+   aiskills (or the tags you name), checks every file against its release's
+   `SHA256SUMS`, and writes `MANIFEST`, `README.txt` and `<product>/<tag>/`:
+
+   ```bash
+   python3 skills/aiforge-export/aiforge-export --out /media/aiforge-export --platforms linux-amd64,windows-amd64
+   ```
+
+2. Carry the directory into the closed network, or serve it from an
+   internal https server.
+3. Install each product from it with its own variable: `AIMEM_BASE` for
+   aimem, `AICREW_BASE` for aicrew, and `AI_SKILLS_EXPORT` for aiskills as
+   below. The export's `README.txt` has the commands with its tags filled in.
+
+[docs/aiforge-export.md](docs/aiforge-export.md) defines the format.
 
 A network with no access to GitHub installs from an aiforge export: a
 directory, or an internal https server, that holds `MANIFEST` and
