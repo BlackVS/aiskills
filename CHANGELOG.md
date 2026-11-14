@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-11-15
+
 ### Added
 - **Closed-network install from an aiforge export.** `boot.sh` and `boot.ps1`
   take `AI_SKILLS_EXPORT`, the root of an export in format 1: an absolute
