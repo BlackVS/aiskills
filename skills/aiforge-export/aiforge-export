@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""Write an aiforge export, format 1: the one directory a closed network installs
+aimem, aicrew and aiskills from (docs/aiforge-export.md).
+
+Run on a connected machine. For each product it takes a release (the latest, or the
+tag given), downloads the release's SHA256SUMS and every file the sums list (the
+platform binaries only for the platforms chosen), checks each file against the sums
+as it arrives, and writes:
+
+    <out>/MANIFEST                 aiforge-export 1, then one "<product> <tag>" line each
+    <out>/README.txt               the install commands with this export's tags filled in
+    <out>/<product>/<tag>/         the release's files, unchanged, and its SHA256SUMS
+
+The export is built in a directory beside <out> and renamed into place only when
+every file has been verified, so a failed run leaves no <out> at all.
+
+Usage:
+    aiforge-export --out DIR [--platforms linux-amd64,windows-amd64]
+                   [--products aimem,aicrew,aiskills]
+                   [--aimem TAG] [--aicrew TAG] [--aiskills TAG]
+
+Python 3.8 or newer, standard library only.
+"""
+import argparse, hashlib, http.client, ipaddress, json, os, re, secrets, shutil, sys, time
+import urllib.error, urllib.parse, urllib.request
+
+FORMAT = "aiforge-export 1"
+OWNER = "BlackVS"
+PRODUCTS = ("aimem", "aicrew", "aiskills")  # MANIFEST order
+DOWNLOAD_BASE = "https://github.com"
+API_BASE = "https://api.github.com"
+TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+PLATFORM = re.compile(r"^(linux|darwin|windows|freebsd)-(amd64|arm64|386|arm)$")
+# A platform binary: <name>-<os>-<arch>, with .exe on Windows.
+BINARY = re.compile(r"^.+-((?:linux|darwin|windows|freebsd)-(?:amd64|arm64|386|arm))(?:\.exe)?$")
+# A published file name: one path component, nothing a path could be built from.
+ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+# What each product's installers read from its release, besides the binaries.
+# aimem: a release whose sums lack these predates its installer assets (v0.10.23)
+# and cannot be installed from an export, so it is refused.
+AIMEM_REQUIRED = ("install.sh", "install.ps1", "aimem-opencode.ts")
+# aicrew and aiskills: the installer files an export install needs; a release that
+# does not publish them yet is exported, and README.txt says what is missing.
+INSTALLERS = {
+    "aimem": ("boot.sh", "boot.ps1", "install-hub.sh"),
+    "aicrew": ("boot.sh", "boot.ps1", "install-aicrewd.sh"),
+    "aiskills": ("boot.sh", "boot.ps1"),
+}
+CHUNK = 1 << 16
+
+
+class ExportError(Exception):
+    pass
+
+
+def allowed_url(url):
+    """https anywhere; plain http only to the loopback interface (a test server)."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme == "https" and u.hostname:
+        return True
+    if u.scheme != "http" or not u.hostname:
+        return False
+    if u.hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(u.hostname).is_loopback
+    except ValueError:
+        return False
+
+
+class HeldRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to a URL the export may read at all."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not allowed_url(newurl):
+            raise ExportError(f"{req.full_url} redirects to {newurl}, which is not https; refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+OPENER = urllib.request.build_opener(HeldRedirects)
+
+
+def fetch(url, sink=None):
+    """GET url. Without sink, return the body; with one, stream the body into it."""
+    if not allowed_url(url):
+        raise ExportError(f"{url} is not https; refused")
+    req = urllib.request.Request(url, headers={"User-Agent": "aiforge-export"})
+    for attempt in range(3):
+        try:
+            with OPENER.open(req, timeout=60) as r:
+                if sink is None:
+                    return r.read()
+                while True:
+                    b = r.read(CHUNK)
+                    if not b:
+                        return None
+                    sink(b)
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == 2:
+                raise ExportError(f"{url}: HTTP {e.code}") from None
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            if sink is not None or attempt == 2:
+                raise ExportError(f"{url}: {getattr(e, 'reason', e)}") from None
+        time.sleep(1 + attempt)
+
+
+def latest_tag(api_base, product):
+    url = f"{api_base}/repos/{OWNER}/{product}/releases/latest"
+    try:
+        tag = json.loads(fetch(url)).get("tag_name")
+    except ValueError:
+        raise ExportError(f"{url}: not a release") from None
+    if not isinstance(tag, str) or not TAG.match(tag):
+        raise ExportError(f"{url}: latest release tag {tag!r} is not vX.Y.Z")
+    return tag
+
+
+def parse_sums(text, where):
+    """SHA256SUMS lines, '<hex>  <name>' or '<hex> *<name>', as {name: hex}."""
+    sums = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        m = re.match(r"^([0-9a-fA-F]{64}) [ *](.+)$", line.rstrip("\r"))
+        if not m or not ASSET.match(m.group(2)):
+            raise ExportError(f"{where} line {n} is not '<sha256>  <file name>': {line!r}")
+        name, digest = m.group(2), m.group(1).lower()
+        if sums.get(name, digest) != digest:
+            raise ExportError(f"{where} lists {name} twice with different sums")
+        sums[name] = digest
+    if not sums:
+        raise ExportError(f"{where} lists no files")
+    return sums
+
+
+def select(product, tag, sums, platforms, where):
+    """The files of this release the export takes: every listed file, except the
+    binaries of platforms not chosen. Refuses what an export install cannot use."""
+    if product == "aimem":
+        lacking = [f for f in AIMEM_REQUIRED if f not in sums]
+        if lacking:
+            raise ExportError(
+                f"aimem {tag} cannot be installed from an export: {where} lists no {', '.join(lacking)} "
+                "(aimem publishes its installer files as release assets from v0.10.23); choose a later release")
+    names, have = [], set()
+    for name in sorted(sums):
+        if name == "SHA256SUMS":
+            continue  # kept as fetched; an entry for itself cannot be checked
+        m = BINARY.match(name)
+        if m and platforms is not None:
+            if m.group(1) not in platforms:
+                continue
+            have.add(m.group(1))
+        names.append(name)
+    if platforms is not None and any(BINARY.match(n) for n in sums):
+        missing = [p for p in platforms if p not in have]
+        if missing:
+            raise ExportError(f"{product} {tag} publishes no binary for {', '.join(missing)} ({where})")
+    return names
+
+
+def download(url, path, digest):
+    """Write url's body to path, failing (and removing path) unless it matches digest."""
+    h = hashlib.sha256()
+    with open(path, "wb") as f:
+        def sink(b):
+            h.update(b)
+            f.write(b)
+        fetch(url, sink)
+    if h.hexdigest() != digest:
+        os.remove(path)
+        raise ExportError(f"{url} does not match its SHA256SUMS entry (got {h.hexdigest()}, listed {digest})")
+
+
+def export_product(product, tag, platforms, download_base, dest, log):
+    rel = f"{download_base}/{OWNER}/{product}/releases/download/{tag}"
+    sums_url = f"{rel}/SHA256SUMS"
+    raw = fetch(sums_url)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ExportError(f"{sums_url} is not UTF-8 text") from None
+    sums = parse_sums(text, sums_url)
+    names = select(product, tag, sums, platforms, sums_url)
+    os.makedirs(dest)
+    with open(os.path.join(dest, "SHA256SUMS"), "wb") as f:
+        f.write(raw)  # kept whole, unchanged, even where it lists files not exported
+    for name in names:
+        download(f"{rel}/{name}", os.path.join(dest, name), sums[name])
+        log(f"  checksum OK: {product}/{tag}/{name}")
+    return [f for f in INSTALLERS[product] if f not in sums]
+
+
+# Per product: its base variable, the execution policy its Windows boot script runs
+# under, the shell installers README.txt names, as (who runs it, script, arguments),
+# and whether the product's installers document the https form, piped as their
+# connected one-liners are: aimem's ADMIN-MANUAL ("curl ... | AIMEM_BASE=... bash",
+# "irm ... | iex"; install-hub.sh runs alone), aiskills' README and its boot tests.
+COMMANDS = {
+    "aimem": ("AIMEM_BASE", "RemoteSigned",
+              (("A workstation (Linux, macOS)", "boot.sh", ""), ("A hub, as root", "install-hub.sh", "")), True),
+    "aicrew": ("AICREW_BASE", "RemoteSigned",
+               (("A workstation (Linux, macOS)", "boot.sh", ""), ("The aicrewd service, as root", "install-aicrewd.sh", "")),
+               False),
+    "aiskills": ("AI_SKILLS_EXPORT", "Bypass",
+                 (("Linux, macOS", "boot.sh", ""), ("For every project of this user", "boot.sh", "--user -s core")), True),
+}
+
+
+def install_commands(product, tag):
+    """The commands for both forms of an export: a directory (<dir>), where a script is
+    run in place, and an https server (<url>), where it is piped from the server as the
+    connected one-liners are. Either way the base variable names the export's root."""
+    var, policy, scripts, https = COMMANDS[product]
+    rel = f"{product}/{tag}"
+    out = ["From a directory:"]
+    for who, script, args in scripts:
+        out += [f"  {who}:", f"    {var}=<dir> bash <dir>/{rel}/{script}" + (f" {args}" if args else "")]
+    out += ["  Windows, in PowerShell:",
+            f"    $env:{var} = '<dir>'",
+            f"    powershell -NoProfile -ExecutionPolicy {policy} -File <dir>\\{product}\\{tag}\\boot.ps1",
+            f"    Remove-Item Env:{var}"]
+    if not https:
+        return out + [f"From an https server: {product}'s installers do not document that form yet;",
+                      "copy the directory and install from it as above."]
+    out += ["From an https server:"]
+    for who, script, args in scripts:
+        out += [f"  {who}:", f"    curl -fsSL <url>/{rel}/{script} | {var}=<url> bash" + (f" -s -- {args}" if args else "")]
+    out += ["  Windows, in PowerShell:",
+            f"    $env:{var} = '<url>'",
+            f"    irm <url>/{rel}/boot.ps1 | iex",
+            f"    Remove-Item Env:{var}"]
+    return out
+
+
+def readme(tags, platforms, lacking):
+    """README.txt: what the export holds and how to install from it. Names no forge."""
+    out = [
+        "aiforge export, format 1",
+        "",
+        "This directory is what a closed network installs aimem, aicrew and aiskills from.",
+        "Copy it whole, or serve it from an internal https server. Below, <dir> is the",
+        "directory it was copied to (an absolute path, for example /media/aiforge-export;",
+        "on Windows also D:\\aiforge-export or \\\\host\\share\\aiforge-export), and <url> is",
+        "the https URL it is served at.",
+        "",
+        "MANIFEST names the release each product installs by default:",
+        "",
+    ]
+    out += [f"    {p} {t}" for p, t in tags.items()]
+    out += [
+        "",
+        "Each <product>/<tag>/ holds that release's files unchanged, under their published",
+        "names, with the release's own SHA256SUMS. The installers check every file they",
+        "read against it and contact no other host.",
+    ]
+    if platforms is not None:
+        out += [
+            f"Platform binaries are here for {', '.join(platforms)} only; SHA256SUMS is kept",
+            "whole and still lists the others.",
+        ]
+    for product, tag in tags.items():
+        out += ["", f"{product} {tag}", "-" * len(f"{product} {tag}"), ""]
+        missing = lacking[product]
+        if not missing:
+            out += install_commands(product, tag)
+            continue
+        out += [
+            f"This release does not publish {', '.join(missing)} as release assets, so it has",
+            "no installer that reads this export. On a copy of the directory, check the files:",
+            f"    cd <dir>/{product}/{tag} && sha256sum -c --ignore-missing SHA256SUMS",
+        ]
+        if product == "aiskills":
+            ver = tag[1:]
+            out += [
+                "then install from the checked archive:",
+                f"    tar -xzf aiskills-{ver}.tar.gz && ./aiskills-{ver}/install.sh --user",
+                f"    (Windows: expand aiskills-{ver}.zip and run install.ps1 -User)",
+            ]
+        else:
+            out += ["then install its binaries by hand."]
+    out += [
+        "",
+        "Process sets",
+        "------------",
+        "",
+        "aimem's release does not publish its reference process set yet. To give a hub a",
+        "process set, export it on a connected machine with",
+        "    aimem process export <repository> <commit> <manifest>",
+        "carry the archive and its SHA256SUMS line over, and on the hub run",
+        "    aimem process default set <repository> <tag> --from-archive <archive> --sums SHA256SUMS",
+        "aimem's ADMIN-MANUAL describes both commands.",
+        "",
+    ]
+    return "\n".join(out)
+
+
+def build(args, log=print):
+    out = os.path.abspath(args.out)
+    if os.path.lexists(out):
+        raise ExportError(f"{out} already exists; name a new directory")
+    parent = os.path.dirname(out)
+    if not os.path.isdir(parent):
+        raise ExportError(f"{parent} is not a directory")
+    tags = {p: getattr(args, p) or latest_tag(args.api_base, p) for p in args.products}
+    # An ordinary new directory, so the export gets the permissions any directory made
+    # here gets (tempfile.mkdtemp would make it readable by its owner alone).
+    stage = os.path.join(parent, f"{os.path.basename(out)}.partial-{secrets.token_hex(6)}")
+    os.mkdir(stage)
+    try:
+        lacking = {}
+        for product, tag in tags.items():
+            log(f"{product} {tag}")
+            lacking[product] = export_product(product, tag, args.platforms, args.download_base,
+                                              os.path.join(stage, product, tag), log)
+        with open(os.path.join(stage, "README.txt"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(readme(tags, args.platforms, lacking))
+        with open(os.path.join(stage, "MANIFEST"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(FORMAT + "\n" + "".join(f"{p} {t}\n" for p, t in tags.items()))
+        os.rename(stage, out)
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    log(f"wrote {out}")
+    return out
+
+
+def csv(kind, pattern, allowed=None):
+    def parse(value):
+        items = [v.strip() for v in value.split(",") if v.strip()]
+        if not items:
+            raise argparse.ArgumentTypeError(f"no {kind} named")
+        for v in items:
+            if not pattern.match(v) or (allowed and v not in allowed):
+                raise argparse.ArgumentTypeError(f"{v!r} is not a {kind}")
+        return list(dict.fromkeys(items))
+    return parse
+
+
+def base_url(value):
+    value = value.rstrip("/")
+    if not allowed_url(value + "/"):
+        raise argparse.ArgumentTypeError(f"{value} is not an https URL")
+    return value
+
+
+def tag(value):
+    if not TAG.match(value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a release tag vX.Y.Z")
+    return value
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="aiforge-export", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--out", required=True, help="the export directory to write; must not exist")
+    ap.add_argument("--platforms", type=csv("platform (os-arch)", PLATFORM),
+                    help="binaries to take, e.g. linux-amd64,windows-amd64 (default: all)")
+    ap.add_argument("--products", type=csv("product", re.compile(r"^[a-z]+$"), PRODUCTS),
+                    default=list(PRODUCTS), help="default: aimem,aicrew,aiskills")
+    for p in PRODUCTS:
+        ap.add_argument(f"--{p}", type=tag, metavar="TAG", help=f"the {p} release (default: the latest)")
+    ap.add_argument("--download-base", type=base_url, default=DOWNLOAD_BASE,
+                    help="where releases are downloaded from: <base>/<owner>/<repo>/releases/download/<tag>/")
+    ap.add_argument("--api-base", type=base_url, default=API_BASE,
+                    help="the forge API that names the latest release")
+    args = ap.parse_args(argv)
+    args.products = [p for p in PRODUCTS if p in args.products]
+    try:
+        build(args)
+    except (ExportError, OSError) as e:
+        print(f"aiforge-export: {e}", file=sys.stderr)
+        print("aiforge-export: nothing was written", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
