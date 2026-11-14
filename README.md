@@ -103,6 +103,36 @@ same skills; user-level installs follow the person across projects.
 - **Local archive:** `AI_SKILLS_ARCHIVE=<path>` installs from a local
   `.tar.gz`, your own file, with no release check.
 
+### Closed network: install from an aiforge export
+
+A network with no access to GitHub installs from an aiforge export: a
+directory, or an internal https server, that holds `MANIFEST` and
+`aiskills/<tag>/` with that release's files (the archives, `boot.sh`,
+`boot.ps1`) and its `SHA256SUMS`. Run the boot script the export carries
+and point `AI_SKILLS_EXPORT` at the export's root:
+
+```bash
+AI_SKILLS_EXPORT=/media/aiforge-export bash /media/aiforge-export/aiskills/<tag>/boot.sh
+AI_SKILLS_EXPORT=/media/aiforge-export bash /media/aiforge-export/aiskills/<tag>/boot.sh --user -s core
+```
+
+```powershell
+$env:AI_SKILLS_EXPORT = 'D:\aiforge-export'      # or \\host\share\aiforge-export, or an https:// URL
+powershell -NoProfile -ExecutionPolicy Bypass -File D:\aiforge-export\aiskills\<tag>\boot.ps1
+```
+
+`<tag>` is the release the export's `MANIFEST` names, and the one the boot
+script installs unless `AI_SKILLS_REF` names another release in the export.
+The archive is checked against that release's `SHA256SUMS` as in the
+connected form, no other host is contacted, and the output names no GitHub
+URL. A missing `MANIFEST` (with no `AI_SKILLS_REF`), a format other than
+`aiforge-export 1`, a `MANIFEST` with no `aiskills` line, a missing file or a
+checksum mismatch stops before anything is installed, and the message names
+the path. Plain http is refused. `AI_SKILLS_BASE` keeps its meaning, a Gitea
+mirror, and cannot be set together with `AI_SKILLS_EXPORT`. Releases publish
+`boot.sh` and `boot.ps1` as assets listed in `SHA256SUMS`, so an export
+holds every file the install reads.
+
 If the Windows form fails with an empty-string error for `Command`, the download
 returned an empty body: retry, or install from a checkout as below.
 

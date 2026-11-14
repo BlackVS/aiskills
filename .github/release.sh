@@ -19,9 +19,10 @@
 #       commit the macOS checks ran on) the commit is that one: --create takes
 #       it even after main moved on, and a tag elsewhere is refused.
 #   release.sh publish vX.Y.Z [--create]
-#       Create and push the tag if needed (--create), build the archives, and
-#       publish the release; it is marked latest only when no higher vX.Y.Z tag
-#       exists on origin at that moment.
+#       Create and push the tag if needed (--create), build the archives, copy
+#       the one-line installers (boot.sh, boot.ps1) as they are at the tag, and
+#       publish them with SHA256SUMS over every file; the release is marked
+#       latest only when no higher vX.Y.Z tag exists on origin at that moment.
 #
 # The workflow runs one release at a time (a single concurrency group), and
 # publish re-reads the tags from origin, so the latest decision never rests on
@@ -108,6 +109,11 @@ publish)
   # tar.umask 0022: scripts 0755 and other files 0644, whatever the runner's Git defaults to (0002)
   git -c tar.umask=0022 archive --format=tar.gz --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.tar.gz" "$TAG"
   git -c tar.umask=0022 archive --format=zip --prefix="aiskills-$ver/" -o "dist/aiskills-$ver.zip" "$TAG"
+  # The one-liners are assets too, covered by the sums: an aiforge export carries
+  # the release's files only, and runs the installer from there.
+  for f in boot.sh boot.ps1; do
+    git cat-file blob "$TAG:$f" > "dist/$f" || fail "$TAG has no $f to publish"
+  done
   (cd dist && sha256 * > SHA256SUMS)
   # "Latest" is what the one-liners install: only the highest version gets it,
   # judged against the tags on origin now, not when this run started.

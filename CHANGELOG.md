@@ -9,6 +9,29 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- **Closed-network install from an aiforge export.** `boot.sh` and `boot.ps1`
+  take `AI_SKILLS_EXPORT`, the root of an export in format 1: an absolute
+  directory or an `https://` URL, and on Windows also a drive path or a
+  `\\host\share` path. The release is the one the export's `MANIFEST` names
+  (`aiforge-export 1`, then an `aiskills <tag>` line) unless `AI_SKILLS_REF`
+  names another; its archive is read from `<export>/aiskills/<tag>/` and
+  checked against the `SHA256SUMS` beside it. No other host is contacted and
+  the output names no GitHub URL. A missing `MANIFEST` with no
+  `AI_SKILLS_REF`, an unknown format, a missing `aiskills` line, a tag that
+  is not a release, a missing file or a checksum mismatch stops with the path
+  and installs nothing. Plain http is refused, and `AI_SKILLS_EXPORT` together
+  with `AI_SKILLS_BASE` or `AI_SKILLS_ARCHIVE` is refused. `AI_SKILLS_BASE`
+  keeps its meaning, a Gitea mirror. The README shows the closed-network form
+  beside the connected one.
+- The release publishes `boot.sh` and `boot.ps1` as assets, copied from the
+  tag and listed in `SHA256SUMS`, so an export holds every file its install
+  reads. A tag without them is not published.
+
+Without `AI_SKILLS_EXPORT` the boot scripts behave as before: they still
+read only a release's archive and `SHA256SUMS`, so every earlier release,
+which has no boot-script assets, installs as it did.
+
 ## [1.38.0] - 2026-11-12
 
 ### Changed
