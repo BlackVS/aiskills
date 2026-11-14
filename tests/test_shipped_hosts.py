@@ -11,8 +11,9 @@ pull request that introduces it.
 URLs are checked whatever their host looks like, an IPv6 literal included, and so is
 every IPv4 address outside a URL. A host name outside a URL is recognised by its
 top-level label (TLDS), in either case, since a dotted word in code is usually not a
-host; the list holds the common public suffixes and the ones private networks use. A
-dotted word in mixed case (`System.IO`) is a code name, not a host.
+host; the list holds the common public suffixes and the ones private networks use.
+Case never exempts a name: `System.IO.Path` passes only because it is longer than a
+host name ending in a listed label.
 
 Run: python3 -m unittest tests/test_shipped_hosts.py
 """
@@ -72,11 +73,6 @@ IPV4 = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?!\w|\.\d)")
 NOT_HOSTS = re.compile(r"^(self|cls|threading)\.")
 
 
-def code_name(name):
-    """A dotted name in mixed case (`System.IO`, `System.Net`) is a code name; a host
-    name is written in one case."""
-    return name != name.lower() and name != name.upper()
-
 
 def allowed(host):
     host = host.lower().rstrip(".")
@@ -106,7 +102,7 @@ def unlisted(text):
     text = URL.sub(lambda m: " " * len(m.group(0)), text)  # each URL's host is counted once
     for m in HOST.finditer(text):
         name = m.group(1)
-        if not NOT_HOSTS.match(name) and not code_name(name) and not allowed(name):
+        if not NOT_HOSTS.match(name) and not allowed(name):
             found.append(m.group(1))
     for m in IPV4.finditer(text):
         try:
@@ -158,6 +154,8 @@ class ShippedHosts(unittest.TestCase):
                            (f"the mirror at {h('files', 'home')}", h("files", "home")),
                            (f"wss://{h('relay', 'example', 'co')}/", h("relay", "example", "co")),
                            (f"see {h('GITEA', 'CORP', 'LAN')} for the mirror", h("GITEA", "CORP", "LAN")),
+                           (f"mirror at {h('Build', 'company', 'com')}", h("Build", "company", "com")),
+                           (f"see {h('System', 'Net')}", h("System", "Net")),
                            (f"https://[{':'.join(('2001', '4860', '', '8888'))}]:443/x", f"[{':'.join(('2001', '4860', '', '8888'))}]"),
                            (f"http://[{':'.join(('fe80', '', '1'))}]/", f"[{':'.join(('fe80', '', '1'))}]"),
                            (f"https://[{h('not', 'an', 'address')}]/", f"[{h('not', 'an', 'address')}]"),
