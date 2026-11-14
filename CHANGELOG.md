@@ -32,18 +32,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
   aiskills, each release's files unchanged under `<product>/<tag>/` with its
   whole `SHA256SUMS`, the binaries only for the platforms `--platforms`
   names, plus `MANIFEST` and a `README.txt` with the install commands for
-  that export's tags. Every file is checked against its release's sums as it
-  downloads. The export is built beside `--out` and renamed into place only
-  when complete, so a failed run writes nothing. It refuses a sum mismatch, a
+  that export's tags, for a copied directory and, where the product's
+  installers document it, for an https server. Every file is checked against
+  its release's sums as it downloads. The export is built beside `--out`,
+  with the permissions any new directory gets there, and renamed into place
+  only when complete, so a failed run writes nothing. It refuses a sum mismatch, a
   missing file, a URL or redirect that is not https, and an aimem release
   whose sums list no installer files (before v0.10.23). For a release that
   does not yet publish its installer scripts as assets, `README.txt` says
   what is missing. `docs/aiforge-export.md` defines format 1, its six rules,
   and how each product's installers read it.
 - A test keeps every shipped text free of hosts outside an allow-list:
-  each URL and dotted host name in the release archive must be a reserved
-  example name (RFC 2606, RFC 6761), the loopback interface, or a listed
-  public reference with its reason.
+  each URL host (IPv6 literals included), IPv4 address and dotted host name
+  in the release archive must be a reserved example name (RFC 2606, RFC
+  6761), the loopback interface, a documentation address, or a listed public
+  reference with its reason.
 
 Without `AI_SKILLS_EXPORT` the boot scripts behave as before: they still
 read only a release's archive and `SHA256SUMS`, so every earlier release,

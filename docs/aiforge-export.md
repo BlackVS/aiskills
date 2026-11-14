@@ -98,10 +98,11 @@ The script takes the latest release of each product unless `--aimem`,
 chosen platforms), and checks each against the sums as it arrives. It
 builds the export beside `--out` and renames it into place only when every
 file has been verified, so a failed run leaves no export that looks
-complete. It refuses an aimem release whose sums list no installer files
-(releases before v0.10.23). A release that does not yet publish its
-installer scripts as assets is exported anyway, and README.txt says what is
-missing.
+complete. The export gets the permissions any new directory and file get
+where it is written, so a web server's account or another user can read it.
+It refuses an aimem release whose sums list no installer files (releases
+before v0.10.23). A release that does not yet publish its installer scripts
+as assets is exported anyway, and README.txt says what is missing.
 
 ## Installing from an export
 
@@ -111,10 +112,21 @@ variable set. README.txt in the export has these commands with the tags
 filled in:
 
 ```sh
+# from a directory: run the export's script in place
 AIMEM_BASE=/media/aiforge-export bash /media/aiforge-export/aimem/<tag>/boot.sh
 AIMEM_BASE=/media/aiforge-export bash /media/aiforge-export/aimem/<tag>/install-hub.sh    # a hub, as root
 AI_SKILLS_EXPORT=/media/aiforge-export bash /media/aiforge-export/aiskills/<tag>/boot.sh
+
+# from an https server: pipe the script, as the connected one-liners do
+curl -fsSL https://files.example.org/aiforge/aimem/<tag>/boot.sh | AIMEM_BASE=https://files.example.org/aiforge bash
+curl -fsSL https://files.example.org/aiforge/aiskills/<tag>/boot.sh | AI_SKILLS_EXPORT=https://files.example.org/aiforge bash
 ```
+
+On Windows a directory export's `boot.ps1` runs with `powershell -File`,
+and an https one with `irm <url>/<product>/<tag>/boot.ps1 | iex`, the base
+variable set first. aimem's and aiskills' installers document and test the
+https form; aicrew's do not yet, so README.txt gives aicrew only the
+directory form.
 
 ## Process sets
 

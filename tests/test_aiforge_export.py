@@ -4,7 +4,8 @@ interface, and once against the real aimem v0.10.23 release.
 Run: python3 -m unittest tests/test_aiforge_export.py
 """
 import hashlib, http.server, importlib.machinery, importlib.util, json, os, pathlib, subprocess, sys
-import tempfile, threading, unittest
+import contextlib, io, stat, tempfile, threading, unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "skills" / "aiforge-export" / "aiforge-export"
@@ -18,6 +19,14 @@ _loader.exec_module(ax)
 
 def sums_of(files):
     return "".join(f"{hashlib.sha256(b).hexdigest()}  {n}\n" for n, b in sorted(files.items())).encode()
+
+
+def acl(path):
+    """A Windows access list as icacls prints it, without the path and the summary line."""
+    out = subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True).stdout
+    lines = [line.strip() for line in out.splitlines() if line.strip()][:-1]
+    lines[0] = lines[0][len(str(path)):].strip()
+    return lines
 
 
 def release(product, tag, names):
@@ -38,6 +47,7 @@ class FakeForge:
     def __init__(self):
         self.releases, self.latest, self.sums, self.paths = {}, {}, {}, []
         self.redirect_to = None
+        self.cut_short = None  # a file name whose body is sent short of its Content-Length
         forge = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -50,7 +60,10 @@ class FakeForge:
                 self.send_response(status)
                 for k, v in headers.items():
                     self.send_header(k, v)
-                self.send_header("Content-Length", str(len(body)))
+                short = forge.cut_short and self.path.endswith("/" + forge.cut_short)
+                self.send_header("Content-Length", str(len(body) + (100 if short else 0)))
+                if short:
+                    self.close_connection = True
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -134,24 +147,55 @@ class ExportCases(unittest.TestCase):
         self.assertTrue((self.out / "aimem" / "v0.10.23" / "aimem-darwin-arm64").is_file())
         self.assertTrue((self.out / "aicrew" / "v0.9.0" / "aicrewd-darwin-arm64").is_file())
 
+    def assert_commands_run_where_they_are(self, text):
+        """No command hands a URL to bash or to -File: from a directory bash runs the
+        script in place, and from an https server the script is piped to bash (with its
+        arguments after -s --), as the connected one-liners are."""
+        seen = 0
+        for line in text.splitlines():
+            words = line.split()
+            if "bash" in words:
+                seen += 1
+                rest = words[words.index("bash") + 1:]
+                if "<url>" in line:
+                    self.assertEqual(words[:2], ["curl", "-fsSL"], line)
+                    self.assertTrue(words[2].startswith("<url>/") and words[3] == "|", line)
+                    self.assertIn(rest[:2], ([], ["-s", "--"]), line)
+                else:
+                    self.assertTrue(rest[0].startswith("<dir>/"), line)
+            if "-File" in words:
+                self.assertTrue(words[words.index("-File") + 1].startswith("<dir>\\"), line)
+            if "iex" in words:
+                self.assertEqual(words[:2], ["irm", words[1]], line)
+                self.assertTrue(words[1].startswith("<url>/"), line)
+        self.assertGreater(seen, 0)
+
     def test_readme_names_the_tags_and_no_forge(self):
         r = self.run_export("--platforms", "linux-amd64")
         self.assertEqual(r.returncode, 0, r.stderr)
         text = (self.out / "README.txt").read_text(encoding="utf-8")
         self.assertNotIn("github", text.lower())
         self.assertNotIn("://", text)
-        for line in ("AIMEM_BASE=<export> bash <export>/aimem/v0.10.23/boot.sh",
-                     "AIMEM_BASE=<export> bash <export>/aimem/v0.10.23/install-hub.sh",
-                     "<export>\\aimem\\v0.10.23\\boot.ps1",
-                     "AI_SKILLS_EXPORT=<export> bash <export>/aiskills/v1.39.0/boot.sh",
-                     "<export>\\aiskills\\v1.39.0\\boot.ps1",
+        for line in ("AIMEM_BASE=<dir> bash <dir>/aimem/v0.10.23/boot.sh",
+                     "AIMEM_BASE=<dir> bash <dir>/aimem/v0.10.23/install-hub.sh",
+                     "-File <dir>\\aimem\\v0.10.23\\boot.ps1",
+                     "curl -fsSL <url>/aimem/v0.10.23/boot.sh | AIMEM_BASE=<url> bash\n",
+                     "curl -fsSL <url>/aimem/v0.10.23/install-hub.sh | AIMEM_BASE=<url> bash\n",
+                     "$env:AIMEM_BASE = '<url>'",
+                     "irm <url>/aimem/v0.10.23/boot.ps1 | iex",
+                     "AI_SKILLS_EXPORT=<dir> bash <dir>/aiskills/v1.39.0/boot.sh --user -s core",
+                     "-File <dir>\\aiskills\\v1.39.0\\boot.ps1",
+                     "curl -fsSL <url>/aiskills/v1.39.0/boot.sh | AI_SKILLS_EXPORT=<url> bash\n",
+                     "curl -fsSL <url>/aiskills/v1.39.0/boot.sh | AI_SKILLS_EXPORT=<url> bash -s -- --user -s core",
+                     "irm <url>/aiskills/v1.39.0/boot.ps1 | iex",
                      "aimem process export <repository> <commit> <manifest>",
                      "--from-archive <archive> --sums SHA256SUMS",
                      "for linux-amd64 only"):
             self.assertIn(line, text)
+        self.assert_commands_run_where_they_are(text)
         # aicrew v0.9.0 publishes no installer scripts as assets: README.txt says so
         self.assertIn("does not publish boot.sh, boot.ps1, install-aicrewd.sh as release assets", text)
-        self.assertIn("cd <export>/aicrew/v0.9.0 && sha256sum -c --ignore-missing SHA256SUMS", text)
+        self.assertIn("cd <dir>/aicrew/v0.9.0 && sha256sum -c --ignore-missing SHA256SUMS", text)
         self.assertNotIn("AICREW_BASE", text)
 
     def test_readme_for_releases_that_publish_their_installers(self):
@@ -160,10 +204,14 @@ class ExportCases(unittest.TestCase):
         r = self.run_export("--aiskills", "v1.38.0")
         self.assertEqual(r.returncode, 0, r.stderr)
         text = (self.out / "README.txt").read_text(encoding="utf-8")
-        self.assertIn("AICREW_BASE=<export> bash <export>/aicrew/v0.10.0/install-aicrewd.sh", text)
+        self.assertIn("AICREW_BASE=<dir> bash <dir>/aicrew/v0.10.0/install-aicrewd.sh", text)
+        # aicrew's installers do not document the https form yet: README.txt says so
+        self.assertIn("From an https server: aicrew's installers do not document that form yet;", text)
+        self.assertNotIn("<url>/aicrew", text)
         self.assertIn("does not publish boot.sh, boot.ps1 as release assets", text)
         self.assertIn("tar -xzf aiskills-1.38.0.tar.gz && ./aiskills-1.38.0/install.sh --user", text)
         self.assertNotIn("AI_SKILLS_EXPORT", text)
+        self.assert_commands_run_where_they_are(text)
 
     def test_latest_is_looked_up_and_explicit_tags_win(self):
         self.forge.add("aimem", "v0.10.24", release("aimem", "v0.10.24", AIMEM))
@@ -225,6 +273,40 @@ class ExportCases(unittest.TestCase):
         r = self.run_export("--products", "aiskills")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.out / "aiskills" / "v1.39.0" / "SHA256SUMS").read_bytes(), sums)
+
+    def test_a_body_cut_short_writes_nothing(self):
+        # A whole-body read (SHA256SUMS) that ends early; a streamed file that ends early
+        # fails its checksum instead.
+        self.forge.cut_short = "SHA256SUMS"
+        r = self.run_export("--products", "aiskills")
+        self.assert_nothing_written(r, "/aiskills/releases/download/v1.39.0/SHA256SUMS:")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_an_os_error_is_reported_not_raised(self):
+        args = ["--out", str(self.out), "--products", "aiskills", "--aiskills", "v1.39.0",
+                "--download-base", self.forge.base + "/dl", "--api-base", self.forge.base + "/api"]
+        err = io.StringIO()
+        with mock.patch.object(ax.os, "mkdir", side_effect=PermissionError(13, "Permission denied", str(self.tmp))), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ax.main(args), 1)
+        self.assertIn("aiforge-export: [Errno 13] Permission denied", err.getvalue())
+        self.assertIn("nothing was written", err.getvalue())
+
+    def test_the_export_is_readable_as_any_new_directory_is(self):
+        # The export root and its files get what an ordinary new directory and file get
+        # here, not a directory private to the account that wrote it.
+        r = self.run_export("--products", "aiskills")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        plain = self.tmp / "plain"
+        os.mkdir(plain)
+        (plain / "f").write_bytes(b"x")
+        exported = self.out / "aiskills" / "v1.39.0" / "boot.sh"
+        if os.name == "nt":
+            self.assertEqual(acl(self.out), acl(plain))
+            self.assertEqual(acl(exported), acl(plain / "f"))
+        else:
+            self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), stat.S_IMODE(plain.stat().st_mode))
+            self.assertEqual(stat.S_IMODE(exported.stat().st_mode), stat.S_IMODE((plain / "f").stat().st_mode))
 
     def test_an_existing_out_is_refused(self):
         self.out.mkdir()

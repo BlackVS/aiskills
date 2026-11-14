@@ -21,7 +21,7 @@ Usage:
 
 Python 3.8 or newer, standard library only.
 """
-import argparse, hashlib, ipaddress, json, os, re, shutil, sys, tempfile, time
+import argparse, hashlib, http.client, ipaddress, json, os, re, secrets, shutil, sys, time
 import urllib.error, urllib.parse, urllib.request
 
 FORMAT = "aiforge-export 1"
@@ -98,7 +98,7 @@ def fetch(url, sink=None):
         except urllib.error.HTTPError as e:
             if e.code < 500 or attempt == 2:
                 raise ExportError(f"{url}: HTTP {e.code}") from None
-        except (urllib.error.URLError, OSError) as e:
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
             if sink is not None or attempt == 2:
                 raise ExportError(f"{url}: {getattr(e, 'reason', e)}") from None
         time.sleep(1 + attempt)
@@ -191,14 +191,58 @@ def export_product(product, tag, platforms, download_base, dest, log):
     return [f for f in INSTALLERS[product] if f not in sums]
 
 
+# Per product: its base variable, the execution policy its Windows boot script runs
+# under, the shell installers README.txt names, as (who runs it, script, arguments),
+# and whether the product's installers document the https form, piped as their
+# connected one-liners are: aimem's ADMIN-MANUAL ("curl ... | AIMEM_BASE=... bash",
+# "irm ... | iex"; install-hub.sh runs alone), aiskills' README and its boot tests.
+COMMANDS = {
+    "aimem": ("AIMEM_BASE", "RemoteSigned",
+              (("A workstation (Linux, macOS)", "boot.sh", ""), ("A hub, as root", "install-hub.sh", "")), True),
+    "aicrew": ("AICREW_BASE", "RemoteSigned",
+               (("A workstation (Linux, macOS)", "boot.sh", ""), ("The aicrewd service, as root", "install-aicrewd.sh", "")),
+               False),
+    "aiskills": ("AI_SKILLS_EXPORT", "Bypass",
+                 (("Linux, macOS", "boot.sh", ""), ("For every project of this user", "boot.sh", "--user -s core")), True),
+}
+
+
+def install_commands(product, tag):
+    """The commands for both forms of an export: a directory (<dir>), where a script is
+    run in place, and an https server (<url>), where it is piped from the server as the
+    connected one-liners are. Either way the base variable names the export's root."""
+    var, policy, scripts, https = COMMANDS[product]
+    rel = f"{product}/{tag}"
+    out = ["From a directory:"]
+    for who, script, args in scripts:
+        out += [f"  {who}:", f"    {var}=<dir> bash <dir>/{rel}/{script}" + (f" {args}" if args else "")]
+    out += ["  Windows, in PowerShell:",
+            f"    $env:{var} = '<dir>'",
+            f"    powershell -NoProfile -ExecutionPolicy {policy} -File <dir>\\{product}\\{tag}\\boot.ps1",
+            f"    Remove-Item Env:{var}"]
+    if not https:
+        return out + [f"From an https server: {product}'s installers do not document that form yet;",
+                      "copy the directory and install from it as above."]
+    out += ["From an https server:"]
+    for who, script, args in scripts:
+        out += [f"  {who}:", f"    curl -fsSL <url>/{rel}/{script} | {var}=<url> bash" + (f" -s -- {args}" if args else "")]
+    out += ["  Windows, in PowerShell:",
+            f"    $env:{var} = '<url>'",
+            f"    irm <url>/{rel}/boot.ps1 | iex",
+            f"    Remove-Item Env:{var}"]
+    return out
+
+
 def readme(tags, platforms, lacking):
     """README.txt: what the export holds and how to install from it. Names no forge."""
     out = [
         "aiforge export, format 1",
         "",
         "This directory is what a closed network installs aimem, aicrew and aiskills from.",
-        "Copy it whole, for example to /media/aiforge-export or D:\\aiforge-export, or serve",
-        "it from an internal https server. Below, <export> is that directory or URL.",
+        "Copy it whole, or serve it from an internal https server. Below, <dir> is the",
+        "directory it was copied to (an absolute path, for example /media/aiforge-export;",
+        "on Windows also D:\\aiforge-export or \\\\host\\share\\aiforge-export), and <url> is",
+        "the https URL it is served at.",
         "",
         "MANIFEST names the release each product installs by default:",
         "",
@@ -216,57 +260,25 @@ def readme(tags, platforms, lacking):
             "whole and still lists the others.",
         ]
     for product, tag in tags.items():
-        d = f"<export>/{product}/{tag}"
-        w = f"<export>\\{product}\\{tag}"
         out += ["", f"{product} {tag}", "-" * len(f"{product} {tag}"), ""]
         missing = lacking[product]
-        if product == "aimem":
+        if not missing:
+            out += install_commands(product, tag)
+            continue
+        out += [
+            f"This release does not publish {', '.join(missing)} as release assets, so it has",
+            "no installer that reads this export. On a copy of the directory, check the files:",
+            f"    cd <dir>/{product}/{tag} && sha256sum -c --ignore-missing SHA256SUMS",
+        ]
+        if product == "aiskills":
+            ver = tag[1:]
             out += [
-                "A workstation (Linux, macOS):",
-                f"    AIMEM_BASE=<export> bash {d}/boot.sh",
-                "A hub, as root:",
-                f"    AIMEM_BASE=<export> bash {d}/install-hub.sh",
-                "Windows, in PowerShell:",
-                "    $env:AIMEM_BASE = '<export>'",
-                f"    powershell -NoProfile -ExecutionPolicy RemoteSigned -File {w}\\boot.ps1",
-                "    Remove-Item Env:AIMEM_BASE",
+                "then install from the checked archive:",
+                f"    tar -xzf aiskills-{ver}.tar.gz && ./aiskills-{ver}/install.sh --user",
+                f"    (Windows: expand aiskills-{ver}.zip and run install.ps1 -User)",
             ]
-        elif product == "aiskills" and not missing:
-            out += [
-                "Linux, macOS:",
-                f"    AI_SKILLS_EXPORT=<export> bash {d}/boot.sh",
-                f"    AI_SKILLS_EXPORT=<export> bash {d}/boot.sh --user -s core",
-                "Windows, in PowerShell:",
-                "    $env:AI_SKILLS_EXPORT = '<export>'",
-                f"    powershell -NoProfile -ExecutionPolicy Bypass -File {w}\\boot.ps1",
-                "    Remove-Item Env:AI_SKILLS_EXPORT",
-            ]
-        elif product == "aicrew" and not missing:
-            out += [
-                "A workstation (Linux, macOS):",
-                f"    AICREW_BASE=<export> bash {d}/boot.sh",
-                "The aicrewd service, as root:",
-                f"    AICREW_BASE=<export> bash {d}/install-aicrewd.sh",
-                "Windows, in PowerShell:",
-                "    $env:AICREW_BASE = '<export>'",
-                f"    powershell -NoProfile -ExecutionPolicy RemoteSigned -File {w}\\boot.ps1",
-                "    Remove-Item Env:AICREW_BASE",
-            ]
-        if missing:
-            out += [
-                f"This release does not publish {', '.join(missing)} as release assets, so it has",
-                "no installer that reads this export. Check the files first:",
-                f"    cd {d} && sha256sum -c --ignore-missing SHA256SUMS",
-            ]
-            if product == "aiskills":
-                ver = tag[1:]
-                out += [
-                    "then install from the checked archive:",
-                    f"    tar -xzf aiskills-{ver}.tar.gz && ./aiskills-{ver}/install.sh --user",
-                    f"    (Windows: expand aiskills-{ver}.zip and run install.ps1 -User)",
-                ]
-            else:
-                out += ["then install its binaries by hand."]
+        else:
+            out += ["then install its binaries by hand."]
     out += [
         "",
         "Process sets",
@@ -291,7 +303,10 @@ def build(args, log=print):
     if not os.path.isdir(parent):
         raise ExportError(f"{parent} is not a directory")
     tags = {p: getattr(args, p) or latest_tag(args.api_base, p) for p in args.products}
-    stage = tempfile.mkdtemp(prefix=os.path.basename(out) + ".partial-", dir=parent)
+    # An ordinary new directory, so the export gets the permissions any directory made
+    # here gets (tempfile.mkdtemp would make it readable by its owner alone).
+    stage = os.path.join(parent, f"{os.path.basename(out)}.partial-{secrets.token_hex(6)}")
+    os.mkdir(stage)
     try:
         lacking = {}
         for product, tag in tags.items():
@@ -353,7 +368,7 @@ def main(argv=None):
     args.products = [p for p in PRODUCTS if p in args.products]
     try:
         build(args)
-    except ExportError as e:
+    except (ExportError, OSError) as e:
         print(f"aiforge-export: {e}", file=sys.stderr)
         print("aiforge-export: nothing was written", file=sys.stderr)
         return 1
