@@ -88,8 +88,9 @@ FAKE_CURL = r"""#!/bin/sh
 # empty); the API's latest-release lookup writes FAKE_API_BODY to its -o file and
 # prints FAKE_API_STATUS (000: a transport failure). Anything else is a download,
 # written to its -o file, its status printed for -w: SHA256SUMS (or API asset 2)
-# is FAKE_SUMS (404 when unset), a release by tag FAKE_RELEASE (404 when unset),
-# anything else FAKE_ARCHIVE, or FAKE_ARCHIVE_STATUS when set (000: no answer).
+# is FAKE_SUMS (404 when unset), an export's MANIFEST FAKE_MANIFEST (404 when unset),
+# a release by tag FAKE_RELEASE (404 when unset), anything else FAKE_ARCHIVE, or
+# FAKE_ARCHIVE_STATUS when set (000: no answer).
 echo "$*" >> "$FAKE_LOG"
 out=; head=0; status=0; url=
 while [ $# -gt 0 ]; do
@@ -112,6 +113,8 @@ case "$url" in
     [ "$FAKE_API_STATUS" != 000 ] || exit 7 ;;
   */SHA256SUMS|*/releases/assets/2)
     if [ -n "$FAKE_SUMS" ]; then emit < "$FAKE_SUMS"; answer 200; else echo 'Not Found' | emit; answer 404; fi ;;
+  */MANIFEST)
+    if [ -n "$FAKE_MANIFEST" ]; then emit < "$FAKE_MANIFEST"; answer 200; else echo 'Not Found' | emit; answer 404; fi ;;
   */releases/tags/*)
     if [ -n "$FAKE_RELEASE" ]; then printf '%s' "$FAKE_RELEASE" | emit; answer 200; else echo 'Not Found' | emit; answer 404; fi ;;
   *)
@@ -172,6 +175,14 @@ class ReleaseFixture:
 
 class ReleaseCases(ReleaseFixture):
     """Cases both boots share; run_boot(**env) is each boot's own."""
+
+    def test_release_without_boot_script_assets_installs(self):
+        # Every release before the boot scripts became assets lists only the archives in SHA256SUMS
+        # (self.sums); the connected path needs nothing else, so such a release installs as before.
+        self.assertNotIn("boot.", self.sums.read_text())
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9")
+        self.assert_installed(r, self.digest)
+        self.assertNotIn("boot.", " ".join(self.calls()), "no boot script is fetched")
 
     def test_release_is_verified_and_its_digest_recorded(self):
         r = self.run_boot(AI_SKILLS_REF="v9.9.9")
@@ -324,6 +335,9 @@ function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $He
     if ($Uri -like '*/SHA256SUMS' -or $Uri -like '*/releases/assets/2') {
         if (-not $env:FAKE_SUMS) { throw [FakeHttpError]::new(404) }
         Copy-Item -LiteralPath $env:FAKE_SUMS $OutFile
+    } elseif ($Uri -like '*/MANIFEST') {
+        if (-not $env:FAKE_MANIFEST) { throw [FakeHttpError]::new(404) }
+        Copy-Item -LiteralPath $env:FAKE_MANIFEST $OutFile
     } elseif ($env:FAKE_ARCHIVE_STATUS -eq '000') { throw [System.Net.WebException]::new('connection refused')
     } elseif ($env:FAKE_ARCHIVE_STATUS) { throw [FakeHttpError]::new([int]$env:FAKE_ARCHIVE_STATUS)
     } else { Copy-Item -LiteralPath $env:FAKE_ARCHIVE $OutFile } }
@@ -459,6 +473,161 @@ class PowerShellBoot(BootContract, unittest.TestCase):
         r = self.run_boot(archive=bad)
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse((self.home / ".claude").exists())
+
+
+class ExportCases(ReleaseFixture):
+    """An aiforge export (format 1): MANIFEST and aiskills/<tag>/ with the release's assets and SHA256SUMS.
+    run_boot(**env) and path(p) (the form the shell takes) are each boot's own."""
+
+    MANIFEST = "aiforge-export 1\naimem v0.10.23\naiskills v9.9.9\naicrew v0.9.0\n"
+
+    def setUp(self):
+        super().setUp()
+        self.export = self.tmp / "export"
+        self.src = self.export / "aiskills" / "v9.9.9"; self.src.mkdir(parents=True)
+        shutil.copy(self.archive, self.src / "aiskills-9.9.9.tar.gz")
+        for name in ("boot.sh", "boot.ps1"):
+            shutil.copy(ROOT / name, self.src / name)
+        self.write_manifest(self.MANIFEST)
+        self.write_export_sums(*(f"{sha256_of(f)}  {f.name}" for f in sorted(self.src.iterdir())))
+
+    def write_manifest(self, text):
+        (self.export / "MANIFEST").write_bytes(text.encode())
+
+    def write_export_sums(self, *lines):
+        (self.src / "SHA256SUMS").write_text("".join(l + "\n" for l in lines), encoding="utf-8", newline="\n")
+
+    def run_export(self, export=None, **extra):
+        return self.run_boot(AI_SKILLS_EXPORT=self.path(self.export) if export is None else export, **extra)
+
+    def assert_from_export(self, r):
+        self.assert_installed(r, self.digest)
+        self.assertIn("Fetching aiskills v9.9.9 (aiskills-9.9.9.tar.gz and SHA256SUMS) from ", r.stdout)
+        self.assertIn(f"Verified aiskills-9.9.9.tar.gz against SHA256SUMS: {self.digest}", r.stdout)
+        self.assertNotIn("github.com", r.stdout + r.stderr)
+        self.assertEqual(self.calls(), [], "a local export contacts no host")
+
+    def assert_refused_quietly(self, r, message):
+        # Windows PowerShell wraps a long error at the console width, inside a word: compare without whitespace
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(re.sub(r"\s", "", message), re.sub(r"\s", "", flat(r.stdout + r.stderr)))
+        self.assertFalse((self.home / ".claude").exists(), "nothing is installed")
+        self.assertNotIn("github.com", r.stdout + r.stderr)
+        self.assertEqual(self.calls(), [], "nothing is downloaded")
+
+    def test_installs_the_release_manifest_names(self):
+        self.assert_from_export(self.run_export())
+
+    def test_a_trailing_separator_and_crlf_manifest_are_accepted(self):
+        self.write_manifest(self.MANIFEST.replace("\n", "\r\n"))
+        self.assert_from_export(self.run_export(self.path(self.export) + "/"))
+
+    def test_an_explicit_release_needs_no_manifest(self):
+        (self.export / "MANIFEST").unlink()
+        self.assert_from_export(self.run_export(AI_SKILLS_REF="v9.9.9"))
+
+    def test_manifest_refusals(self):
+        x = self.path(self.export)
+        for text, message in ((None, f"could not read {x}/MANIFEST"),
+                              ("aiforge-export 2\naiskills v9.9.9\n", f"{x}/MANIFEST is 'aiforge-export 2', not a format this installer reads"),
+                              ("aiforge-export 1\naimem v0.10.23\n", f"{x}/MANIFEST names no aiskills release"),
+                              ("aiforge-export 1\naiskills main\n", "'main' is not a release (vX.Y.Z): an export holds releases only"),
+                              ("aiforge-export 1\naiskills v9.9.9/../../x\n", "is not a release (vX.Y.Z)")):
+            with self.subTest(text=text):
+                (self.export / "MANIFEST").unlink(missing_ok=True)
+                if text is not None:
+                    self.write_manifest(text)
+                self.assert_refused_quietly(self.run_export(), message)
+
+    def test_a_missing_file_or_a_mismatch_installs_nothing(self):
+        src = f"{self.path(self.export)}/aiskills/v9.9.9"
+        (self.src / "aiskills-9.9.9.tar.gz").rename(self.tmp / "away.tar.gz")
+        self.assert_refused_quietly(self.run_export(), f"could not read {src}/aiskills-9.9.9.tar.gz")
+        (self.tmp / "away.tar.gz").rename(self.src / "aiskills-9.9.9.tar.gz")
+        (self.src / "SHA256SUMS").rename(self.tmp / "SHA256SUMS.away")
+        self.assert_refused_quietly(self.run_export(), f"could not read {src}/SHA256SUMS")
+        self.write_export_sums(f"{'f' * 64}  aiskills-9.9.9.tar.gz")
+        self.assert_refused_quietly(self.run_export(),
+                                    f"{src}/aiskills-9.9.9.tar.gz does not match {src}/SHA256SUMS (expected {'f' * 64}")
+        self.write_export_sums(f"{self.digest}  aiskills-9.9.8.tar.gz")
+        self.assert_refused_quietly(self.run_export(), f"{src}/SHA256SUMS lists no single digest for aiskills-9.9.9.tar.gz")
+
+    def test_refused_forms(self):
+        for extra, message in (({"AI_SKILLS_BASE": "https://git.example.invalid"}, "AI_SKILLS_EXPORT (an aiforge export) and AI_SKILLS_BASE"),
+                               ({"AI_SKILLS_ARCHIVE": str(self.archive)}, "AI_SKILLS_EXPORT and AI_SKILLS_ARCHIVE are both set"),
+                               ({"AI_SKILLS_EXPORT": "http://files.example.invalid/x"}, "plain http is refused"),
+                               ({"AI_SKILLS_EXPORT": "export"}, "AI_SKILLS_EXPORT must be an absolute directory")):
+            with self.subTest(extra=extra):
+                rest = {k: v for k, v in extra.items() if k != "AI_SKILLS_EXPORT"}
+                self.assert_refused_quietly(self.run_export(extra.get("AI_SKILLS_EXPORT"), **rest), message)
+
+    def test_https_export_reads_only_the_export(self):
+        r = self.run_export("https://files.example.invalid/aiforge/", FAKE_MANIFEST=str(self.export / "MANIFEST"),
+                            FAKE_ARCHIVE=str(self.src / "aiskills-9.9.9.tar.gz"), FAKE_SUMS=str(self.src / "SHA256SUMS"))
+        self.assert_installed(r, self.digest)
+        self.assertNotIn("github.com", r.stdout + r.stderr)
+        urls = [u for c in self.calls() for u in c.split() if "://" in u]
+        self.assertEqual(urls, ["https://files.example.invalid/aiforge/MANIFEST",
+                                "https://files.example.invalid/aiforge/aiskills/v9.9.9/aiskills-9.9.9.tar.gz",
+                                "https://files.example.invalid/aiforge/aiskills/v9.9.9/SHA256SUMS"])
+
+    def test_the_mirror_form_is_unchanged(self):
+        # AI_SKILLS_BASE alone still means a Gitea mirror
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_BASE="https://git.example.invalid")
+        self.assert_installed(r, self.digest)
+        self.assertIn("https://git.example.invalid/BlackVS/aiskills/releases/download/v9.9.9/SHA256SUMS", " ".join(self.calls()))
+
+
+@unittest.skipUnless(BASH and os.name != "nt", "needs a POSIX bash to put a fake curl on PATH (Git Bash puts its own curl first)")
+class BashBootExport(ExportCases, unittest.TestCase):
+    """boot.sh with AI_SKILLS_EXPORT; the fake curl records any download."""
+
+    def setUp(self):
+        super().setUp()
+        self.bin = self.tmp / "bin"; self.bin.mkdir()
+        (self.bin / "curl").write_text(FAKE_CURL); (self.bin / "curl").chmod(0o755)
+
+    def path(self, p):
+        return str(p)
+
+    def run_boot(self, **extra):
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
+        env.update(HOME=str(self.home), PATH=f"{self.bin}:{env['PATH']}", FAKE_LOG=str(self.log),
+                   FAKE_ARCHIVE=str(self.archive), FAKE_SUMS=str(self.sums), FAKE_RELEASE=RELEASE_JSON, FAKE_LOCATION="")
+        env.update(extra)
+        return subprocess.run([BASH, str(ROOT / "boot.sh"), "--user", "-s", "core"], capture_output=True, text=True, env=env)
+
+    def test_curl_is_held_to_https_redirects_included(self):
+        # curl is told to stay on https, redirects included
+        self.run_export("https://files.example.invalid/aiforge", FAKE_MANIFEST=str(self.export / "MANIFEST"))
+        for call in self.calls():
+            self.assertIn("--proto =https --proto-redir =https", call)
+
+
+@unittest.skipUnless(PWSH, "no PowerShell found")
+class PowerShellBootExport(ExportCases, unittest.TestCase):
+    """boot.ps1 with AI_SKILLS_EXPORT: a drive path on Windows, an absolute directory elsewhere."""
+
+    def path(self, p):
+        return str(p)
+
+    def run_boot(self, **extra):
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_")}
+        env.update(AI_SKILLS_ARGS="-User -Skills core", FAKE_LOG=str(self.log), FAKE_ARCHIVE=str(self.archive),
+                   FAKE_SUMS=str(self.sums), FAKE_RELEASE=RELEASE_JSON, FAKE_API_STATUS="200", FAKE_API_BODY="{}")
+        env.update(extra)
+        return ps_boot(self.home, env)
+
+    def calls(self):
+        return [c.split(" ", 1)[1] for c in super().calls()]
+
+    @unittest.skipUnless(os.name == "nt", "a \\\\host\\share path is a Windows form")
+    def test_unc_path(self):
+        drive, rest = os.path.splitdrive(str(self.export))
+        unc = "\\\\localhost\\" + drive[0] + "$" + rest
+        if not os.path.isfile(os.path.join(unc, "MANIFEST")):
+            self.skipTest(f"the administrative share {unc} is not reachable here")
+        self.assert_from_export(self.run_export(unc))
 
 
 if __name__ == "__main__":

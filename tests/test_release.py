@@ -59,10 +59,18 @@ class ReleaseScript(unittest.TestCase):
     def git(self, cwd, *args):
         return subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True, text=True).stdout.strip()
 
-    def commit_version(self, ver, section=True, tag=False):
-        """The maintainer merges a version bump to main (and optionally tags it)."""
+    def commit_version(self, ver, section=True, tag=False, boot=True):
+        """The maintainer merges a version bump to main (and optionally tags it); boot.sh and boot.ps1
+        carry the version, so a published copy shows which commit it came from."""
         self.versions.insert(0, ver)
         (self.dev / "VERSION").write_text(ver + "\n")
+        for name in ("boot.sh", "boot.ps1"):
+            f = self.dev / name
+            if boot:
+                f.write_text(("#!/bin/sh\n" if name == "boot.sh" else "") + f"# {name} of {ver}\n")
+                f.chmod(0o755)
+            else:
+                f.unlink(missing_ok=True)
         body = "".join(f"## [{v}] - 2026-01-01\n\n### Changed\n- change {v}\n\n" for v in self.versions if section or v != ver)
         (self.dev / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n" + body)
         self.git(self.dev, "add", "-A"); self.git(self.dev, "commit", "-q", "-m", ver)
@@ -100,10 +108,39 @@ class ReleaseScript(unittest.TestCase):
         self.assertIn("--latest=true", args)
         self.assertIn("--verify-tag", args)
         dist = run / "dist"
-        self.assertEqual(sorted(p.name for p in dist.iterdir()), ["SHA256SUMS", "aiskills-1.2.0.tar.gz", "aiskills-1.2.0.zip"])
+        published = ["SHA256SUMS", "aiskills-1.2.0.tar.gz", "aiskills-1.2.0.zip", "boot.ps1", "boot.sh"]
+        self.assertEqual(sorted(p.name for p in dist.iterdir()), published)
+        self.assertEqual(sorted(a for a in args if a.startswith("dist/")), sorted(f"dist/{n}" for n in published), "every file is uploaded")
+        # the sums are written after the boot scripts are copied: every other file is listed, and matches
+        listed = {}
         for line in (dist / "SHA256SUMS").read_text().splitlines():
             digest, name = line.split(maxsplit=1)
-            self.assertEqual(hashlib.sha256((dist / name.lstrip("*")).read_bytes()).hexdigest(), digest)
+            listed[name.lstrip("*")] = digest
+        self.assertEqual(sorted(listed), published[1:])
+        for name, digest in listed.items():
+            self.assertEqual(hashlib.sha256((dist / name).read_bytes()).hexdigest(), digest)
+        for name in ("boot.sh", "boot.ps1"):
+            self.assertEqual((dist / name).read_bytes(), self.git_bytes(run, f"v1.2.0:{name}"), f"{name} as it is at the tag")
+
+    def git_bytes(self, cwd, obj):
+        return subprocess.run(["git", "cat-file", "blob", obj], cwd=cwd, env=self.env, check=True, capture_output=True).stdout
+
+    def test_boot_scripts_are_taken_from_the_tag(self):
+        # a pushed tag published after main moved on: the boot scripts are the tag's, not main's
+        self.commit_version("1.2.0", tag=True)
+        self.commit_version("1.3.0")
+        run = self.runner()
+        self.release(run, "prepare", "v1.2.0"); self.release(run, "publish", "v1.2.0")
+        self.assertEqual((run / "dist" / "boot.sh").read_text(), "#!/bin/sh\n# boot.sh of 1.2.0\n")
+        self.assertEqual((run / "dist" / "boot.ps1").read_text(), "# boot.ps1 of 1.2.0\n")
+
+    def test_release_without_boot_scripts_is_not_published(self):
+        self.commit_version("1.2.0", boot=False)
+        run = self.runner()
+        self.release(run, "prepare", "v1.2.0", "--create")
+        r = self.release(run, "publish", "v1.2.0", "--create", ok=False)
+        self.assertIn("v1.2.0 has no boot.sh to publish", r.stderr)
+        self.assertFalse(self.created(), "nothing was published")
 
     def test_pushed_tag_is_published_even_after_main_moved_on(self):
         tagged = self.commit_version("1.2.0", tag=True)
