@@ -125,7 +125,9 @@ host:
 - not to a host given with `--api-base`: an export pointed at another API
   host runs unauthenticated.
 
-The token needs no scope: a read-only token lifts the limit.
+The token needs no scope: a read-only token lifts the limit. A token the API
+does not accept (expired, revoked) stops the export with HTTP 401 and a
+message that names the variable to replace or unset.
 
 ## Build provenance
 

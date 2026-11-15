@@ -625,6 +625,16 @@ class ExportCases(unittest.TestCase):
         self.assertTrue(self.download_auth())
         self.assertEqual(set(self.download_auth()), {None}, "no download carries the token")
 
+    def test_a_token_the_api_does_not_accept_names_the_variable(self):
+        self.forge.api_status = 401
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GITHUB_TOKEN="tok-expired")
+        self.assertEqual(code, 1, err)
+        self.assertIn("HTTP 401: the forge API did not accept the token from GITHUB_TOKEN; "
+                      "replace GITHUB_TOKEN or unset it", err)
+        self.assertNotIn("tok-expired", err, "the token is never printed")
+        self.assertIn("nothing was written", err)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), [], "no export and no partial directory")
+
     def test_a_token_read_with_its_line_end_is_sent_without_it(self):
         code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GH_TOKEN="tok-gh\r\n")
         self.assertEqual(code, 0, err)

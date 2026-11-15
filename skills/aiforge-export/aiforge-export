@@ -140,6 +140,9 @@ def fetch(url, sink=None, missing_ok=False, api=False):
                 return None
             if api and e.code in (403, 429):
                 raise ExportError(rate_limited(url, e.code, token)) from None
+            if api and token and e.code == 401:
+                raise ExportError(f"{url}: HTTP 401: the forge API did not accept the token from {token[0]}; "
+                                  f"replace {token[0]} or unset it") from None
             if e.code < 500 or attempt == 2:
                 raise ExportError(f"{url}: HTTP {e.code}") from None
         except (urllib.error.URLError, http.client.HTTPException, OSError) as e:

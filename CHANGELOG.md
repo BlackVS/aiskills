@@ -24,6 +24,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
     redirect, and not to a host given with `--api-base`;
   - a 403 or 429 from the API stops the export with a message that names
     the limit and the variables, and still writes nothing;
+  - a token the API does not accept (an expired one left in a shell) stops
+    the export with HTTP 401 and a message that names the variable to
+    replace or unset, never its value;
   - CI's test step holds the workflow's read-only token, so the lookup runs
     authenticated on every pull request, push and the release's macOS leg;
   - the release job's test step still holds no token, and there the

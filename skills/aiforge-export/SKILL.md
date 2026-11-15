@@ -58,6 +58,8 @@ What it refuses, each with a message naming the URL or file:
   with build provenance in which a file stays without it;
 - a 403 or 429 from the forge API, most likely its rate limit: the message
   names `GH_TOKEN` and `GITHUB_TOKEN`;
+- a 401 from the forge API for a token it does not accept: the message names
+  the variable to replace or unset, never its value;
 - a `--trusted-root` file that is not a Sigstore trusted root;
 - an `--out` that already exists.
 
