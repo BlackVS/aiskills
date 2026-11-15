@@ -137,9 +137,22 @@ AI_SKILLS_EXPORT=/media/aiforge-export bash /media/aiforge-export/aiskills/<tag>
 ```
 
 ```powershell
-$env:AI_SKILLS_EXPORT = 'D:\aiforge-export'      # or \\host\share\aiforge-export, or an https:// URL
-powershell -NoProfile -ExecutionPolicy Bypass -File D:\aiforge-export\aiskills\<tag>\boot.ps1
+$env:AI_SKILLS_EXPORT = 'D:\aiforge-export'      # or \\host\share\aiforge-export
+$boot = Join-Path $env:TEMP 'aiskills-boot.ps1'
+try {
+    Copy-Item -LiteralPath "$env:AI_SKILLS_EXPORT\aiskills\<tag>\boot.ps1" -Destination $boot -ErrorAction Stop
+    powershell -NoProfile -ExecutionPolicy Bypass -File $boot
+} finally { Remove-Item Env:AI_SKILLS_EXPORT; Remove-Item -LiteralPath $boot -ErrorAction SilentlyContinue }
 ```
+
+On Windows the boot script is copied to a local folder and the copy runs:
+Windows PowerShell refuses an unsigned script read straight from a share
+named by a dotted host name or an address under `RemoteSigned`, and a copy
+runs under any policy. A failed copy stops the block, so a copy an
+interrupted earlier run left behind never runs, and the variable and the
+copy are removed either way. From an https export, set the variable to the
+URL and run `irm <url>/aiskills/<tag>/boot.ps1 | iex`, as the export's
+`README.txt` shows.
 
 `<tag>` is the release the export's `MANIFEST` names, and the one the boot
 script installs unless `AI_SKILLS_REF` names another release in the export.

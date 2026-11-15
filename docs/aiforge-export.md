@@ -122,9 +122,13 @@ curl -fsSL https://files.example.org/aiforge/aimem/<tag>/boot.sh | AIMEM_BASE=ht
 curl -fsSL https://files.example.org/aiforge/aiskills/<tag>/boot.sh | AI_SKILLS_EXPORT=https://files.example.org/aiforge bash
 ```
 
-On Windows a directory export's `boot.ps1` runs with `powershell -File`,
-and an https one with `irm <url>/<product>/<tag>/boot.ps1 | iex`, the base
-variable set first. aimem's and aiskills' installers document and test the
+On Windows a directory export's `boot.ps1` is copied to a local folder
+and the copy runs with `powershell -File`, the copy inside the `try` with
+`-ErrorAction Stop` and the copy and the variable removed in its `finally`
+(Windows PowerShell refuses an unsigned script read straight from most
+shares under `RemoteSigned`, and a failed copy must not run a copy an
+interrupted run left behind). An https export's runs with
+`irm <url>/<product>/<tag>/boot.ps1 | iex`, the base variable set first. aimem's and aiskills' installers document and test the
 https form; aicrew's do not yet, so README.txt gives aicrew only the
 directory form.
 

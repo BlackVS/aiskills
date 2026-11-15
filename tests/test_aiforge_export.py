@@ -149,8 +149,9 @@ class ExportCases(unittest.TestCase):
 
     def assert_commands_run_where_they_are(self, text):
         """No command hands a URL to bash or to -File: from a directory bash runs the
-        script in place, and from an https server the script is piped to bash (with its
-        arguments after -s --), as the connected one-liners are."""
+        script in place, Windows copies boot.ps1 from the directory to TEMP and runs the
+        copy, and from an https server the script is piped to bash (with its arguments
+        after -s --), as the connected one-liners are."""
         seen = 0
         for line in text.splitlines():
             words = line.split()
@@ -164,7 +165,10 @@ class ExportCases(unittest.TestCase):
                 else:
                     self.assertTrue(rest[0].startswith("<dir>/"), line)
             if "-File" in words:
-                self.assertTrue(words[words.index("-File") + 1].startswith("<dir>\\"), line)
+                self.assertEqual(words[words.index("-File") + 1], "$boot", line)
+            if "Copy-Item" in words:
+                self.assertTrue(words[words.index("-LiteralPath") + 1].startswith('"$env:'), line)
+                self.assertEqual(words[-4:], ["-Destination", "$boot", "-ErrorAction", "Stop"], line)
             if "iex" in words:
                 self.assertEqual(words[:2], ["irm", words[1]], line)
                 self.assertTrue(words[1].startswith("<url>/"), line)
@@ -178,13 +182,14 @@ class ExportCases(unittest.TestCase):
         self.assertNotIn("://", text)
         for line in ("AIMEM_BASE=<dir> bash <dir>/aimem/v0.10.23/boot.sh",
                      "AIMEM_BASE=<dir> bash <dir>/aimem/v0.10.23/install-hub.sh",
-                     "-File <dir>\\aimem\\v0.10.23\\boot.ps1",
+                     'Copy-Item -LiteralPath "$env:AIMEM_BASE\\aimem\\v0.10.23\\boot.ps1" -Destination $boot -ErrorAction Stop',
                      "curl -fsSL <url>/aimem/v0.10.23/boot.sh | AIMEM_BASE=<url> bash\n",
                      "curl -fsSL <url>/aimem/v0.10.23/install-hub.sh | AIMEM_BASE=<url> bash\n",
                      "$env:AIMEM_BASE = '<url>'",
                      "irm <url>/aimem/v0.10.23/boot.ps1 | iex",
                      "AI_SKILLS_EXPORT=<dir> bash <dir>/aiskills/v1.39.0/boot.sh --user -s core",
-                     "-File <dir>\\aiskills\\v1.39.0\\boot.ps1",
+                     'Copy-Item -LiteralPath "$env:AI_SKILLS_EXPORT\\aiskills\\v1.39.0\\boot.ps1" -Destination $boot -ErrorAction Stop',
+                     "} finally { Remove-Item Env:AI_SKILLS_EXPORT; Remove-Item -LiteralPath $boot -ErrorAction SilentlyContinue }",
                      "curl -fsSL <url>/aiskills/v1.39.0/boot.sh | AI_SKILLS_EXPORT=<url> bash\n",
                      "curl -fsSL <url>/aiskills/v1.39.0/boot.sh | AI_SKILLS_EXPORT=<url> bash -s -- --user -s core",
                      "irm <url>/aiskills/v1.39.0/boot.ps1 | iex",
