@@ -9,6 +9,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-11-15
+
 ### Security
 - **`boot.ps1` follows a download's redirects only to https.** Windows
   PowerShell 5.1 follows a redirect from https to http and downloads over
