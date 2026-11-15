@@ -9,6 +9,30 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+- **The aiforge export's provenance lookup survives a rate-limited
+  address.** 1.40.0 added one unauthenticated call per product to the forge's
+  API, to look up build provenance, and the script took no token. The API
+  allows 60 unauthenticated calls an hour per address, and a hosted runner
+  shares its address. The real-release test runs on every CI leg; it passed
+  on the pull request, on the merge commit and in the release's macOS leg,
+  and then got HTTP 403 in the release job, which stopped before publishing.
+  The 403 was most likely the shared limit, which is not observable from the
+  log. **1.40.0 was tagged and not published.** Now:
+  - with `GH_TOKEN` or `GITHUB_TOKEN` set, the script sends the token to
+    `https://api.github.com` only: never to a download host, never after a
+    redirect, and not to a host given with `--api-base`;
+  - a 403 or 429 from the API stops the export with a message that names
+    the limit and the variables, and still writes nothing;
+  - a token the API does not accept (an expired one left in a shell) stops
+    the export with HTTP 401 and a message that names the variable to
+    replace or unset, never its value;
+  - CI's test step holds the workflow's read-only token, so the lookup runs
+    authenticated on every pull request, push and the release's macOS leg;
+  - the release job's test step still holds no token, and there the
+    real-release test skips with its reason on that refusal; with a token,
+    the refusal fails the test.
+
 ## [1.40.0] - 2026-11-15
 
 ### Security

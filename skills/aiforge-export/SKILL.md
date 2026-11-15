@@ -30,6 +30,11 @@ python3 aiforge-export --out ./export --products aimem,aiskills --aimem v0.10.23
   without one the latest release is taken.
 - `--trusted-root FILE` copies a Sigstore trusted root (the output of
   `gh attestation trusted-root`) into the export as `trusted_root.jsonl`.
+- `GH_TOKEN` or `GITHUB_TOKEN`, when set, lifts the forge API's limit of 60
+  unauthenticated calls an hour per address. The token goes to
+  `https://api.github.com` only: never to a download host, never after a
+  redirect, and not to a host given with `--api-base`, which runs
+  unauthenticated.
 
 For a release that carries its build provenance (aimem from v0.10.25), each
 exported file's attestation bundles go to
@@ -51,6 +56,10 @@ What it refuses, each with a message naming the URL or file:
 - any URL, redirects included, that is not https;
 - an attestation answer that is not a list of inline bundles, or a release
   with build provenance in which a file stays without it;
+- a 403 or 429 from the forge API, most likely its rate limit: the message
+  names `GH_TOKEN` and `GITHUB_TOKEN`;
+- a 401 from the forge API for a token it does not accept: the message names
+  the variable to replace or unset, never its value;
 - a `--trusted-root` file that is not a Sigstore trusted root;
 - an `--out` that already exists.
 

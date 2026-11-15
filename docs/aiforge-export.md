@@ -110,6 +110,25 @@ It refuses an aimem release whose sums list no installer files (releases
 before v0.10.23). A release that does not yet publish its installer scripts
 as assets is exported anyway, and README.txt says what is missing.
 
+**The forge API's limit and the token.** The script calls the forge's API to
+find a latest release and to look up build provenance. Without a token the
+API allows 60 calls an hour per address, and a shared address (a hosted CI
+runner, a network behind one NAT) can find that spent by others. A 403 or 429
+from the API stops the export with a message that names the limit and the
+variables below, and nothing is written: an export never silently lacks the
+bundles a release has. With `GH_TOKEN` or `GITHUB_TOKEN` set (`GH_TOKEN`
+wins), the script sends the token to `https://api.github.com` and to no other
+host:
+
+- never to a download host;
+- never after a redirect, to any host;
+- not to a host given with `--api-base`: an export pointed at another API
+  host runs unauthenticated.
+
+The token needs no scope: a read-only token lifts the limit. A token the API
+does not accept (expired, revoked) stops the export with HTTP 401 and a
+message that names the variable to replace or unset.
+
 ## Build provenance
 
 `SHA256SUMS` shows that a file arrived as published. A release whose
@@ -119,8 +138,8 @@ provenance. Every release also carries GitHub's own release attestation,
 which says only that the forge published the bytes; the export goes by the
 provenance.
 
-**What the script stores.** It asks the forge's API, without a token, for
-the attestations of the release's `SHA256SUMS` digest
+**What the script stores.** It asks the forge's API (with the token, under
+the rule above) for the attestations of the release's `SHA256SUMS` digest
 (`/repos/<owner>/<product>/attestations/sha256:<hex>`). If one of them is
 a build provenance, each exported file that its statement names gets
 `<product>/<tag>/attestations/<asset>.jsonl`: the bundles that name that

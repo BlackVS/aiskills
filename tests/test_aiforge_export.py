@@ -21,6 +21,21 @@ shipped_hosts = importlib.util.module_from_spec(_hosts_spec)
 _hosts_spec.loader.exec_module(shipped_hosts)
 
 
+TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
+
+
+def rate_limit_skip(returncode, stderr, environ):
+    """Why the real-release test skips, or None. Only a refusal by the forge API's
+    limit for unauthenticated calls, where no token is set (the release job's test
+    step holds none): with a token, the limit fails the test like any other failure."""
+    if returncode == 0 or any(environ.get(v) for v in TOKEN_VARS):
+        return None
+    if "rate limit for unauthenticated calls" not in stderr:
+        return None
+    return ("the forge API's rate limit for unauthenticated calls refused the lookup, and this step has no "
+            "GH_TOKEN or GITHUB_TOKEN: " + stderr.strip().splitlines()[0])
+
+
 def sums_of(files):
     return "".join(f"{hashlib.sha256(b).hexdigest()}  {n}\n" for n, b in sorted(files.items())).encode()
 
@@ -53,6 +68,9 @@ class FakeForge:
         self.attestations = {}  # (product, sha256 hex) -> the API's body for that digest
         self.redirect_to = None
         self.cut_short = None  # a file name whose body is sent short of its Content-Length
+        self.auth = []  # (path, the Authorization header or None), per request
+        self.api_status = None  # a status every /api call answers with instead
+        self.api_redirect = None  # a base every /api call is redirected to, path kept
         forge = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -61,6 +79,7 @@ class FakeForge:
 
             def do_GET(self):
                 forge.paths.append(self.path)
+                forge.auth.append((self.path, self.headers.get("Authorization")))
                 status, headers, body = forge.answer(self.path)
                 self.send_response(status)
                 for k, v in headers.items():
@@ -88,6 +107,10 @@ class FakeForge:
 
     def answer(self, path):
         parts = path.split("/")
+        if parts[1] == "api" and self.api_status:
+            return self.api_status, {}, b'{"message": "API rate limit exceeded"}'
+        if parts[1] == "api" and self.api_redirect:
+            return 302, {"Location": self.api_redirect + path}, b""
         if parts[1:3] == ["api", "repos"] and parts[3] == "BlackVS" and parts[5:] == ["releases", "latest"]:
             tag = self.latest.get(parts[4])
             return (200, {}, json.dumps({"tag_name": tag}).encode()) if tag else (404, {}, b"")
@@ -155,12 +178,33 @@ class ExportCases(unittest.TestCase):
         self.tmp = pathlib.Path(tmp.name)
         self.out = self.tmp / "export"
 
-    def run_export(self, *args):
+    def run_export(self, *args, env_extra=None):
         cmd = [sys.executable, str(SCRIPT), "--out", str(self.out), "--download-base", self.forge.base + "/dl",
                "--api-base", self.forge.base + "/api", *args]
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"))}
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")) and k not in TOKEN_VARS}
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env.update(env_extra or {})
         return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+
+    def run_default_api(self, *args, **tokens):
+        """main() in this process with the fake forge as the default API (API_BASE
+        replaced, no --api-base given) and exactly the token variables named.
+        Returns (exit code, stderr)."""
+        argv = ["--out", str(self.out), "--download-base", self.forge.base + "/dl", *args]
+        env = {k: v for k, v in os.environ.items() if k not in TOKEN_VARS}
+        env.update(tokens)
+        err = io.StringIO()
+        with mock.patch.object(ax, "API_BASE", self.forge.base + "/api"), mock.patch.dict(os.environ, env, clear=True), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = ax.main(argv)
+        return code, err.getvalue()
+
+    def api_auth(self, forge=None):
+        return [a for p, a in (forge or self.forge).auth if p.startswith("/api/")]
+
+    def download_auth(self):
+        return [a for p, a in self.forge.auth if p.startswith("/dl/")]
 
     def assert_nothing_written(self, r, *needles):
         self.assertNotEqual(r.returncode, 0, r.stdout)
@@ -538,6 +582,98 @@ class ExportCases(unittest.TestCase):
                 self.assert_nothing_written(r, "is not a Sigstore trusted root")
                 self.assertEqual(self.forge.paths, [], "checked before anything is fetched")
 
+    # The forge API's limit and the token. These tests make the fake forge the default
+    # API by replacing API_BASE; a host given with --api-base never gets a token.
+
+    def test_a_rate_limit_on_the_attestation_lookup_writes_nothing(self):
+        for status in (403, 429):
+            with self.subTest(status=status):
+                self.forge.api_status = status
+                code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23")
+                self.assertEqual(code, 1, err)
+                self.assertIn(f"/attestations/sha256:", err)
+                self.assertIn(f"HTTP {status}: the forge API refused the call, most likely its rate limit for "
+                              "unauthenticated calls (60 an hour per address); set GH_TOKEN or GITHUB_TOKEN", err)
+                self.assertIn("nothing was written", err)
+                self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), [], "no export and no partial directory")
+
+    def test_a_rate_limit_on_the_latest_release_lookup_writes_nothing(self):
+        for status in (403, 429):
+            with self.subTest(status=status):
+                self.forge.api_status = status
+                code, err = self.run_default_api("--products", "aimem")
+                self.assertEqual(code, 1, err)
+                self.assertIn(f"/releases/latest: HTTP {status}: the forge API refused the call, most likely its "
+                              "rate limit", err)
+                self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), [], "no export and no partial directory")
+
+    def test_a_refusal_with_a_token_names_the_variable_and_is_not_called_unauthenticated(self):
+        self.forge.api_status = 403
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GITHUB_TOKEN="tok-github")
+        self.assertEqual(code, 1, err)
+        self.assertIn("HTTP 403: the forge API refused the call with the token from GITHUB_TOKEN", err)
+        self.assertNotIn("unauthenticated", err)
+        self.assertNotIn("tok-github", err, "the token is never printed")
+
+    def test_the_token_goes_to_the_default_api_only(self):
+        d = digests("aimem", "v0.10.23", self.forge)
+        self.forge.attestations[("aimem", d["SHA256SUMS"])] = listed(bundle(PROVENANCE, d))
+        code, err = self.run_default_api("--products", "aimem", GH_TOKEN="tok-gh", GITHUB_TOKEN="tok-github")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.api_auth(), "the latest-release and attestation lookups were made")
+        self.assertEqual(set(self.api_auth()), {"Bearer tok-gh"}, "GH_TOKEN wins over GITHUB_TOKEN")
+        self.assertTrue(self.download_auth())
+        self.assertEqual(set(self.download_auth()), {None}, "no download carries the token")
+
+    def test_a_token_the_api_does_not_accept_names_the_variable(self):
+        self.forge.api_status = 401
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GITHUB_TOKEN="tok-expired")
+        self.assertEqual(code, 1, err)
+        self.assertIn("HTTP 401: the forge API did not accept the token from GITHUB_TOKEN; "
+                      "replace GITHUB_TOKEN or unset it", err)
+        self.assertNotIn("tok-expired", err, "the token is never printed")
+        self.assertIn("nothing was written", err)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), [], "no export and no partial directory")
+
+    def test_a_token_read_with_its_line_end_is_sent_without_it(self):
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GH_TOKEN="tok-gh\r\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(set(self.api_auth()), {"Bearer tok-gh"})
+
+    def test_a_token_with_a_control_character_is_refused_without_printing_it(self):
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GH_TOKEN="tok\nsecret-part")
+        self.assertEqual(code, 1, err)
+        self.assertIn("GH_TOKEN holds whitespace or a control character; not sent", err)
+        self.assertNotIn("secret-part", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.api_auth(), [], "the API is not asked with it")
+
+    def test_github_token_is_used_without_gh_token(self):
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GITHUB_TOKEN="tok-github")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(set(self.api_auth()), {"Bearer tok-github"})
+
+    def test_no_token_without_the_variables(self):
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(set(self.forge.auth and [a for _, a in self.forge.auth]), {None})
+
+    def test_an_api_base_option_runs_unauthenticated(self):
+        r = self.run_export("--products", "aimem", env_extra={"GH_TOKEN": "tok-gh", "GITHUB_TOKEN": "tok-github"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.api_auth())
+        self.assertEqual({a for _, a in self.forge.auth}, {None}, "a host named with --api-base gets no token")
+
+    def test_the_token_is_not_sent_after_a_redirect(self):
+        other = FakeForge()
+        self.addCleanup(other.close)
+        self.forge.api_redirect = other.base
+        code, err = self.run_default_api("--products", "aimem", "--aimem", "v0.10.23", GH_TOKEN="tok-gh")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(set(self.api_auth()), {"Bearer tok-gh"})
+        self.assertTrue(self.api_auth(other), "the lookup followed the redirect")
+        self.assertEqual(set(self.api_auth(other)), {None}, "the redirect's request carries no token")
+
 
 class Rules(unittest.TestCase):
     def test_allowed_urls(self):
@@ -553,6 +689,16 @@ class Rules(unittest.TestCase):
             m = ax.BINARY.match(name)
             self.assertEqual(m.group(1) if m else None, platform, name)
 
+    def test_the_real_release_skips_only_an_unauthenticated_rate_limit(self):
+        limited = ("aiforge-export: https://api.github.com/repos/BlackVS/aimem/attestations/sha256:00: HTTP 403: the forge "
+                   "API refused the call, most likely its rate limit for unauthenticated calls (60 an hour per "
+                   "address); set GH_TOKEN or GITHUB_TOKEN to lift it (sent to https://api.github.com only)\n")
+        self.assertIn("no GH_TOKEN or GITHUB_TOKEN", rate_limit_skip(1, limited, {}))
+        self.assertIsNone(rate_limit_skip(1, limited, {"GH_TOKEN": "t"}), "with a token, the limit fails the test")
+        self.assertIsNone(rate_limit_skip(1, limited, {"GITHUB_TOKEN": "t"}))
+        self.assertIsNone(rate_limit_skip(1, "aiforge-export: checksum mismatch\n", {}), "any other failure fails")
+        self.assertIsNone(rate_limit_skip(0, limited, {}))
+
 
 @unittest.skipIf(os.environ.get("AI_SKILLS_OFFLINE") == "1", "AI_SKILLS_OFFLINE=1")
 class RealRelease(unittest.TestCase):
@@ -565,6 +711,9 @@ class RealRelease(unittest.TestCase):
             r = subprocess.run([sys.executable, str(SCRIPT), "--out", str(out), "--products", "aimem",
                                 "--aimem", "v0.10.23", "--platforms", "linux-amd64"],
                                capture_output=True, text=True, timeout=600)
+            reason = rate_limit_skip(r.returncode, r.stderr, os.environ)
+            if reason:
+                self.skipTest(reason)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual((out / "MANIFEST").read_text(), "aiforge-export 1\naimem v0.10.23\n")
             d = out / "aimem" / "v0.10.23"
