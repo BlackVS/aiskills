@@ -3,7 +3,7 @@ offline here (AI_SKILLS_ARCHIVE points at an archive built from the checkout).
 
 Run: python3 -m unittest tests/test_boot.py
 """
-import hashlib, json, os, pathlib, re, shutil, subprocess, sys, tempfile, unittest
+import hashlib, json, os, pathlib, re, shutil, subprocess, sys, tempfile, unittest, urllib.parse
 
 from tests.test_install import BASH, PWSH, ROOT, clean_env, posix
 
@@ -266,6 +266,28 @@ class BashBootRelease(ReleaseCases, unittest.TestCase):
         self.assert_refused(r, "could not look up the latest release")
         self.assertEqual(len(self.calls()), 1, "no archive is downloaded after a failed lookup")
 
+    def test_https_downloads_refuse_a_redirect_to_http(self):
+        # curl follows a redirect from https to http by default; every https download is told not to
+        for name, env in (("release", {"AI_SKILLS_REF": "v9.9.9"}),
+                          ("mirror", {"AI_SKILLS_REF": "v9.9.9", "AI_SKILLS_BASE": "https://git.example.invalid"}),
+                          ("token", {"AI_SKILLS_REF": "v9.9.9", "AI_SKILLS_TOKEN": "t"}),
+                          ("token lookup", {"AI_SKILLS_TOKEN": "t", "FAKE_API_STATUS": "200", "FAKE_API_BODY": '{"tag_name":"v9.9.9"}'}),
+                          ("unverified", {"AI_SKILLS_REF": "main", "AI_SKILLS_UNVERIFIED": "1"})):
+            with self.subTest(path=name):
+                self.log.unlink(missing_ok=True)
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                self.assert_installed(self.run_boot(**env), self.digest)
+                fetches = [c for c in self.calls() if "-fsSI" not in c]
+                self.assertTrue(fetches)
+                for call in fetches:
+                    self.assertIn("--proto-redir =https", call)
+        with self.subTest(path="http mirror"):
+            self.log.unlink(missing_ok=True)
+            shutil.rmtree(self.home / ".claude", ignore_errors=True)
+            self.assert_installed(self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_BASE="http://git.example.invalid"), self.digest)
+            for call in self.calls():
+                self.assertNotIn("--proto-redir", call)
+
     def test_latest_release_is_installed(self):
         r = self.run_boot("https://github.com/BlackVS/aiskills/releases/tag/v9.9.9")
         self.assert_installed(r, self.digest)
@@ -329,18 +351,30 @@ class FakeHttpError : System.Exception {
     [object]$Response
     FakeHttpError([int]$status) : base("HTTP $status") { $this.Response = [pscustomobject]@{ StatusCode = $status } }
 }
-function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $Headers)
+# Invoke-WebRequest reports a failure as an error record, as the cmdlet does, and with
+# -MaximumRedirection 0 answers a URL under FAKE_REDIRECT_FROM with a 302 to the same
+# path under FAKE_REDIRECT_TO (which may be relative). The log notes an Authorization header.
+function Invoke-WebRequest {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)]$Uri, $OutFile, [switch]$UseBasicParsing, $Headers, [switch]$PassThru, $MaximumRedirection, [switch]$SkipHttpErrorCheck)
     $accept = if ($Headers -and $Headers['Accept']) { "Accept: $($Headers['Accept']) " } else { '' }
-    Add-Content -LiteralPath $env:FAKE_LOG "download $accept$Uri"
+    $auth = if ($Headers -and $Headers['Authorization']) { "Authorization " } else { '' }
+    Add-Content -LiteralPath $env:FAKE_LOG "download $auth$accept$Uri"
+    $ok = [pscustomobject]@{ StatusCode = 200; Headers = @{} }
+    if ($env:FAKE_REDIRECT_FROM -and $Uri.StartsWith($env:FAKE_REDIRECT_FROM)) {
+        if ($MaximumRedirection -ne 0) { Write-Error "the fake serves a redirect only hop by hop: $Uri"; return }
+        return [pscustomobject]@{ StatusCode = 302; Headers = @{ Location = $env:FAKE_REDIRECT_TO + $Uri.Substring($env:FAKE_REDIRECT_FROM.Length) } }
+    }
     if ($Uri -like '*/SHA256SUMS' -or $Uri -like '*/releases/assets/2') {
-        if (-not $env:FAKE_SUMS) { throw [FakeHttpError]::new(404) }
+        if (-not $env:FAKE_SUMS) { Write-Error -Exception ([FakeHttpError]::new(404)); return }
         Copy-Item -LiteralPath $env:FAKE_SUMS $OutFile
     } elseif ($Uri -like '*/MANIFEST') {
-        if (-not $env:FAKE_MANIFEST) { throw [FakeHttpError]::new(404) }
+        if (-not $env:FAKE_MANIFEST) { Write-Error -Exception ([FakeHttpError]::new(404)); return }
         Copy-Item -LiteralPath $env:FAKE_MANIFEST $OutFile
-    } elseif ($env:FAKE_ARCHIVE_STATUS -eq '000') { throw [System.Net.WebException]::new('connection refused')
-    } elseif ($env:FAKE_ARCHIVE_STATUS) { throw [FakeHttpError]::new([int]$env:FAKE_ARCHIVE_STATUS)
-    } else { Copy-Item -LiteralPath $env:FAKE_ARCHIVE $OutFile } }
+    } elseif ($env:FAKE_ARCHIVE_STATUS -eq '000') { Write-Error -Exception ([System.Net.WebException]::new('connection refused')); return
+    } elseif ($env:FAKE_ARCHIVE_STATUS) { Write-Error -Exception ([FakeHttpError]::new([int]$env:FAKE_ARCHIVE_STATUS)); return
+    } else { Copy-Item -LiteralPath $env:FAKE_ARCHIVE $OutFile }
+    if ($PassThru) { $ok } }
 function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing, $Headers)
     Add-Content -LiteralPath $env:FAKE_LOG "api $Uri"
     if ($Uri -like '*/releases/tags/*') { return ($env:FAKE_RELEASE | ConvertFrom-Json) }
@@ -375,13 +409,54 @@ class PowerShellBootVerify(ReleaseCases, unittest.TestCase):
         r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_TOKEN="t")
         self.assert_installed(r, self.digest)
         self.assertEqual(self.calls(), ["https://api.github.com/repos/BlackVS/aiskills/releases/tags/v9.9.9",
-                                        "Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/1",
-                                        "Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/2"])
+                                        "Authorization Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/1",
+                                        "Authorization Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/2"])
 
     def test_token_release_without_the_asset_installs_nothing(self):
         r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_TOKEN="t", FAKE_RELEASE='{"assets": []}')
         self.assert_refused(r, "could not download aiskills-9.9.9.tar.gz of release v9.9.9 of BlackVS/aiskills: "
                                "not found (the release lists no such asset)")
+
+    # Every download path follows a redirect one hop at a time: a relative https Location
+    # installs, and a redirect to http stops before anything is fetched over http.
+    REDIRECTED = (
+        ("release", {"AI_SKILLS_REF": "v9.9.9"}, "https://github.com/BlackVS/aiskills/releases/download/",
+         "could not download aiskills-9.9.9.tar.gz of release v9.9.9 of BlackVS/aiskills"),
+        ("mirror", {"AI_SKILLS_REF": "v9.9.9", "AI_SKILLS_BASE": "https://git.example.invalid"},
+         "https://git.example.invalid/BlackVS/aiskills/releases/download/",
+         "could not download aiskills-9.9.9.tar.gz of release v9.9.9 of BlackVS/aiskills"),
+        ("token", {"AI_SKILLS_REF": "v9.9.9", "AI_SKILLS_TOKEN": "t"}, "https://api.github.com/repos/BlackVS/aiskills/releases/assets/",
+         "could not download aiskills-9.9.9.tar.gz of release v9.9.9 of BlackVS/aiskills"),
+        ("unverified", {"AI_SKILLS_REF": "main", "AI_SKILLS_UNVERIFIED": "1"}, "https://github.com/BlackVS/aiskills/archive/",
+         "could not download main of BlackVS/aiskills"),
+    )
+
+    def test_a_redirect_is_followed_only_to_https(self):
+        for name, env, frm, failure in self.REDIRECTED:
+            with self.subTest(path=name, to="https"):
+                self.log.unlink(missing_ok=True)
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                r = self.run_boot(FAKE_REDIRECT_FROM=frm, FAKE_REDIRECT_TO="/moved" + urllib.parse.urlsplit(frm).path, **env)
+                self.assert_installed(r, self.digest)
+                followed = [c for c in self.calls() if "/moved/" in c]
+                self.assertTrue(followed, self.calls())
+                for c in followed:
+                    self.assertTrue(c.split()[-1].startswith("https://"), c)
+                    self.assertNotIn("Authorization", c, "the token is not sent past a redirect")
+            with self.subTest(path=name, to="http"):
+                self.log.unlink(missing_ok=True)
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                r = self.run_boot(FAKE_REDIRECT_FROM=frm, FAKE_REDIRECT_TO="http://plain.example.invalid/", **env)
+                self.assert_refused(r, f"{failure}: a redirect to http://plain.example.invalid/")
+                self.assertIn("was refused: it is not https", flat(r.stdout + r.stderr))
+                self.assertNotIn("http://", " ".join(self.calls()), "nothing is fetched over http")
+
+    def test_an_http_mirror_may_redirect_to_http(self):
+        # only a downgrade is refused: a redirect from the http mirror the operator named may stay on http
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_BASE="http://git.example.invalid",
+                          FAKE_REDIRECT_FROM="http://git.example.invalid/", FAKE_REDIRECT_TO="http://moved.example.invalid/")
+        self.assert_installed(r, self.digest)
+        self.assertIn("http://moved.example.invalid/BlackVS/aiskills/releases/download/v9.9.9/SHA256SUMS", self.calls())
 
     def test_callers_digest_variable_is_restored(self):
         # `irm | iex` runs boot.ps1 in the caller's session
@@ -418,8 +493,8 @@ class PowerShellBootRelease(ReleaseFixture, unittest.TestCase):
         self.assert_installed(r, self.digest)
         self.assertEqual(self.calls(), ["api https://api.github.com/repos/BlackVS/aiskills/releases/latest",
                                         "api https://api.github.com/repos/BlackVS/aiskills/releases/tags/v9.9.9",
-                                        "download Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/1",
-                                        "download Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/2"])
+                                        "download Authorization Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/1",
+                                        "download Authorization Accept: application/octet-stream https://api.github.com/repos/BlackVS/aiskills/releases/assets/2"])
 
     def test_no_release_needs_the_opt_in(self):
         r = self.run_boot("404")
@@ -428,7 +503,7 @@ class PowerShellBootRelease(ReleaseFixture, unittest.TestCase):
         self.log.unlink()
         r = self.run_boot("404", AI_SKILLS_UNVERIFIED="1")
         self.assert_installed(r, self.digest)
-        self.assertEqual(self.calls()[1], "download https://api.github.com/repos/BlackVS/aiskills/tarball/main")
+        self.assertEqual(self.calls()[1], "download Authorization https://api.github.com/repos/BlackVS/aiskills/tarball/main")
 
     def test_lookup_error_stops(self):
         for status, body in (("0", "{}"), ("401", "{}"), ("500", "{}"), ("200", "{}")):
@@ -631,6 +706,24 @@ class PowerShellBootExport(ExportCases, unittest.TestCase):
     def calls(self):
         return [c.split(" ", 1)[1] for c in super().calls()]
 
+    def test_an_https_export_follows_a_redirect_only_to_https(self):
+        files = dict(FAKE_MANIFEST=str(self.export / "MANIFEST"), FAKE_ARCHIVE=str(self.src / "aiskills-9.9.9.tar.gz"),
+                     FAKE_SUMS=str(self.src / "SHA256SUMS"), FAKE_REDIRECT_FROM="https://files.example.invalid/aiforge/")
+        r = self.run_export("https://files.example.invalid/aiforge", FAKE_REDIRECT_TO="/moved/", **files)
+        self.assert_installed(r, self.digest)
+        self.assertIn("https://files.example.invalid/moved/MANIFEST", self.calls())
+        self.log.unlink(missing_ok=True)
+        shutil.rmtree(self.home / ".claude")
+        r = self.run_export("https://files.example.invalid/aiforge", FAKE_REDIRECT_TO="http://files.example.invalid/", **files)
+        # Windows PowerShell wraps a long error at the console width, inside a word, and pwsh adds
+        # colour codes and a | gutter: compare without them
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("couldnotreadhttps://files.example.invalid/aiforge/MANIFEST:"
+                      "aredirecttohttp://files.example.invalid/MANIFESTwasrefused:itisnothttps",
+                      re.sub(r"\s", "", flat(r.stdout + r.stderr)))
+        self.assertFalse((self.home / ".claude").exists(), "nothing is installed")
+        self.assertEqual(self.calls(), ["https://files.example.invalid/aiforge/MANIFEST"])
+
     @unittest.skipUnless(os.name == "nt", "a \\\\host\\share path is a Windows form")
     def test_unc_path(self):
         drive, rest = os.path.splitdrive(str(self.export))
@@ -638,6 +731,85 @@ class PowerShellBootExport(ExportCases, unittest.TestCase):
         if not os.path.isfile(os.path.join(unc, "MANIFEST")):
             self.skipTest(f"the administrative share {unc} is not reachable here")
         self.assert_from_export(self.run_export(unc))
+
+
+WINDOWS_POWERSHELL = shutil.which("powershell") if os.name == "nt" else None
+
+
+def documented_export_forms():
+    """Every documented Windows install from a directory export, by where it is documented:
+    README.md's block, boot.ps1's header and README.txt's block for each product."""
+    from tests.test_aiforge_export import ax
+    forms = {}
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for block in re.findall(r"```powershell\n(.*?)```", readme, re.S):
+        if "Copy-Item" in block:
+            forms["README.md"] = block.replace("<tag>", "v9.9.9")
+    header = (ROOT / "boot.ps1").read_text(encoding="utf-8").split("\n$ErrorActionPreference", 1)[0]
+    lines = [l[4:] for l in header.splitlines() if l.startswith("#   ")]
+    start = next(i for i, l in enumerate(lines) if l.startswith("$env:AI_SKILLS_EXPORT = "))
+    end = next(i for i, l in enumerate(lines) if i > start and l.startswith("} finally"))
+    forms["boot.ps1 header"] = "\n".join(lines[start:end + 1]).replace("<tag>", "v9.9.9")
+    for product in ax.COMMANDS:
+        out = ax.install_commands(product, "v9.9.9")
+        start = out.index("  Windows, in PowerShell:") + 1
+        end = next(i for i in range(start, len(out)) if out[i].lstrip().startswith("} finally"))
+        forms[f"README.txt ({product})"] = "\n".join(l.strip() for l in out[start:end + 1])
+    return forms
+
+
+@unittest.skipUnless(WINDOWS_POWERSHELL, "the documented form runs Windows PowerShell")
+class DocumentedExportFormRuns(unittest.TestCase):
+    """The documented Windows install from a directory export copies boot.ps1 to TEMP and runs
+    the copy. Each form runs three times in one Windows PowerShell: with a good copy, with a
+    run that fails, and with a copy that fails while a stale copy an interrupted run left sits
+    in TEMP. After each run the variable and the copy are gone, and the stale copy never runs."""
+
+    def test_each_documented_form(self):
+        # resolved: the runner's TEMP is an 8.3 short name, and PowerShell reports $PWD by the long one
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-form-")).resolve()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "temp").mkdir()
+        forms = documented_export_forms()
+        self.assertEqual(len(forms), 5, list(forms))
+        stub = ('Write-Output "stub ran var=[$env:VAR_NAME] cwd=[$($PWD.Path)]"\r\n'
+                'if ($env:STUB_FAIL) { Write-Output "stub failed"; exit 1 }\r\n')
+        script, runs = [f"$env:TEMP = '{tmp / 'temp'}'"], []
+        for label, form in forms.items():
+            var = re.search(r"\$env:(\w+) = '", form).group(1)
+            product = re.search(r'\\(\w+)\\v9\.9\.9\\boot\.ps1', form).group(1)
+            copy = re.search(r"Join-Path \$env:TEMP '([^']+)'", form).group(1)
+            for kind in ("good", "failing", "stale"):
+                export = tmp / f"export-{len(runs)}"
+                (export / product / "v9.9.9").mkdir(parents=True)
+                if kind != "stale":
+                    (export / product / "v9.9.9" / "boot.ps1").write_text(stub.replace("VAR_NAME", var), encoding="utf-8")
+                code = re.sub(r"(\$env:\w+ = )'[^']*'", lambda m: m.group(1) + "'" + str(export) + "'", form, count=1)
+                script.append(f"Write-Output '=== run {len(runs)}'")
+                script.append("$env:STUB_FAIL = '1'" if kind == "failing" else "Remove-Item Env:STUB_FAIL -ErrorAction SilentlyContinue")
+                if kind == "stale":
+                    script.append(f"Set-Content -LiteralPath (Join-Path $env:TEMP '{copy}') -Value 'Write-Output \"stale copy ran\"'")
+                script.append("try {\n" + code + "\n} catch { Write-Output \"failure=[$_]\" }")
+                script.append(f"Write-Output \"after var=[$env:{var}] temp=[$((Get-ChildItem -LiteralPath $env:TEMP).Name -join ',')]\"")
+                runs.append((label, kind, export))
+        script.append(f"Write-Output '=== run {len(runs)}'")
+        file = tmp / "forms.ps1"
+        file.write_text("\r\n".join(script) + "\r\n", encoding="utf-8")
+        env = {k: v for k, v in clean_env().items() if not k.startswith("AI_SKILLS_") and k not in ("AIMEM_BASE", "AICREW_BASE")}
+        r = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(file)],
+                           capture_output=True, text=True, env=env, cwd=str(tmp))
+        out = r.stdout + r.stderr
+        for i, (label, kind, export) in enumerate(runs):
+            with self.subTest(form=label, run=kind):
+                part = out[out.index(f"=== run {i}"):out.index(f"=== run {i + 1}")]
+                self.assertIn("after var=[] temp=[]", part, "the variable or the copy is left behind:\n" + part)
+                self.assertNotIn("stale copy ran", part)
+                if kind == "stale":
+                    self.assertIn("failure=[", part, part)
+                    self.assertNotIn("stub ran", part)
+                else:
+                    self.assertIn(f"stub ran var=[{export}] cwd=[{tmp}]", part, part)
+                    self.assertEqual("stub failed" in part, kind == "failing", part)
 
 
 if __name__ == "__main__":

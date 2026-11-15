@@ -145,3 +145,21 @@ Gitea compare diff, observed credential-free on gitea.com (1.27.0+dev) on
   still lists its commits, newest first, each with `parents`; GitHub lists
   them oldest first. `verify-delivery`'s rebase-merge check orders them by
   their parents.
+
+## Observed runtime contracts (Windows PowerShell)
+
+Observed on 2026-11-15 on Windows PowerShell 5.1.26100 and PowerShell 7.6 on
+the GitHub `windows-latest` runner, for aimem's installers; aimem records the
+reproducers and runs in its own `.agents/skills/custom-codereview-guide`, and
+BlackVS/aimem#367 carries the fixes this repository ports.
+
+- `Invoke-WebRequest` under 5.1 follows a redirect from https to http and
+  downloads over http; PowerShell 7 refuses one. Under `-MaximumRedirection
+  0`, 5.1 returns the 3xx only with `-ErrorAction SilentlyContinue`, 7 only
+  with `-SkipHttpErrorCheck`. `boot.ps1`'s `Get-HttpsFile` therefore walks
+  redirects itself; a review need not ask for a PowerShell 7 specific guard.
+- Under `-ExecutionPolicy RemoteSigned -File`, 5.1 refuses an unsigned script
+  read from a share named by an address or a dotted host name, and a
+  `Copy-Item` copy in a local folder runs under both editions. `Copy-Item`
+  reports a missing source as a non-terminating error, so the documented form
+  copies inside the `try` with `-ErrorAction Stop`.

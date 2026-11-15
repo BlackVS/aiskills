@@ -9,6 +9,32 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Security
+- **`boot.ps1` follows a download's redirects only to https.** Windows
+  PowerShell 5.1 follows a redirect from https to http and downloads over
+  http (PowerShell 7 refuses one). Every download `boot.ps1` makes (a
+  release asset from GitHub, a mirror or the API, the unverified source
+  archive, an https export's files) now follows each redirect itself, a
+  relative `Location` against the URL it came from, and stops with nothing
+  installed at a redirect from https to anything but https. An http mirror
+  the operator named (`AI_SKILLS_BASE`) may still redirect to http, as
+  Gitea does for a release download. `Authorization` is not sent past a
+  redirect, as the cmdlet's own redirects do not send it.
+- **`boot.sh` holds a download from https to https.** curl follows a
+  redirect from https to http by default; every https download (and the
+  token's latest-release lookup) now passes `--proto-redir =https`, and a
+  refused redirect reads "a redirect that left https was refused".
+
+### Changed
+- **The Windows install from an export copies `boot.ps1` first.** Windows
+  PowerShell refuses an unsigned script read straight from a share named by
+  a dotted host name or an address under `RemoteSigned`. The README, the
+  header of `boot.ps1`, docs/aiforge-export.md and the `README.txt`
+  `aiforge-export` writes (for every product) copy the script to `TEMP` and
+  run the copy, with the copy inside the `try` and `-ErrorAction Stop`, so a
+  failed copy never runs a copy an interrupted run left behind; the variable
+  and the copy are removed afterwards.
+
 ## [1.39.0] - 2026-11-15
 
 ### Added

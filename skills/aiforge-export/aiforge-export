@@ -216,10 +216,16 @@ def install_commands(product, tag):
     out = ["From a directory:"]
     for who, script, args in scripts:
         out += [f"  {who}:", f"    {var}=<dir> bash <dir>/{rel}/{script}" + (f" {args}" if args else "")]
+    # Windows PowerShell refuses an unsigned script read straight from most shares under
+    # RemoteSigned: the script is copied to a local folder and the copy runs. The copy
+    # stops the block when it fails, so a copy an interrupted run left is never run.
     out += ["  Windows, in PowerShell:",
             f"    $env:{var} = '<dir>'",
-            f"    powershell -NoProfile -ExecutionPolicy {policy} -File <dir>\\{product}\\{tag}\\boot.ps1",
-            f"    Remove-Item Env:{var}"]
+            f"    $boot = Join-Path $env:TEMP '{product}-boot.ps1'",
+            "    try {",
+            f'      Copy-Item -LiteralPath "$env:{var}\\{product}\\{tag}\\boot.ps1" -Destination $boot -ErrorAction Stop',
+            f"      powershell -NoProfile -ExecutionPolicy {policy} -File $boot",
+            f"    }} finally {{ Remove-Item Env:{var}; Remove-Item -LiteralPath $boot -ErrorAction SilentlyContinue }}"]
     if not https:
         return out + [f"From an https server: {product}'s installers do not document that form yet;",
                       "copy the directory and install from it as above."]

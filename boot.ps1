@@ -16,7 +16,11 @@
 # path or an internal https server holding the release files; see README.md):
 #
 #   $env:AI_SKILLS_EXPORT = 'D:\aiforge-export'
-#   powershell -NoProfile -ExecutionPolicy Bypass -File D:\aiforge-export\aiskills\<tag>\boot.ps1
+#   $boot = Join-Path $env:TEMP 'aiskills-boot.ps1'
+#   try {
+#       Copy-Item -LiteralPath "$env:AI_SKILLS_EXPORT\aiskills\<tag>\boot.ps1" -Destination $boot -ErrorAction Stop
+#       powershell -NoProfile -ExecutionPolicy Bypass -File $boot
+#   } finally { Remove-Item Env:AI_SKILLS_EXPORT; Remove-Item -LiteralPath $boot -ErrorAction SilentlyContinue }
 #
 # Re-running upgrades in place: install.ps1 replaces the selected skills.
 #
@@ -101,10 +105,44 @@ if (-not $ref -and -not $env:AI_SKILLS_ARCHIVE -and -not $env:AI_SKILLS_EXPORT) 
         $ref = 'main'
     }
 }
-# Why a web request failed: not found (HTTP 404), another HTTP status from the server, or no answer at all.
+# Download $Uri to $OutFile. Windows PowerShell 5.1 follows a redirect from
+# https to http and downloads over http (PowerShell 7 refuses one), and a
+# release download is itself redirected, so redirects are followed here one
+# hop at a time, and a redirect from https must stay on https. An http mirror
+# the operator named (AI_SKILLS_BASE) may redirect to its own http address,
+# as Gitea answers a release download with a redirect. 5.1 hands back a 3xx with
+# -MaximumRedirection 0 only under -ErrorAction SilentlyContinue, 7 only with
+# -SkipHttpErrorCheck. Authorization is not sent past a redirect, as the
+# cmdlet's own redirects do not send it: a release asset redirects to signed
+# storage on another host. A failure keeps its status for Get-FailureReason.
+function Get-HttpsFile([string]$Uri, [string]$OutFile, [hashtable]$Headers = @{}) {
+    $extra = @{}
+    if ($PSVersionTable.PSEdition -eq 'Core') { $extra.SkipHttpErrorCheck = $true }
+    for ($hop = 0; $hop -le 10; $hop++) {
+        $r = Invoke-WebRequest $Uri -OutFile $OutFile -PassThru -UseBasicParsing -Headers $Headers -MaximumRedirection 0 -ErrorAction SilentlyContinue -ErrorVariable failed @extra
+        if ($null -eq $r) { throw $failed[0] }
+        $code = [int]$r.StatusCode
+        if ($code -ge 300 -and $code -lt 400) {
+            $next = [Uri]::new([Uri]$Uri, "$($r.Headers['Location'])").AbsoluteUri
+            if ($Uri -like 'https://*' -and $next -notlike 'https://*') {
+                $e = [Net.ProtocolViolationException]::new("a redirect to $next was refused: it is not https"); $e.Data['refused'] = $true; throw $e
+            }
+            $Uri = $next
+            $Headers = @{} + $Headers; $Headers.Remove('Authorization')
+            continue
+        }
+        if ($code -ne 200) { $e = [Net.WebException]::new("HTTP $code"); $e.Data['status'] = $code; throw $e }
+        return
+    }
+    $e = [Net.WebException]::new("more than 10 redirects from $Uri"); $e.Data['refused'] = $true; throw $e
+}
+# Why a web request failed: not found (HTTP 404), another HTTP status from the server, no answer at all,
+# or a redirect Get-HttpsFile refused.
 function Get-FailureReason($ErrorRecord) {
+    if ($ErrorRecord.Exception.Data['refused']) { return $ErrorRecord.Exception.Message }
     $status = 0
-    if ($ErrorRecord.Exception.Response) { try { $status = [int]$ErrorRecord.Exception.Response.StatusCode } catch { } }
+    if ($ErrorRecord.Exception.Data['status']) { $status = [int]$ErrorRecord.Exception.Data['status'] }
+    elseif ($ErrorRecord.Exception.Response) { try { $status = [int]$ErrorRecord.Exception.Response.StatusCode } catch { } }
     if ($status -eq 404) { 'not found (HTTP 404)' }
     elseif ($status -gt 0) { "the server answered HTTP $status" }
     else { "no answer from the server (a network or transport error: $($ErrorRecord.Exception.Message))" }
@@ -140,7 +178,7 @@ try {
     } elseif ($env:AI_SKILLS_EXPORT) {
         # one file of the export: over https, or copied from a directory
         function Get-ExportFile([string]$Source, [string]$OutFile) {
-            if ($Source -like 'https://*') { Invoke-WebRequest $Source -OutFile $OutFile -UseBasicParsing }
+            if ($Source -like 'https://*') { Get-HttpsFile $Source $OutFile }
             elseif (Test-Path -LiteralPath $Source -PathType Leaf) { Copy-Item -LiteralPath $Source -Destination $OutFile }
             else { throw [IO.FileNotFoundException]::new('no such file') }
         }
@@ -175,13 +213,13 @@ try {
         function Get-Asset([string]$Name, [string]$OutFile) {
             if ($base) {
                 $h = @{}; if ($env:AI_SKILLS_TOKEN) { $h['Authorization'] = "token $env:AI_SKILLS_TOKEN" }
-                Invoke-WebRequest "$base/$repo/releases/download/$ref/$Name" -OutFile $OutFile -UseBasicParsing -Headers $h
+                Get-HttpsFile "$base/$repo/releases/download/$ref/$Name" $OutFile $h
             } elseif ($env:AI_SKILLS_TOKEN) {
                 $a = @($assets | Where-Object { $_.name -ceq $Name })
                 if ($a.Count -ne 1) { throw [IO.FileNotFoundException]::new('not found (the release lists no such asset)') }
-                Invoke-WebRequest $a[0].url -OutFile $OutFile -UseBasicParsing -Headers @{ Authorization = "Bearer $env:AI_SKILLS_TOKEN"; Accept = 'application/octet-stream' }
+                Get-HttpsFile $a[0].url $OutFile @{ Authorization = "Bearer $env:AI_SKILLS_TOKEN"; Accept = 'application/octet-stream' }
             } else {
-                Invoke-WebRequest "https://github.com/$repo/releases/download/$ref/$Name" -OutFile $OutFile -UseBasicParsing
+                Get-HttpsFile "https://github.com/$repo/releases/download/$ref/$Name" $OutFile
             }
         }
         Write-Host "Fetching aiskills $ref ($name and SHA256SUMS) from $from/$repo ..."
@@ -201,7 +239,7 @@ try {
             $url = "https://github.com/$repo/archive/$ref.tar.gz"
         }
         Write-Host "WARNING: installing $ref UNVERIFIED (not a release; AI_SKILLS_UNVERIFIED=1) from $from/$repo ..."
-        try { Invoke-WebRequest $url -OutFile $tgz -UseBasicParsing -Headers $headers }
+        try { Get-HttpsFile $url $tgz $headers }
         catch { throw "ERROR: could not download $ref of $repo`: $(Get-FailureReason $_); nothing was installed" }
     }
     # the digest of what is installed, for the manifest (install.ps1 validates it)
