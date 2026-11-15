@@ -266,6 +266,28 @@ class BashBootRelease(ReleaseCases, unittest.TestCase):
         self.assert_refused(r, "could not look up the latest release")
         self.assertEqual(len(self.calls()), 1, "no archive is downloaded after a failed lookup")
 
+    def test_https_downloads_refuse_a_redirect_to_http(self):
+        # curl follows a redirect from https to http by default; every https download is told not to
+        for name, env in (("release", {"AI_SKILLS_REF": "v9.9.9"}),
+                          ("mirror", {"AI_SKILLS_REF": "v9.9.9", "AI_SKILLS_BASE": "https://git.example.invalid"}),
+                          ("token", {"AI_SKILLS_REF": "v9.9.9", "AI_SKILLS_TOKEN": "t"}),
+                          ("token lookup", {"AI_SKILLS_TOKEN": "t", "FAKE_API_STATUS": "200", "FAKE_API_BODY": '{"tag_name":"v9.9.9"}'}),
+                          ("unverified", {"AI_SKILLS_REF": "main", "AI_SKILLS_UNVERIFIED": "1"})):
+            with self.subTest(path=name):
+                self.log.unlink(missing_ok=True)
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                self.assert_installed(self.run_boot(**env), self.digest)
+                fetches = [c for c in self.calls() if "-fsSI" not in c]
+                self.assertTrue(fetches)
+                for call in fetches:
+                    self.assertIn("--proto-redir =https", call)
+        with self.subTest(path="http mirror"):
+            self.log.unlink(missing_ok=True)
+            shutil.rmtree(self.home / ".claude", ignore_errors=True)
+            self.assert_installed(self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_BASE="http://git.example.invalid"), self.digest)
+            for call in self.calls():
+                self.assertNotIn("--proto-redir", call)
+
     def test_latest_release_is_installed(self):
         r = self.run_boot("https://github.com/BlackVS/aiskills/releases/tag/v9.9.9")
         self.assert_installed(r, self.digest)
@@ -428,6 +450,13 @@ class PowerShellBootVerify(ReleaseCases, unittest.TestCase):
                 self.assert_refused(r, f"{failure}: a redirect to http://plain.example.invalid/")
                 self.assertIn("was refused: it is not https", flat(r.stdout + r.stderr))
                 self.assertNotIn("http://", " ".join(self.calls()), "nothing is fetched over http")
+
+    def test_an_http_mirror_may_redirect_to_http(self):
+        # only a downgrade is refused: a redirect from the http mirror the operator named may stay on http
+        r = self.run_boot(AI_SKILLS_REF="v9.9.9", AI_SKILLS_BASE="http://git.example.invalid",
+                          FAKE_REDIRECT_FROM="http://git.example.invalid/", FAKE_REDIRECT_TO="http://moved.example.invalid/")
+        self.assert_installed(r, self.digest)
+        self.assertIn("http://moved.example.invalid/BlackVS/aiskills/releases/download/v9.9.9/SHA256SUMS", self.calls())
 
     def test_callers_digest_variable_is_restored(self):
         # `irm | iex` runs boot.ps1 in the caller's session
@@ -686,11 +715,12 @@ class PowerShellBootExport(ExportCases, unittest.TestCase):
         self.log.unlink(missing_ok=True)
         shutil.rmtree(self.home / ".claude")
         r = self.run_export("https://files.example.invalid/aiforge", FAKE_REDIRECT_TO="http://files.example.invalid/", **files)
-        # Windows PowerShell wraps a long error at the console width, inside a word: compare without whitespace
+        # Windows PowerShell wraps a long error at the console width, inside a word, and pwsh adds
+        # colour codes and a | gutter: compare without them
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("couldnotreadhttps://files.example.invalid/aiforge/MANIFEST:"
                       "aredirecttohttp://files.example.invalid/MANIFESTwasrefused:itisnothttps",
-                      re.sub(r"\s", "", r.stdout + r.stderr))
+                      re.sub(r"\s", "", flat(r.stdout + r.stderr)))
         self.assertFalse((self.home / ".claude").exists(), "nothing is installed")
         self.assertEqual(self.calls(), ["https://files.example.invalid/aiforge/MANIFEST"])
 
@@ -736,7 +766,8 @@ class DocumentedExportFormRuns(unittest.TestCase):
     in TEMP. After each run the variable and the copy are gone, and the stale copy never runs."""
 
     def test_each_documented_form(self):
-        tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-form-"))
+        # resolved: the runner's TEMP is an 8.3 short name, and PowerShell reports $PWD by the long one
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="aiskills-form-")).resolve()
         self.addCleanup(shutil.rmtree, tmp, True)
         (tmp / "temp").mkdir()
         forms = documented_export_forms()

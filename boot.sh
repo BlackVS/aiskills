@@ -70,14 +70,20 @@ if [ -n "$EXPORT" ]; then
   EXPORT=${EXPORT%/}   # "/" becomes "": the paths below are "$EXPORT/...", still absolute
 fi
 # download OUT URL [curl options]: fetch URL into OUT. On failure WHY says what stopped it:
-# not found (HTTP 404), another HTTP status from the server, or no answer at all (a transport error).
+# not found (HTTP 404), another HTTP status from the server, a redirect that left https,
+# or no answer at all (a transport error). A download from https stays on https, redirects
+# included (curl follows https to http by default); an http mirror the operator named
+# (AI_SKILLS_BASE) keeps curl's default.
 download() {
   _out=$1; _url=$2; shift 2
-  _code=$(curl -sSL -o "$_out" -w '%{http_code}' "$@" "$_url") || _code=000
+  case "$_url" in https://*) set -- --proto-redir =https "$@" ;; esac
+  _rc=0
+  _code=$(curl -sSL -o "$_out" -w '%{http_code}' "$@" "$_url") || { _rc=$?; _code=000; }
   case "$_code" in
     2??) return 0 ;;
     404) WHY="not found (HTTP 404)" ;;
-    000) WHY="no answer from the server (a network or transport error)" ;;
+    000) if [ "$_rc" = 1 ]; then WHY="a redirect that left https was refused"
+         else WHY="no answer from the server (a network or transport error)"; fi ;;
     *) WHY="the server answered HTTP $_code" ;;
   esac
   return 1
@@ -96,7 +102,7 @@ if [ -z "$REF" ] && [ -z "${AI_SKILLS_ARCHIVE:-}" ] && [ -z "${AI_SKILLS_EXPORT:
     if [ -n "$TOKEN" ]; then
       # a private fork: the API with the token; 404 means no release
       BODY=$(mktemp)
-      CODE=$(curl -sSL -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+      CODE=$(curl -sSL --proto-redir =https -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest") || CODE=000
       REF=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$BODY" | head -n 1)
       rm -f "$BODY"

@@ -16,8 +16,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
   release asset from GitHub, a mirror or the API, the unverified source
   archive, an https export's files) now follows each redirect itself, a
   relative `Location` against the URL it came from, and stops with nothing
-  installed at a redirect to anything but https. `Authorization` is not sent
-  past a redirect, as the cmdlet's own redirects do not send it.
+  installed at a redirect from https to anything but https. An http mirror
+  the operator named (`AI_SKILLS_BASE`) may still redirect to http, as
+  Gitea does for a release download. `Authorization` is not sent past a
+  redirect, as the cmdlet's own redirects do not send it.
+- **`boot.sh` holds a download from https to https.** curl follows a
+  redirect from https to http by default; every https download (and the
+  token's latest-release lookup) now passes `--proto-redir =https`, and a
+  refused redirect reads "a redirect that left https was refused".
 
 ### Changed
 - **The Windows install from an export copies `boot.ps1` first.** Windows

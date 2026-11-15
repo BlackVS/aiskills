@@ -108,7 +108,9 @@ if (-not $ref -and -not $env:AI_SKILLS_ARCHIVE -and -not $env:AI_SKILLS_EXPORT) 
 # Download $Uri to $OutFile. Windows PowerShell 5.1 follows a redirect from
 # https to http and downloads over http (PowerShell 7 refuses one), and a
 # release download is itself redirected, so redirects are followed here one
-# hop at a time and only to https. 5.1 hands back a 3xx with
+# hop at a time, and a redirect from https must stay on https. An http mirror
+# the operator named (AI_SKILLS_BASE) may redirect to its own http address,
+# as Gitea answers a release download with a redirect. 5.1 hands back a 3xx with
 # -MaximumRedirection 0 only under -ErrorAction SilentlyContinue, 7 only with
 # -SkipHttpErrorCheck. Authorization is not sent past a redirect, as the
 # cmdlet's own redirects do not send it: a release asset redirects to signed
@@ -122,7 +124,7 @@ function Get-HttpsFile([string]$Uri, [string]$OutFile, [hashtable]$Headers = @{}
         $code = [int]$r.StatusCode
         if ($code -ge 300 -and $code -lt 400) {
             $next = [Uri]::new([Uri]$Uri, "$($r.Headers['Location'])").AbsoluteUri
-            if ($next -notlike 'https://*') {
+            if ($Uri -like 'https://*' -and $next -notlike 'https://*') {
                 $e = [Net.ProtocolViolationException]::new("a redirect to $next was refused: it is not https"); $e.Data['refused'] = $true; throw $e
             }
             $Uri = $next
