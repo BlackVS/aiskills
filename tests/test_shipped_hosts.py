@@ -33,6 +33,8 @@ PUBLIC = {
     "opencode.ai": "OpenCode documentation cited in README",
     "claude.ai": "a hosted agent service named in forge-gates and the changelog",
     "chatgpt.com": "a hosted agent service named in forge-gates",
+    "chat.openai.com": "a hosted agent service named in forge-gates' session-link pattern and its tests",
+    "claude.com": "the client's footer link, which check-links' tests show passing",
     "keepachangelog.com": "the changelog's format",
     "semver.org": "the versioning scheme",
     "polyformproject.org": "the license",
