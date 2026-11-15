@@ -191,7 +191,18 @@ directory form.
 
 ## Process sets
 
-aimem's release does not yet publish its reference process set. Until it
-does, a closed network imports a process set from an archive made with
-`aimem process export` on a connected machine; README.txt in the export
-gives the commands.
+From v0.10.25, aimem's release publishes its reference process set as
+`aimem-process.tar.gz`, listed in its `SHA256SUMS`, so the export carries
+it under `aimem/<tag>/`. README.txt then names the file and gives both
+commands, which need neither git nor the network:
+
+```sh
+aimem process select <repository> <tag> --from-archive <dir>/aimem/<tag>/aimem-process.tar.gz \
+  --sums <dir>/aimem/<tag>/SHA256SUMS -p <project>
+aimem process default set <repository> <tag> --from-archive <dir>/aimem/<tag>/aimem-process.tar.gz \
+  --sums <dir>/aimem/<tag>/SHA256SUMS
+```
+
+For an earlier aimem release, a closed network imports a process set from
+an archive made with `aimem process export` on a connected machine, and
+README.txt gives those commands.

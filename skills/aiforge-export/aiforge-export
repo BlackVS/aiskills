@@ -57,6 +57,8 @@ CHUNK = 1 << 16
 # only that the forge published the bytes, so it alone does not make a bundle file.
 PROVENANCE = "https://slsa.dev/provenance/v1"
 TRUSTED_ROOT = "application/vnd.dev.sigstore.trustedroot+json"
+# aimem's reference process set, a release asset from v0.10.25.
+PROCESS_SET = "aimem-process.tar.gz"
 # The gh the offline command in README.txt was run with, network blocked.
 GH_TESTED = "2.102.0"
 
@@ -319,10 +321,15 @@ def provenance_section(tags, attested, root_digest):
     carry = [f"{p} {t}" for p, t in tags.items() if attested[p]]
     without = [f"{p} {t}" for p, t in tags.items() if not attested[p]]
     if not carry:
-        return out + [
+        out += [
             f"No release in this export carries its build provenance ({', '.join(without)}):",
             "SHA256SUMS is the only check, and it shows that a file arrived as published.",
         ]
+        if root_digest:
+            out += ["", "This export carries a trusted root as trusted_root.jsonl, with sha256",
+                    f"    {root_digest}",
+                    "No release here has attestation bundles to check against it."]
+        return out
     out += [
         "SHA256SUMS shows that a file arrived as published. A release that carries its",
         "build provenance also shows which workflow built each file, from which tag:",
@@ -371,7 +378,38 @@ def provenance_section(tags, attested, root_digest):
     ]
 
 
-def readme(tags, platforms, lacking, attested, root_digest):
+def process_sets(tags, process_set):
+    """How a hub takes aimem's reference process set: from the release's own archive
+    when the exported aimem release publishes one, else from an archive made with
+    `aimem process export` on a connected machine."""
+    out = ["", "Process sets", "------------", ""]
+    if process_set:
+        tag = tags["aimem"]
+        rel = f"<dir>/aimem/{tag}"
+        return out + [
+            f"aimem {tag} publishes its reference process set as {rel}/{PROCESS_SET},",
+            "listed in that release's SHA256SUMS. On the hub, select it for one project:",
+            f"    aimem process select <repository> {tag} --from-archive {rel}/{PROCESS_SET} \\",
+            f"      --sums {rel}/SHA256SUMS -p <project>",
+            "or make it the hub's default, which a project with no process takes:",
+            f"    aimem process default set <repository> {tag} --from-archive {rel}/{PROCESS_SET} \\",
+            f"      --sums {rel}/SHA256SUMS",
+            "Neither command needs git or the network. <repository> is aimem's repository",
+            "as aimem's ADMIN-MANUAL names it; the manual describes both commands.",
+            "",
+        ]
+    return out + [
+        "aimem's release does not publish its reference process set yet. To give a hub a",
+        "process set, export it on a connected machine with",
+        "    aimem process export <repository> <commit> <manifest>",
+        "carry the archive and its SHA256SUMS line over, and on the hub run",
+        "    aimem process default set <repository> <tag> --from-archive <archive> --sums SHA256SUMS",
+        "aimem's ADMIN-MANUAL describes both commands.",
+        "",
+    ]
+
+
+def readme(tags, platforms, lacking, attested, root_digest, process_set=False):
     """README.txt: what the export holds and how to install from it. Names no forge
     host; the provenance command names the repository its workflow runs in."""
     out = [
@@ -419,19 +457,7 @@ def readme(tags, platforms, lacking, attested, root_digest):
         else:
             out += ["then install its binaries by hand."]
     out += provenance_section(tags, attested, root_digest)
-    out += [
-        "",
-        "Process sets",
-        "------------",
-        "",
-        "aimem's release does not publish its reference process set yet. To give a hub a",
-        "process set, export it on a connected machine with",
-        "    aimem process export <repository> <commit> <manifest>",
-        "carry the archive and its SHA256SUMS line over, and on the hub run",
-        "    aimem process default set <repository> <tag> --from-archive <archive> --sums SHA256SUMS",
-        "aimem's ADMIN-MANUAL describes both commands.",
-        "",
-    ]
+    out += process_sets(tags, process_set)
     return "\n".join(out)
 
 
@@ -463,8 +489,9 @@ def build(args, log=print):
             log(f"trusted root: trusted_root.jsonl, sha256 {root_digest}")
         carry = [p for p in tags if attested[p]]
         log(f"build provenance bundles: {', '.join(carry) if carry else 'none'}")
+        process_set = "aimem" in tags and os.path.isfile(os.path.join(stage, "aimem", tags["aimem"], PROCESS_SET))
         with open(os.path.join(stage, "README.txt"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(readme(tags, args.platforms, lacking, attested, root_digest))
+            f.write(readme(tags, args.platforms, lacking, attested, root_digest, process_set))
         with open(os.path.join(stage, "MANIFEST"), "w", encoding="utf-8", newline="\n") as f:
             f.write(FORMAT + "\n" + "".join(f"{p} {t}\n" for p, t in tags.items()))
         os.rename(stage, out)

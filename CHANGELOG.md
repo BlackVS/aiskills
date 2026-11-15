@@ -41,6 +41,13 @@ content fixes inside existing skills. The current version is in `VERSION`.
   not run this check, and `MANIFEST` and the files they read do not change.
 
 ### Changed
+- **README.txt names aimem's process set when the release carries it.**
+  When the exported aimem release lists `aimem-process.tar.gz` (from
+  v0.10.25), README.txt's "Process sets" names the file under
+  `<dir>/aimem/<tag>/` and gives `aimem process select` and
+  `aimem process default set` with `--from-archive` and `--sums`, neither
+  needing git or the network. For an earlier release the text that has the
+  operator export a set on a connected machine stays.
 - **The Windows install from an export copies `boot.ps1` first.** Windows
   PowerShell refuses an unsigned script read straight from a share named by
   a dotted host name or an address under `RemoteSigned`. The README, the

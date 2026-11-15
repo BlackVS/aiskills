@@ -236,6 +236,8 @@ class ExportCases(unittest.TestCase):
                      "curl -fsSL <url>/aiskills/v1.39.0/boot.sh | AI_SKILLS_EXPORT=<url> bash\n",
                      "curl -fsSL <url>/aiskills/v1.39.0/boot.sh | AI_SKILLS_EXPORT=<url> bash -s -- --user -s core",
                      "irm <url>/aiskills/v1.39.0/boot.ps1 | iex",
+                     # aimem v0.10.23 publishes no process set: the export-it-yourself text
+                     "aimem's release does not publish its reference process set yet.",
                      "aimem process export <repository> <commit> <manifest>",
                      "--from-archive <archive> --sums SHA256SUMS",
                      "for linux-amd64 only"):
@@ -427,6 +429,16 @@ class ExportCases(unittest.TestCase):
                      "The installers do not run this check, and nothing they read changes"):
             self.assertIn(line, text)
         self.assertNotIn("<dir>/aicrew/v0.9.0/<file>", text)
+        # The release publishes its process set: README.txt names the file and both commands
+        for line in ("aimem v0.10.25 publishes its reference process set as <dir>/aimem/v0.10.25/aimem-process.tar.gz,",
+                     "    aimem process select <repository> v0.10.25 --from-archive <dir>/aimem/v0.10.25/aimem-process.tar.gz \\\n"
+                     "      --sums <dir>/aimem/v0.10.25/SHA256SUMS -p <project>\n",
+                     "    aimem process default set <repository> v0.10.25 --from-archive <dir>/aimem/v0.10.25/aimem-process.tar.gz \\\n"
+                     "      --sums <dir>/aimem/v0.10.25/SHA256SUMS\n",
+                     "Neither command needs git or the network."):
+            self.assertIn(line, text)
+        self.assertNotIn("aimem process export", text)
+        self.assertNotIn("does not publish its reference process set", text)
         self.assert_readme_names_no_host(text)
 
     def assert_readme_names_no_host(self, text):
@@ -501,6 +513,20 @@ class ExportCases(unittest.TestCase):
         self.assertIn(f"This export carries a copy as trusted_root.jsonl, with sha256\n    {digest}", text)
         self.assertIn(f"trusted root: trusted_root.jsonl, sha256 {digest}", r.stdout)
         self.assertEqual((self.out / "MANIFEST").read_text(), "aiforge-export 1\naiskills v1.39.0\n")
+
+    def test_a_trusted_root_is_named_even_where_no_release_carries_provenance(self):
+        root = (json.dumps({"mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1"}) + "\n").encode()
+        path = self.tmp.parent / f"{self.tmp.name}-root.jsonl"
+        path.write_bytes(root)
+        self.addCleanup(path.unlink)
+        r = self.run_export("--products", "aiskills", "--trusted-root", str(path))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.out / "trusted_root.jsonl").read_bytes(), root)
+        digest = hashlib.sha256(root).hexdigest()
+        text = (self.out / "README.txt").read_text(encoding="utf-8")
+        self.assertIn("No release in this export carries its build provenance (aiskills v1.39.0):", text)
+        self.assertIn(f"This export carries a trusted root as trusted_root.jsonl, with sha256\n    {digest}\n", text)
+        self.assertNotIn("gh attestation verify", text)
 
     def test_a_trusted_root_that_is_not_one_writes_nothing(self):
         path = self.tmp.parent / f"{self.tmp.name}-root.jsonl"
