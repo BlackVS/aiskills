@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-11-15
+
+One change: the rule against session and conversation links now covers every
+git artifact on every remote, the README shows the Claude Code setting that
+stops the client from offering such a link, and `forge_gates.py check-links`
+checks commit messages and a pull request description before a push (#129).
+Re-run the installer with `--agents-md` (or `-AgentsMd`) to carry the new
+rule into the managed review-gates block.
+
 ### Changed
 - **No session links in any git artifact, on any remote.** The review-gates
   rule forbade a session or conversation URL only in a review comment and
