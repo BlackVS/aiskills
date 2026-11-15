@@ -24,8 +24,30 @@ content fixes inside existing skills. The current version is in `VERSION`.
   redirect from https to http by default; every https download (and the
   token's latest-release lookup) now passes `--proto-redir =https`, and a
   refused redirect reads "a redirect that left https was refused".
+- **An aiforge export carries the build provenance of the releases that
+  publish it.** For a release whose workflow attests its files (aimem from
+  v0.10.25), `aiforge-export` stores each exported file's attestation
+  bundles, as the forge's API lists them, in
+  `<product>/<tag>/attestations/<file>.jsonl`. It asks the API without a
+  token, once per product, by the digest of the release's `SHA256SUMS`.
+  `--trusted-root FILE` copies a Sigstore trusted root (the output of
+  `gh attestation trusted-root`) into the export. README.txt gives the
+  `gh attestation verify ... --bundle ... --custom-trusted-root ...` command
+  that checks, with no network, that the release workflow built a file from
+  its tag. It also says that a root travelling inside the export proves no
+  more than `SHA256SUMS` does, so the root and gh must reach the closed
+  network by another channel. A release without build provenance is
+  exported as before, and the run and README.txt say so. The installers do
+  not run this check, and `MANIFEST` and the files they read do not change.
 
 ### Changed
+- **README.txt names aimem's process set when the release carries it.**
+  When the exported aimem release lists `aimem-process.tar.gz` (from
+  v0.10.25), README.txt's "Process sets" names the file under
+  `<dir>/aimem/<tag>/` and gives `aimem process select` and
+  `aimem process default set` with `--from-archive` and `--sums`, neither
+  needing git or the network. For an earlier release the text that has the
+  operator export a set on a connected machine stays.
 - **The Windows install from an export copies `boot.ps1` first.** Windows
   PowerShell refuses an unsigned script read straight from a share named by
   a dotted host name or an address under `RemoteSigned`. The README, the

@@ -14,8 +14,12 @@ products follow it.
   MANIFEST            text, UTF-8, LF
   README.txt          the exact install commands for this export; names no github.com
   aimem/<tag>/        the release's assets under their published names, with its SHA256SUMS
+  aimem/<tag>/attestations/<asset>.jsonl
+                      the asset's attestation bundles, where the release carries its
+                      build provenance (see "Build provenance"); no installer reads them
   aicrew/<tag>/       the same
   aiskills/<tag>/     the same
+  trusted_root.jsonl  optional: a Sigstore trusted root the export was given
 ```
 
 **MANIFEST.** Line 1 is `aiforge-export 1`. Each further line is
@@ -85,6 +89,8 @@ resolve, and names no github.com URL.
 6. **Integrity is the release's own `SHA256SUMS`**; the export adds no
    signature of its own. The export script checks every file against those
    sums as it downloads it, and each installer checks again what it reads.
+   The attestation bundles an export may carry are for a person to check
+   with gh; no installer reads them.
 
 ## Writing an export
 
@@ -103,6 +109,57 @@ where it is written, so a web server's account or another user can read it.
 It refuses an aimem release whose sums list no installer files (releases
 before v0.10.23). A release that does not yet publish its installer scripts
 as assets is exported anyway, and README.txt says what is missing.
+
+## Build provenance
+
+`SHA256SUMS` shows that a file arrived as published. A release whose
+workflow attests its files (aimem from v0.10.25) also shows which workflow
+built each file, from which commit and tag: a Sigstore-signed SLSA
+provenance. Every release also carries GitHub's own release attestation,
+which says only that the forge published the bytes; the export goes by the
+provenance.
+
+**What the script stores.** It asks the forge's API, without a token, for
+the attestations of the release's `SHA256SUMS` digest
+(`/repos/<owner>/<product>/attestations/sha256:<hex>`). If one of them is
+a build provenance, each exported file that its statement names gets
+`<product>/<tag>/attestations/<asset>.jsonl`: the bundles that name that
+file, one per line, as `gh attestation download` writes them. A file the
+provenance does not name is looked up by its own digest, and an export in
+which a file of such a release stays without provenance fails. The bundles
+are kept as UTF-8 bytes (a log checkpoint in them is not ASCII). A release
+without build provenance is exported as before, and the run and README.txt
+say so.
+
+**Checking a file with no network.** On a machine with gh:
+
+```sh
+gh attestation verify <dir>/aimem/<tag>/<file> \
+  --bundle <dir>/aimem/<tag>/attestations/<file>.jsonl \
+  --custom-trusted-root <trusted_root.jsonl> \
+  --repo BlackVS/aimem --source-ref refs/tags/<tag> \
+  --signer-workflow BlackVS/aimem/.github/workflows/release.yml
+```
+
+The command checks the bundle's signature against the trusted root, the
+log entry's inclusion proof, the file's digest, the repository, the tag the
+run built from and the workflow that signed. It was run with gh 2.102.0
+with the network blocked. It passed for every file of an aimem v0.10.25
+export, and failed for a file with one byte added, for another tag, and,
+in its online form, for want of the network. The check reads the time from
+the log entry, not the clock, so the signing certificate's ten minutes do
+not limit it.
+
+**The trusted root.** `gh attestation trusted-root` on a connected machine
+writes it; `--trusted-root FILE` copies one into the export as
+`trusted_root.jsonl`, and README.txt gives its sha256. It must be at least
+as new as the release: a root taken before a new log shard cannot check an
+entry in that shard, and a newer root checks older bundles. A root that
+travels inside the export proves nothing more than `SHA256SUMS` does:
+whoever can change the export can change the files, their bundles and the
+root together. The root and gh therefore reach the closed network by
+another channel, or the copy's sha256 is compared with that of a root taken
+independently. The installers do not run this check.
 
 ## Installing from an export
 
@@ -134,7 +191,18 @@ directory form.
 
 ## Process sets
 
-aimem's release does not yet publish its reference process set. Until it
-does, a closed network imports a process set from an archive made with
-`aimem process export` on a connected machine; README.txt in the export
-gives the commands.
+From v0.10.25, aimem's release publishes its reference process set as
+`aimem-process.tar.gz`, listed in its `SHA256SUMS`, so the export carries
+it under `aimem/<tag>/`. README.txt then names the file and gives both
+commands, which need neither git nor the network:
+
+```sh
+aimem process select <repository> <tag> --from-archive <dir>/aimem/<tag>/aimem-process.tar.gz \
+  --sums <dir>/aimem/<tag>/SHA256SUMS -p <project>
+aimem process default set <repository> <tag> --from-archive <dir>/aimem/<tag>/aimem-process.tar.gz \
+  --sums <dir>/aimem/<tag>/SHA256SUMS
+```
+
+For an earlier aimem release, a closed network imports a process set from
+an archive made with `aimem process export` on a connected machine, and
+README.txt gives those commands.

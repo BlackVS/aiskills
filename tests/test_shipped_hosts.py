@@ -44,6 +44,8 @@ PUBLIC = {
     "ghcr.io": "the container registry the readiness scanner looks for",
     "prose.ami.rip": "the source of the technical-writing skill",
     "criterion.rs": "the Rust benchmarking crate the readiness scanner looks for",
+    "slsa.dev": "the build-provenance predicate type aiforge-export picks attestation bundles by",
+    "in-toto.io": "the statement and release-attestation types in aiforge-export's attestation tests",
     # Names that only appear in tests of host checks: deliberately spoofed hosts under
     # an undelegated top-level label, which no one can register.
     "api.openai.com.evil": "a spoofed host in the review hook's host-check tests",
