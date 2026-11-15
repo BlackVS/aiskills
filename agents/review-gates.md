@@ -15,7 +15,7 @@ in Claude Code `/oh-code-review max` also works. The levels:
 
 | Gate | Level |
 | --- | --- |
-| Pre-push, every push | **medium**, run inline by the reviewer itself, no sub-agents. Cheap, keeps the rhythm; its misses are what the next gate exists for. |
+| Pre-push, every push | **medium**, run inline by the reviewer itself, no sub-agents. Cheap, keeps the rhythm; its misses are what the next gate exists for. It also reads the messages of the commits about to be pushed and the PR description for a session link (the rule on session links below). |
 | Pre-merge local review, XS or S on an ordinary surface | **high** by the implementer at the final head, posted to the PR: one pass plus verification, no fan-out. No second local reader. Where an external reviewer (hands) is deployed it carries the pre-merge weight, and the implementer's pass is the reader from the other model family. |
 | Pre-merge local review, M and up, or a sensitive surface | The implementer's **high** as above, plus a second local reader where one is deployed: a coordinating session's own **high** at the same head. |
 | Pre-merge re-review after fixes | **high** on the delta only, naming the new head; re-trigger the external reviewer, which costs nothing on the local side. Not needed after a base-only update with an unchanged patch identity (see the PR lifecycle below). |
@@ -72,11 +72,20 @@ Rules:
 - Repository-specific exceptions go in
   `.agents/skills/custom-codereview-guide/SKILL.md`, which the reviewer reads
   before every review.
-- A review posted to a PR carries at most a one-line tool attribution ("Review:
-  oh-code-review (max) via Claude Code") — never a session or conversation URL:
-  PRs are often public, the links lead into the author's private workspace, and
-  they are dead for every other reader. Commit/PR-description attribution
-  conventions do not extend to review comments.
+- No git artifact carries a session or conversation URL, on any remote,
+  public or private: commit messages, pull request titles and descriptions,
+  comments, reviews and QA reports. That holds also when the client's own
+  attribution guidance offers one (Claude Code's `Claude-Session:` commit
+  trailer, or a session link under a pull request's footer): leave it out.
+  The links lead into the author's private workspace and are dead for every
+  other reader. What stays is the plain `Co-Authored-By:` line of a commit
+  and a review's one-line tool attribution ("Review: oh-code-review (max) via
+  Claude Code"). Before every push, the messages of the commits about to be
+  pushed and the PR description are read for such a link: where the
+  `forge-gates` skill is installed, `forge_gates.py check-links --commits
+  <upstream>..HEAD --file <description file>`. A hit is a finding, fixed
+  before the push by rewording the unpushed commit or the description;
+  history already pushed is not rewritten.
 - Nothing internal goes into text posted to a PR — review, QA report, or any
   comment: no private hostnames or domains, hub/deployment names, backend
   binding names, token or credential names/paths, including inside quoted

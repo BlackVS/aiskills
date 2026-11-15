@@ -214,7 +214,7 @@ Require:
 - For frontend/UI changes: a screenshot or video demonstrating the implemented behavior in the real product
 - For backend, API, CLI, or script changes: the exact command(s) used to run the real code path end-to-end and the resulting output
 - Tests alone do not count as evidence; reject `pytest`, unit test output, or similar test runs when they are the only proof provided
-- For agent-generated work, when the repository is on a private host and the link is one reviewers can open: a link back to the originating conversation. On a public repository, do NOT require or accept conversation/session links as evidence — their absence is never a finding, and their presence violates the posting rules below (POSTED REVIEW ATTRIBUTION); the runtime artifacts themselves are the evidence.
+- Do NOT require or accept conversation/session links as evidence, on any host: their absence is never a finding, and their presence violates the rule below (POSTED REVIEW ATTRIBUTION); the runtime artifacts themselves are the evidence.
 - Reject hand-wavy claims like "tested locally" without concrete runtime artifacts
 
 8. **Dependency Changes**
@@ -283,8 +283,8 @@ to look for; the disposition defines *what it does to this PR*):
   "nit" entries for acceptable code.
 - Testing gaps: a missing test for changed behavior that a named acceptance
   criterion requires is a BLOCKER; mock-only tests or missing evidence for
-  behavior outside the criteria are FOLLOW_UP or OBSERVATION. On a public
-  repository a missing conversation link is never a finding.
+  behavior outside the criteria are FOLLOW_UP or OBSERVATION. A missing
+  conversation link is never a finding, on any host.
 - The supply-chain rule (versions younger than 7 days, `references/supply-chain-security.md`)
   yields a BLOCKER, because merging an unverified dependency cannot work safely
   under any threat model.
@@ -334,10 +334,17 @@ line naming the tool and level, e.g. "Review: oh-code-review (medium) via
 Claude Code". Never include a session or conversation URL (claude.ai/code
 session links, OpenHands/Codex conversation links) or any other link into the
 author's private tooling: PR comments are often public, and such links leak
-the author's workspace and are dead for every other reader. This rule applies
-regardless of any harness convention that appends session attribution to
-commits or PR descriptions — those conventions do not extend to review
-comments.
+the author's workspace and are dead for every other reader. The same holds
+for every git artifact on any remote, public or private: commit messages and
+PR titles and descriptions carry no session link either, whatever the
+client's own attribution offers (a `Claude-Session:` trailer included); the
+plain `Co-Authored-By:` line stays (agents/review-gates.md).
+
+At the pre-push level, read the messages of the commits about to be pushed
+and the PR description for a session link or a `Claude-Session:` trailer,
+with `forge_gates.py check-links --commits <upstream>..HEAD --file <description
+file>` where the `forge-gates` skill is installed. A hit is a finding fixed
+before the push.
 
 The same caution applies to the review content itself: never expose internal
 infrastructure identifiers — private hostnames and domains, deployment or hub

@@ -1,6 +1,6 @@
 ---
 name: forge-gates
-description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the head just pushed (any SHA abbreviation, trusted authors only, a correlated failure comment ends the wait); gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green at the head); merge-check gives verify-delivery's delivery verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution. Read-only except post-review; JSON on stdout. Use when an agent must wait for the external review, post its own review, or decide whether to mark a pull request ready.
+description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the head just pushed (any SHA abbreviation, trusted authors only, a correlated failure comment ends the wait); gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green at the head); merge-check gives verify-delivery's delivery verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution; check-links finds session links in commit messages and a pull request description before a push. Read-only except post-review; JSON on stdout. Use when an agent must wait for the external review, post its own review, check text before a push, or decide whether to mark a pull request ready.
 ---
 
 # Forge gates
@@ -28,6 +28,7 @@ names the skill to install.
     python3 scripts/forge_gates.py gates --pr PR
     python3 scripts/forge_gates.py merge-check --pr PR
     python3 scripts/forge_gates.py post-review --pr PR --body-file FILE [--deny-file FILE] [--dry-run]
+    python3 scripts/forge_gates.py check-links [--commits RANGE]... [--file FILE]...
 
 `PR` is a pull or merge request URL, `owner/repo#N`, or `owner/repo` with
 `--number`. Each command also takes every option of `verify-delivery`
@@ -192,6 +193,22 @@ source, the script stops with a usage error that names them. The token is
 kept in memory, sent only to the API base's origin (no redirect is followed, and no
 next-page link to another host), and masked in the output.
 
+### check-links
+
+Reads, before a push, the text that becomes a git artifact for a link into
+an agent's session or conversation: the messages of the commits in each
+`--commits` range (as `git log` takes it, for example `origin/main..HEAD`,
+run in the current directory) and each `--file` (UTF-8, such as a pull
+request description). A line counts when it holds a session or conversation
+URL of an agent client (the pattern `post-review` refuses) or starts with the
+`Claude-Session:` trailer. A plain `Co-Authored-By:` line passes, and so does
+the client's footer link to its own product page.
+It needs no forge, token or pull request. Each hit is reported in `hits` by
+its source (`commit <sha>` or `file <path>`) and line, never by its text.
+`outcome` is `clean` (exit 0) or `refused` (exit 3). No `--commits` and no
+`--file`, a range that starts with `-`, a range git does not know, or an
+unreadable file is a usage error (exit 2).
+
 ## Exit codes
 
 | Command | 0 | 3 | 4 | 2 |
@@ -200,3 +217,4 @@ next-page link to another host), and masked in the output.
 | `gates` | ready | not ready | pending | usage error |
 | `merge-check` | confirmed | not confirmed | pending | usage error |
 | `post-review` | posted, or would post (`--dry-run`) | refused | the forge refused or did not answer | usage error, or the token may not comment |
+| `check-links` | clean | a session link found | (none) | usage error |
