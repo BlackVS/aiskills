@@ -93,9 +93,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # No token here: this job's token can write. Without one, aiforge-export's
+      # real-release test skips, with its reason (-v shows it), when the forge
+      # API's limit for unauthenticated calls refuses its lookup; the macOS
+      # leg above ran the same test with a read-only token.
       - name: Test before publishing
         run: |
-          python -m unittest discover -s . -p "test_*.py" -t .
+          python -m unittest discover -s . -p "test_*.py" -t . -v
           python -m unittest discover -s consumers/openhands-review-hook/runtime -p "test_*.py"
           python consumers/openhands-review-hook/render.py --check
 

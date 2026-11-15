@@ -49,6 +49,12 @@ jobs:
         with:
           python-version: '3.12'
       - name: Installers, boot, changelog, skills
+        env:
+          # Read-only (the workflow's contents: read, and the release calls
+          # this workflow with contents: read): aiforge-export's real-release
+          # test makes its forge API lookup authenticated, not on the shared
+          # unauthenticated limit of the runner's address.
+          GH_TOKEN: ${{ github.token }}
         run: python -m unittest discover -s . -p "test_*.py" -t . -v
       - name: Review-hook runtime
         # -v and --durations: the slowest tests show in every run

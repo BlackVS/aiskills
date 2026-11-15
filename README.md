@@ -117,6 +117,12 @@ The flow has three steps:
    python3 skills/aiforge-export/aiforge-export --out /media/aiforge-export --platforms linux-amd64,windows-amd64
    ```
 
+   The forge API allows 60 unauthenticated calls an hour per address. On a
+   shared address, set `GH_TOKEN` or `GITHUB_TOKEN`: the helper sends it to
+   `https://api.github.com` only, never to a download host or after a
+   redirect, and an export pointed at another API host with `--api-base`
+   runs unauthenticated.
+
 2. Carry the directory into the closed network, or serve it from an
    internal https server.
 3. Install each product from it with its own variable: `AIMEM_BASE` for

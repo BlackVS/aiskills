@@ -18,6 +18,11 @@ as it arrives, and writes:
 The export is built in a directory beside <out> and renamed into place only when
 every file has been verified, so a failed run leaves no <out> at all.
 
+The forge API (the latest-release lookup and the attestation lookup) allows 60
+unauthenticated calls an hour per address. With GH_TOKEN or GITHUB_TOKEN set, the
+token is sent to https://api.github.com only: never to a download host, never after
+a redirect, and not to a host given with --api-base, which runs unauthenticated.
+
 Usage:
     aiforge-export --out DIR [--platforms linux-amd64,windows-amd64]
                    [--products aimem,aicrew,aiskills]
@@ -67,6 +72,21 @@ class ExportError(Exception):
     pass
 
 
+def api_token(url):
+    """The (variable, token) to send with url, or None. Only a call to the default
+    forge API carries a token; a host named with --api-base never gets one."""
+    if not url.startswith(API_BASE + "/"):
+        return None
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            # http.client would refuse such a header with the value in its message.
+            if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in value):
+                raise ExportError(f"{name} holds whitespace or a control character; not sent")
+            return name, value
+    return None
+
+
 def allowed_url(url):
     """https anywhere; plain http only to the loopback interface (a test server)."""
     u = urllib.parse.urlsplit(url)
@@ -94,12 +114,17 @@ class HeldRedirects(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(HeldRedirects)
 
 
-def fetch(url, sink=None, missing_ok=False):
+def fetch(url, sink=None, missing_ok=False, api=False):
     """GET url. Without sink, return the body; with one, stream the body into it.
-    With missing_ok, a 404 returns None."""
+    With missing_ok, a 404 returns None. api marks a call to the forge API, where a
+    403 or 429 is most likely its rate limit."""
     if not allowed_url(url):
         raise ExportError(f"{url} is not https; refused")
     req = urllib.request.Request(url, headers={"User-Agent": "aiforge-export"})
+    token = api_token(url)
+    if token:
+        # An unredirected header is not copied to a redirect's request, to any host.
+        req.add_unredirected_header("Authorization", f"Bearer {token[1]}")
     for attempt in range(3):
         try:
             with OPENER.open(req, timeout=60) as r:
@@ -113,6 +138,8 @@ def fetch(url, sink=None, missing_ok=False):
         except urllib.error.HTTPError as e:
             if e.code == 404 and missing_ok:
                 return None
+            if api and e.code in (403, 429):
+                raise ExportError(rate_limited(url, e.code, token)) from None
             if e.code < 500 or attempt == 2:
                 raise ExportError(f"{url}: HTTP {e.code}") from None
         except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
@@ -121,10 +148,19 @@ def fetch(url, sink=None, missing_ok=False):
         time.sleep(1 + attempt)
 
 
+def rate_limited(url, code, token):
+    if token:
+        return (f"{url}: HTTP {code}: the forge API refused the call with the token from {token[0]}; "
+                "its rate limit is spent or the token is not accepted")
+    return (f"{url}: HTTP {code}: the forge API refused the call, most likely its rate limit for "
+            "unauthenticated calls (60 an hour per address); set GH_TOKEN or GITHUB_TOKEN to lift it "
+            f"(sent to {API_BASE} only)")
+
+
 def latest_tag(api_base, product):
     url = f"{api_base}/repos/{OWNER}/{product}/releases/latest"
     try:
-        tag = json.loads(fetch(url)).get("tag_name")
+        tag = json.loads(fetch(url, api=True)).get("tag_name")
     except ValueError:
         raise ExportError(f"{url}: not a release") from None
     if not isinstance(tag, str) or not TAG.match(tag):
@@ -194,7 +230,7 @@ def attestations(api_base, product, digest):
     pairs; [] when it lists none. The statement is read from the bundle's payload only
     to choose bundles: gh verifies the signature later."""
     url = f"{api_base}/repos/{OWNER}/{product}/attestations/sha256:{digest}"
-    raw = fetch(url, missing_ok=True)
+    raw = fetch(url, missing_ok=True, api=True)
     if raw is None:
         return []
     found = []
