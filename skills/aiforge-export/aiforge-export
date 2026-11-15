@@ -10,6 +10,10 @@ as it arrives, and writes:
     <out>/MANIFEST                 aiforge-export 1, then one "<product> <tag>" line each
     <out>/README.txt               the install commands with this export's tags filled in
     <out>/<product>/<tag>/         the release's files, unchanged, and its SHA256SUMS
+    <out>/<product>/<tag>/attestations/<file>.jsonl
+                                   the file's attestation bundles, where the release
+                                   carries its build provenance
+    <out>/trusted_root.jsonl       with --trusted-root only: the Sigstore trusted root given
 
 The export is built in a directory beside <out> and renamed into place only when
 every file has been verified, so a failed run leaves no <out> at all.
@@ -18,10 +22,11 @@ Usage:
     aiforge-export --out DIR [--platforms linux-amd64,windows-amd64]
                    [--products aimem,aicrew,aiskills]
                    [--aimem TAG] [--aicrew TAG] [--aiskills TAG]
+                   [--trusted-root FILE]
 
 Python 3.8 or newer, standard library only.
 """
-import argparse, hashlib, http.client, ipaddress, json, os, re, secrets, shutil, sys, time
+import argparse, base64, binascii, hashlib, http.client, ipaddress, json, os, re, secrets, shutil, sys, time
 import urllib.error, urllib.parse, urllib.request
 
 FORMAT = "aiforge-export 1"
@@ -47,6 +52,13 @@ INSTALLERS = {
     "aiskills": ("boot.sh", "boot.ps1"),
 }
 CHUNK = 1 << 16
+# The predicate of a build provenance: what the release workflow built, from which
+# commit and ref. GitHub's own release attestation, which every release carries, says
+# only that the forge published the bytes, so it alone does not make a bundle file.
+PROVENANCE = "https://slsa.dev/provenance/v1"
+TRUSTED_ROOT = "application/vnd.dev.sigstore.trustedroot+json"
+# The gh the offline command in README.txt was run with, network blocked.
+GH_TESTED = "2.102.0"
 
 
 class ExportError(Exception):
@@ -80,8 +92,9 @@ class HeldRedirects(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(HeldRedirects)
 
 
-def fetch(url, sink=None):
-    """GET url. Without sink, return the body; with one, stream the body into it."""
+def fetch(url, sink=None, missing_ok=False):
+    """GET url. Without sink, return the body; with one, stream the body into it.
+    With missing_ok, a 404 returns None."""
     if not allowed_url(url):
         raise ExportError(f"{url} is not https; refused")
     req = urllib.request.Request(url, headers={"User-Agent": "aiforge-export"})
@@ -96,6 +109,8 @@ def fetch(url, sink=None):
                         return None
                     sink(b)
         except urllib.error.HTTPError as e:
+            if e.code == 404 and missing_ok:
+                return None
             if e.code < 500 or attempt == 2:
                 raise ExportError(f"{url}: HTTP {e.code}") from None
         except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
@@ -172,7 +187,62 @@ def download(url, path, digest):
         raise ExportError(f"{url} does not match its SHA256SUMS entry (got {h.hexdigest()}, listed {digest})")
 
 
-def export_product(product, tag, platforms, download_base, dest, log):
+def attestations(api_base, product, digest):
+    """The attestations the forge lists for a file's digest, as (bundle, statement)
+    pairs; [] when it lists none. The statement is read from the bundle's payload only
+    to choose bundles: gh verifies the signature later."""
+    url = f"{api_base}/repos/{OWNER}/{product}/attestations/sha256:{digest}"
+    raw = fetch(url, missing_ok=True)
+    if raw is None:
+        return []
+    found = []
+    try:
+        for a in json.loads(raw)["attestations"]:  # bytes in: the JSON's own UTF-8
+            bundle = a.get("bundle")
+            if not isinstance(bundle, dict):
+                raise ExportError(f"{url}: an attestation without its bundle inline; this export cannot store it")
+            statement = json.loads(base64.b64decode(bundle["dsseEnvelope"]["payload"], validate=True))
+            if not isinstance(statement, dict):
+                raise TypeError
+            found.append((bundle, statement))
+    except (ValueError, KeyError, TypeError, AttributeError, binascii.Error):
+        raise ExportError(f"{url}: not a list of attestation bundles") from None
+    return found
+
+
+def provenance_of(found, digest):
+    """The attestations in found whose statement names digest, if one of them is a
+    build provenance; else []."""
+    mine = [(b, st) for b, st in found
+            if any(isinstance(s, dict) and isinstance(s.get("digest"), dict) and s["digest"].get("sha256") == digest
+                   for s in st.get("subject") or ())]
+    return mine if any(st.get("predicateType") == PROVENANCE for _, st in mine) else []
+
+
+def export_attestations(product, tag, files, api_base, dest, log):
+    """For a release that carries its build provenance, write each exported file's
+    bundles to attestations/<file>.jsonl, one per line as gh attestation download
+    writes them. files maps every exported name, SHA256SUMS included, to its digest.
+    One lookup by the digest of SHA256SUMS: a release workflow attests all its files
+    at once; a file that attestation does not name is looked up by its own digest."""
+    found = attestations(api_base, product, files["SHA256SUMS"])
+    if not any(st.get("predicateType") == PROVENANCE for _, st in found):
+        log(f"  no build provenance: {product} {tag} carries SHA256SUMS only")
+        return False
+    adir = os.path.join(dest, "attestations")
+    os.mkdir(adir)
+    for name, digest in sorted(files.items()):
+        mine = provenance_of(found, digest) or provenance_of(attestations(api_base, product, digest), digest)
+        if not mine:
+            raise ExportError(f"{product} {tag} carries build provenance, but none names {name}")
+        with open(os.path.join(adir, f"{name}.jsonl"), "wb") as f:
+            for bundle, _ in mine:
+                f.write(json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
+        log(f"  attestation bundle: {product}/{tag}/attestations/{name}.jsonl")
+    return True
+
+
+def export_product(product, tag, platforms, download_base, api_base, dest, log):
     rel = f"{download_base}/{OWNER}/{product}/releases/download/{tag}"
     sums_url = f"{rel}/SHA256SUMS"
     raw = fetch(sums_url)
@@ -188,7 +258,10 @@ def export_product(product, tag, platforms, download_base, dest, log):
     for name in names:
         download(f"{rel}/{name}", os.path.join(dest, name), sums[name])
         log(f"  checksum OK: {product}/{tag}/{name}")
-    return [f for f in INSTALLERS[product] if f not in sums]
+    exported = {n: sums[n] for n in names}
+    exported["SHA256SUMS"] = hashlib.sha256(raw).hexdigest()
+    attested = export_attestations(product, tag, exported, api_base, dest, log)
+    return [f for f in INSTALLERS[product] if f not in sums], attested
 
 
 # Per product: its base variable, the execution policy its Windows boot script runs
@@ -239,8 +312,68 @@ def install_commands(product, tag):
     return out
 
 
-def readme(tags, platforms, lacking):
-    """README.txt: what the export holds and how to install from it. Names no forge."""
+def provenance_section(tags, attested, root_digest):
+    """How a closed network checks, with no network, that a product's release workflow
+    built a file, for the products whose release carries its build provenance."""
+    out = ["", "Build provenance", "----------------", ""]
+    carry = [f"{p} {t}" for p, t in tags.items() if attested[p]]
+    without = [f"{p} {t}" for p, t in tags.items() if not attested[p]]
+    if not carry:
+        return out + [
+            f"No release in this export carries its build provenance ({', '.join(without)}):",
+            "SHA256SUMS is the only check, and it shows that a file arrived as published.",
+        ]
+    out += [
+        "SHA256SUMS shows that a file arrived as published. A release that carries its",
+        "build provenance also shows which workflow built each file, from which tag:",
+        "<product>/<tag>/attestations/<file>.jsonl holds that file's attestation bundles",
+        "as the forge returned them. gh checks a file against them with no network:",
+        "",
+        f"    Bundles: {', '.join(carry)}.",
+    ]
+    if without:
+        out += [f"    No build provenance (SHA256SUMS only): {', '.join(without)}."]
+    for product, tag in tags.items():
+        if not attested[product]:
+            continue
+        out += [
+            "",
+            f"  {product} {tag}, for each <file> in <dir>/{product}/{tag}:",
+            f"    gh attestation verify <dir>/{product}/{tag}/<file> \\",
+            f"      --bundle <dir>/{product}/{tag}/attestations/<file>.jsonl \\",
+            "      --custom-trusted-root <trusted_root.jsonl> \\",
+            f"      --repo {OWNER}/{product} --source-ref refs/tags/{tag} \\",
+            f"      --signer-workflow {OWNER}/{product}/.github/workflows/release.yml",
+        ]
+    out += [
+        "",
+        f"This command was run with gh {GH_TESTED}, the network blocked. On Windows, give it",
+        "on one line, without the backslashes.",
+        "",
+        "The trusted root holds the public keys the bundles are checked against. It is the",
+        "output of `gh attestation trusted-root` on a connected machine, and it must be at",
+        "least as new as the release. A root that travels inside this export proves",
+        "nothing more than SHA256SUMS does: whoever can change the export can change the",
+        "files, their bundles and the root together. Bring the root and gh into the closed",
+        "network by another channel, or compare the root's sha256 with that of one taken",
+        "independently on a connected machine.",
+        "",
+    ]
+    if root_digest:
+        out += ["This export carries a copy as trusted_root.jsonl, with sha256",
+                f"    {root_digest}"]
+    else:
+        out += ["This export carries no trusted root: bring your own."]
+    return out + [
+        "",
+        "The installers do not run this check, and nothing they read changes: they check",
+        "every file against SHA256SUMS, as before.",
+    ]
+
+
+def readme(tags, platforms, lacking, attested, root_digest):
+    """README.txt: what the export holds and how to install from it. Names no forge
+    host; the provenance command names the repository its workflow runs in."""
     out = [
         "aiforge export, format 1",
         "",
@@ -285,6 +418,7 @@ def readme(tags, platforms, lacking):
             ]
         else:
             out += ["then install its binaries by hand."]
+    out += provenance_section(tags, attested, root_digest)
     out += [
         "",
         "Process sets",
@@ -308,19 +442,29 @@ def build(args, log=print):
     parent = os.path.dirname(out)
     if not os.path.isdir(parent):
         raise ExportError(f"{parent} is not a directory")
+    root = read_trusted_root(args.trusted_root) if args.trusted_root else None
     tags = {p: getattr(args, p) or latest_tag(args.api_base, p) for p in args.products}
     # An ordinary new directory, so the export gets the permissions any directory made
     # here gets (tempfile.mkdtemp would make it readable by its owner alone).
     stage = os.path.join(parent, f"{os.path.basename(out)}.partial-{secrets.token_hex(6)}")
     os.mkdir(stage)
     try:
-        lacking = {}
+        lacking, attested = {}, {}
         for product, tag in tags.items():
             log(f"{product} {tag}")
-            lacking[product] = export_product(product, tag, args.platforms, args.download_base,
-                                              os.path.join(stage, product, tag), log)
+            lacking[product], attested[product] = export_product(
+                product, tag, args.platforms, args.download_base, args.api_base,
+                os.path.join(stage, product, tag), log)
+        root_digest = None
+        if root is not None:
+            with open(os.path.join(stage, "trusted_root.jsonl"), "wb") as f:
+                f.write(root)
+            root_digest = hashlib.sha256(root).hexdigest()
+            log(f"trusted root: trusted_root.jsonl, sha256 {root_digest}")
+        carry = [p for p in tags if attested[p]]
+        log(f"build provenance bundles: {', '.join(carry) if carry else 'none'}")
         with open(os.path.join(stage, "README.txt"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(readme(tags, args.platforms, lacking))
+            f.write(readme(tags, args.platforms, lacking, attested, root_digest))
         with open(os.path.join(stage, "MANIFEST"), "w", encoding="utf-8", newline="\n") as f:
             f.write(FORMAT + "\n" + "".join(f"{p} {t}\n" for p, t in tags.items()))
         os.rename(stage, out)
@@ -329,6 +473,22 @@ def build(args, log=print):
         raise
     log(f"wrote {out}")
     return out
+
+
+def read_trusted_root(path):
+    """The bytes of a Sigstore trusted root in JSON Lines, as `gh attestation
+    trusted-root` writes it, checked to be one and copied unchanged."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    lines = [line for line in raw.splitlines() if line.strip()]
+    try:
+        ok = bool(lines) and all(str(json.loads(line).get("mediaType", "")).startswith(TRUSTED_ROOT)
+                                 for line in lines)
+    except (ValueError, AttributeError):
+        ok = False
+    if not ok:
+        raise ExportError(f"{path} is not a Sigstore trusted root (the output of gh attestation trusted-root)")
+    return raw
 
 
 def csv(kind, pattern, allowed=None):
@@ -369,7 +529,9 @@ def main(argv=None):
     ap.add_argument("--download-base", type=base_url, default=DOWNLOAD_BASE,
                     help="where releases are downloaded from: <base>/<owner>/<repo>/releases/download/<tag>/")
     ap.add_argument("--api-base", type=base_url, default=API_BASE,
-                    help="the forge API that names the latest release")
+                    help="the forge API that names the latest release and lists attestations")
+    ap.add_argument("--trusted-root", metavar="FILE",
+                    help="a Sigstore trusted root (gh attestation trusted-root > FILE) to copy into the export")
     args = ap.parse_args(argv)
     args.products = [p for p in PRODUCTS if p in args.products]
     try:

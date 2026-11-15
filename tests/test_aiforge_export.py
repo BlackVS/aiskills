@@ -3,7 +3,7 @@ interface, and once against the real aimem v0.10.23 release.
 
 Run: python3 -m unittest tests/test_aiforge_export.py
 """
-import hashlib, http.server, importlib.machinery, importlib.util, json, os, pathlib, subprocess, sys
+import base64, hashlib, http.server, importlib.machinery, importlib.util, json, os, pathlib, subprocess, sys
 import contextlib, io, stat, tempfile, threading, unittest
 from unittest import mock
 
@@ -15,6 +15,10 @@ _loader = importlib.machinery.SourceFileLoader("aiforge_export", str(SCRIPT))
 _spec = importlib.util.spec_from_loader("aiforge_export", _loader)
 ax = importlib.util.module_from_spec(_spec)
 _loader.exec_module(ax)
+# The shipped-text host check, applied to the README an export writes.
+_hosts_spec = importlib.util.spec_from_file_location("shipped_hosts", ROOT / "tests" / "test_shipped_hosts.py")
+shipped_hosts = importlib.util.module_from_spec(_hosts_spec)
+_hosts_spec.loader.exec_module(shipped_hosts)
 
 
 def sums_of(files):
@@ -46,6 +50,7 @@ class FakeForge:
 
     def __init__(self):
         self.releases, self.latest, self.sums, self.paths = {}, {}, {}, []
+        self.attestations = {}  # (product, sha256 hex) -> the API's body for that digest
         self.redirect_to = None
         self.cut_short = None  # a file name whose body is sent short of its Content-Length
         forge = self
@@ -86,6 +91,10 @@ class FakeForge:
         if parts[1:3] == ["api", "repos"] and parts[3] == "BlackVS" and parts[5:] == ["releases", "latest"]:
             tag = self.latest.get(parts[4])
             return (200, {}, json.dumps({"tag_name": tag}).encode()) if tag else (404, {}, b"")
+        if parts[1:3] == ["api", "repos"] and parts[3] == "BlackVS" and len(parts) == 7 and parts[5] == "attestations" \
+                and parts[6].startswith("sha256:"):
+            body = self.attestations.get((parts[4], parts[6][len("sha256:"):]))
+            return (200, {}, body) if body is not None else (404, {}, b"")
         if parts[1] == "dl" and parts[2] == "BlackVS" and parts[4:6] == ["releases", "download"] and len(parts) == 8:
             key, name = (parts[3], parts[6]), parts[7]
             if self.redirect_to and name == self.redirect_to[0]:
@@ -98,6 +107,40 @@ class FakeForge:
             product, tag, name = parts[2:5]
             return 200, {}, self.releases[(product, tag)][name]
         return 404, {}, b""
+
+
+PROVENANCE = "https://slsa.dev/provenance/v1"
+RELEASE_ATTESTATION = "https://in-toto.io/attestation/release/v0.2"
+
+
+def bundle(predicate, digests):
+    """A bundle as the forge lists it: the statement naming digests, and a log
+    checkpoint with an em dash, as Rekor's has, so a bundle not kept as UTF-8 shows."""
+    statement = {"_type": "https://in-toto.io/Statement/v1", "predicateType": predicate,
+                 "subject": [{"name": n, "digest": {"sha256": d}} for n, d in sorted(digests.items())]}
+    return {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+            "verificationMaterial": {"tlogEntries": [{"checkpoint": "log.example — 7\n"}]},
+            "dsseEnvelope": {"payload": base64.b64encode(json.dumps(statement).encode()).decode(),
+                             "payloadType": "application/vnd.in-toto+json", "signatures": [{"sig": "c2ln"}]}}
+
+
+def listed(*bundles):
+    """The forge API's answer for a digest: its attestations, the bundle inline."""
+    return json.dumps({"attestations": [{"bundle": b, "repository_id": 1} for b in bundles]},
+                      ensure_ascii=False).encode("utf-8")
+
+
+def digests(product, tag, forge):
+    files = forge.releases[(product, tag)]
+    out = {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
+    out["SHA256SUMS"] = hashlib.sha256(forge.sums[(product, tag)]).hexdigest()
+    return out
+
+
+def read_bundles(path):
+    raw = path.read_bytes()
+    assert raw.endswith(b"\n")
+    return [json.loads(line) for line in raw.decode("utf-8").splitlines()]
 
 
 class ExportCases(unittest.TestCase):
@@ -331,6 +374,143 @@ class ExportCases(unittest.TestCase):
                 self.assertEqual(r.returncode, 2)
                 self.assertIn(msg, r.stderr)
         self.assertEqual(self.forge.paths, [])
+
+    def add_attested(self, product, tag, names, cover=None):
+        """A release whose workflow attested every file (or those in cover) in one
+        provenance, with GitHub's release attestation beside it, both listed for the
+        digest of its SHA256SUMS, as the forge lists them."""
+        self.forge.add(product, tag, release(product, tag, names))
+        d = digests(product, tag, self.forge)
+        covered = {n: h for n, h in d.items() if cover is None or n in cover}
+        bundles = (bundle(RELEASE_ATTESTATION, d), bundle(PROVENANCE, covered))
+        self.forge.attestations[(product, d["SHA256SUMS"])] = listed(*bundles)
+        return d, bundles
+
+    def attestation_lookups(self):
+        return [p for p in self.forge.paths if "/attestations/" in p]
+
+    def test_a_release_with_provenance_carries_one_bundle_per_file(self):
+        d, bundles = self.add_attested("aimem", "v0.10.25", AIMEM + ["aimem-process.tar.gz"])
+        r = self.run_export("--products", "aimem,aicrew", "--aimem", "v0.10.25", "--platforms", "linux-amd64")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rel = self.out / "aimem" / "v0.10.25"
+        exported = {p.name for p in rel.iterdir() if p.is_file()}
+        adir = rel / "attestations"
+        self.assertEqual({p.name for p in adir.iterdir()}, {f"{n}.jsonl" for n in exported})
+        self.assertIn("SHA256SUMS", exported)
+        self.assertNotIn("aimem-darwin-arm64.jsonl", {p.name for p in adir.iterdir()}, "only exported files")
+        for n in exported:
+            raw = (adir / f"{n}.jsonl").read_bytes()
+            self.assertIn("—".encode("utf-8"), raw, "kept as UTF-8")
+            self.assertEqual(read_bundles(adir / f"{n}.jsonl"), list(bundles), n)
+        # One lookup per product, by the digest of SHA256SUMS
+        self.assertEqual(self.attestation_lookups(),
+                         [f"/api/repos/BlackVS/aimem/attestations/sha256:{d['SHA256SUMS']}",
+                          f"/api/repos/BlackVS/aicrew/attestations/sha256:{digests('aicrew', 'v0.9.0', self.forge)['SHA256SUMS']}"])
+        self.assertFalse((self.out / "aicrew" / "v0.9.0" / "attestations").exists())
+        self.assertIn("build provenance bundles: aimem", r.stdout)
+        self.assertIn("no build provenance: aicrew v0.9.0 carries SHA256SUMS only", r.stdout)
+        # MANIFEST and the release directory the installers read keep their form
+        self.assertEqual((self.out / "MANIFEST").read_text(), "aiforge-export 1\naimem v0.10.25\naicrew v0.9.0\n")
+        self.assertEqual((rel / "SHA256SUMS").read_bytes(), self.forge.sums[("aimem", "v0.10.25")])
+        text = (self.out / "README.txt").read_text(encoding="utf-8")
+        for line in ("    Bundles: aimem v0.10.25.",
+                     "    No build provenance (SHA256SUMS only): aicrew v0.9.0.",
+                     "    gh attestation verify <dir>/aimem/v0.10.25/<file> \\",
+                     "      --bundle <dir>/aimem/v0.10.25/attestations/<file>.jsonl \\",
+                     "      --custom-trusted-root <trusted_root.jsonl> \\",
+                     "      --repo BlackVS/aimem --source-ref refs/tags/v0.10.25 \\",
+                     "      --signer-workflow BlackVS/aimem/.github/workflows/release.yml",
+                     f"This command was run with gh {ax.GH_TESTED}, the network blocked.",
+                     "proves\nnothing more than SHA256SUMS does",
+                     "This export carries no trusted root: bring your own.",
+                     "The installers do not run this check, and nothing they read changes"):
+            self.assertIn(line, text)
+        self.assertNotIn("<dir>/aicrew/v0.9.0/<file>", text)
+        self.assert_readme_names_no_host(text)
+
+    def assert_readme_names_no_host(self, text):
+        """No host outside the shipped-text allow-list, no URL, and the forge's name only
+        where the provenance command names the workflow it checks for."""
+        self.assertEqual(shipped_hosts.unlisted(text), [])
+        self.assertNotIn("://", text)
+        for line in text.splitlines():
+            if "github" in line.lower():
+                self.assertTrue(line.strip().startswith("--signer-workflow BlackVS/"), line)
+
+    def test_a_release_with_only_the_release_attestation_carries_no_bundle(self):
+        self.forge.add("aiskills", "v1.39.0", release("aiskills", "v1.39.0", AISKILLS))
+        d = digests("aiskills", "v1.39.0", self.forge)
+        self.forge.attestations[("aiskills", d["SHA256SUMS"])] = listed(bundle(RELEASE_ATTESTATION, d))
+        r = self.run_export("--products", "aiskills")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.out / "aiskills" / "v1.39.0" / "attestations").exists())
+        self.assertEqual(len(self.attestation_lookups()), 1, "no lookup per file without a provenance")
+        self.assertIn("no build provenance: aiskills v1.39.0 carries SHA256SUMS only", r.stdout)
+        self.assertIn("build provenance bundles: none", r.stdout)
+        text = (self.out / "README.txt").read_text(encoding="utf-8")
+        self.assertIn("No release in this export carries its build provenance (aiskills v1.39.0):", text)
+        self.assertNotIn("gh attestation verify", text)
+        self.assert_readme_names_no_host(text)
+
+    def test_a_file_the_release_provenance_omits_is_looked_up_by_its_digest(self):
+        names = AISKILLS
+        d, _ = self.add_attested("aiskills", "v1.39.0", names, cover=set(names) - {"boot.sh"} | {"SHA256SUMS"})
+        own = bundle(PROVENANCE, {"boot.sh": d["boot.sh"]})
+        self.forge.attestations[("aiskills", d["boot.sh"])] = listed(own)
+        r = self.run_export("--products", "aiskills")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        adir = self.out / "aiskills" / "v1.39.0" / "attestations"
+        self.assertEqual(read_bundles(adir / "boot.sh.jsonl"), [own])
+        self.assertEqual(len(read_bundles(adir / "boot.ps1.jsonl")), 2, "the release attestation and the provenance")
+        self.assertIn(f"/api/repos/BlackVS/aiskills/attestations/sha256:{d['boot.sh']}", self.forge.paths)
+        self.assertEqual(len(self.attestation_lookups()), 2)
+
+    def test_a_file_no_provenance_names_writes_nothing(self):
+        self.add_attested("aiskills", "v1.39.0", AISKILLS, cover=set(AISKILLS) - {"boot.sh"} | {"SHA256SUMS"})
+        r = self.run_export("--products", "aiskills")
+        self.assert_nothing_written(r, "aiskills v1.39.0 carries build provenance, but none names boot.sh")
+
+    def test_an_attestation_answer_that_is_not_a_bundle_list_writes_nothing(self):
+        self.forge.add("aiskills", "v1.39.0", release("aiskills", "v1.39.0", AISKILLS))
+        sums = digests("aiskills", "v1.39.0", self.forge)["SHA256SUMS"]
+        not_a_statement = {"dsseEnvelope": {"payload": base64.b64encode(b"[1]").decode()}}
+        for body, msg in ((b"<html>", "not a list of attestation bundles"),
+                          (b'{"attestations": ["x"]}', "not a list of attestation bundles"),
+                          (json.dumps({"attestations": [{"bundle": not_a_statement}]}).encode(),
+                           "not a list of attestation bundles"),
+                          (json.dumps({"attestations": [{"bundle_url": "https://blobs.example/x"}]}).encode(),
+                           "an attestation without its bundle inline")):
+            with self.subTest(body=body[:40]):
+                self.forge.attestations[("aiskills", sums)] = body
+                r = self.run_export("--products", "aiskills")
+                self.assert_nothing_written(r, msg)
+
+    def test_a_trusted_root_is_copied_with_its_digest_in_the_readme(self):
+        self.add_attested("aiskills", "v1.39.0", AISKILLS)
+        root = (json.dumps({"mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+                            "tlogs": [{"baseUrl": "https://log.example"}]}) + "\n").encode()
+        path = self.tmp.parent / f"{self.tmp.name}-root.jsonl"
+        path.write_bytes(root)
+        self.addCleanup(path.unlink)
+        r = self.run_export("--products", "aiskills", "--trusted-root", str(path))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.out / "trusted_root.jsonl").read_bytes(), root)
+        digest = hashlib.sha256(root).hexdigest()
+        text = (self.out / "README.txt").read_text(encoding="utf-8")
+        self.assertIn(f"This export carries a copy as trusted_root.jsonl, with sha256\n    {digest}", text)
+        self.assertIn(f"trusted root: trusted_root.jsonl, sha256 {digest}", r.stdout)
+        self.assertEqual((self.out / "MANIFEST").read_text(), "aiforge-export 1\naiskills v1.39.0\n")
+
+    def test_a_trusted_root_that_is_not_one_writes_nothing(self):
+        path = self.tmp.parent / f"{self.tmp.name}-root.jsonl"
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        for body in (b"", b"{}\n", b"not json\n", json.dumps({"mediaType": "application/json"}).encode()):
+            with self.subTest(body=body):
+                path.write_bytes(body)
+                r = self.run_export("--products", "aiskills", "--trusted-root", str(path))
+                self.assert_nothing_written(r, "is not a Sigstore trusted root")
+                self.assertEqual(self.forge.paths, [], "checked before anything is fetched")
 
 
 class Rules(unittest.TestCase):

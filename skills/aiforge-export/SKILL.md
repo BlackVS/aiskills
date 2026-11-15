@@ -28,6 +28,16 @@ python3 aiforge-export --out ./export --products aimem,aiskills --aimem v0.10.23
 - `--products` chooses among `aimem`, `aicrew` and `aiskills` (default: all
   three). `--aimem`, `--aicrew` and `--aiskills` name a release by its tag;
   without one the latest release is taken.
+- `--trusted-root FILE` copies a Sigstore trusted root (the output of
+  `gh attestation trusted-root`) into the export as `trusted_root.jsonl`.
+
+For a release that carries its build provenance (aimem from v0.10.25), each
+exported file's attestation bundles go to
+`<product>/<tag>/attestations/<file>.jsonl`. README.txt gives the gh command
+that checks a file against them with no network, and says why the trusted
+root and gh must come into the closed network by another channel. A release
+without build provenance is exported as before. The installers do not read
+the bundles.
 
 What it refuses, each with a message naming the URL or file:
 
@@ -39,6 +49,9 @@ What it refuses, each with a message naming the URL or file:
   `aimem-opencode.ts` (releases before v0.10.23): its installers cannot
   install it from an export;
 - any URL, redirects included, that is not https;
+- an attestation answer that is not a list of inline bundles, or a release
+  with build provenance in which a file stays without it;
+- a `--trusted-root` file that is not a Sigstore trusted root;
 - an `--out` that already exists.
 
 A release that publishes its files but not yet its installer scripts as

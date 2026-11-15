@@ -24,6 +24,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
   redirect from https to http by default; every https download (and the
   token's latest-release lookup) now passes `--proto-redir =https`, and a
   refused redirect reads "a redirect that left https was refused".
+- **An aiforge export carries the build provenance of the releases that
+  publish it.** For a release whose workflow attests its files (aimem from
+  v0.10.25), `aiforge-export` stores each exported file's attestation
+  bundles, as the forge's API lists them, in
+  `<product>/<tag>/attestations/<file>.jsonl`. It asks the API without a
+  token, once per product, by the digest of the release's `SHA256SUMS`.
+  `--trusted-root FILE` copies a Sigstore trusted root (the output of
+  `gh attestation trusted-root`) into the export. README.txt gives the
+  `gh attestation verify ... --bundle ... --custom-trusted-root ...` command
+  that checks, with no network, that the release workflow built a file from
+  its tag. It also says that a root travelling inside the export proves no
+  more than `SHA256SUMS` does, so the root and gh must reach the closed
+  network by another channel. A release without build provenance is
+  exported as before, and the run and README.txt say so. The installers do
+  not run this check, and `MANIFEST` and the files they read do not change.
 
 ### Changed
 - **The Windows install from an export copies `boot.ps1` first.** Windows
