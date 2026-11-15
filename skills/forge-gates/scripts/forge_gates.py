@@ -28,7 +28,7 @@ except ImportError:
     vd = None
 
 EXIT_READY, EXIT_USAGE, EXIT_NOT_READY, EXIT_PENDING = 0, 2, 3, 4
-COMMANDS = ("wait-review", "gates", "merge-check", "post-review")
+COMMANDS = ("wait-review", "gates", "merge-check", "post-review", "check-links")
 # gh lets these override its stored logins whatever --hostname names: a token for instance A
 # would be returned for B. They are removed from the environment gh is run with.
 GH_OVERRIDES = {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST"}
@@ -48,6 +48,8 @@ LEVEL = re.compile(r"\[oh-code-review(?: \((?P<a>low|medium|high|max|ultra)\) re
 ATTRIBUTION = re.compile(r"(?m)^Review: oh-code-review \((?P<level>low|medium|high|max|ultra)\) via \S.*$")
 # Links into an agent's private workspace: dead for every other reader of a pull request.
 SESSION_URL = re.compile(r"https?://(?:[a-z0-9-]+\.)*(?:claude\.ai|chatgpt\.com|chat\.openai\.com)/\S+", re.I)
+# The commit trailer a client adds for such a link.
+SESSION_TRAILER = re.compile(r"[ \t]*Claude-Session[ \t]*:", re.I)
 MAX_BODY = 65536  # characters; GitHub's limit for a comment body
 MAX_ANSWER = 1 << 20  # bytes read of the forge's answer to a new comment, which echoes the body
 
@@ -408,6 +410,12 @@ def read_text(path, what):
         raise vd.UsageError(f"the {what} cannot be read")
 
 
+def session_link(line):
+    """Whether a line links into an agent's session or conversation: a session URL anywhere in it,
+    or the trailer a client adds for one. No git artifact carries either, on any remote."""
+    return bool(SESSION_URL.search(line) or SESSION_TRAILER.match(line))
+
+
 def deny_entries(path):
     """The deny file's entries: one per line, matched as text in any case; blank lines and lines
     starting with # are skipped. The entries are never printed."""
@@ -476,7 +484,7 @@ def review_checks(text, header, verdict_re, deny):
     else:
         check("attribution")
 
-    private = [i + 1 for i, l in enumerate(lines) if SESSION_URL.search(l)]
+    private = [i + 1 for i, l in enumerate(lines) if session_link(l)]
     check("session_links", private and "a link into an agent's session or conversation: remove it", private[0] if private else None)
     denied = [i + 1 for i, l in enumerate(lines) if any(e in l.lower() for e in deny)]
     check("deny_file", denied and "the text holds an entry of the deny file (the entry is not shown)",
@@ -545,6 +553,39 @@ def post_review(args, forge, kind, owner, repo, number, token, opener):
     return doc, EXIT_READY
 
 
+# ---------------------------------------------------------------- checking text before a push
+
+def commit_messages(revisions, run):
+    """[(sha, message)] of the commits git log lists for REVISIONS (a range such as
+    origin/main..HEAD), newest first."""
+    if revisions.startswith("-"):
+        raise vd.UsageError("--commits takes a revision range, not an option")
+    try:
+        p = run(["git", "log", "-z", "--format=%H%n%B", revisions, "--"], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise vd.UsageError(f"git log cannot run: {e}")
+    if p.returncode != 0:
+        err = p.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise vd.UsageError(f"git log {revisions} failed" + (f": {err[0]}" if err else ""))
+    commits = []
+    for record in p.stdout.decode("utf-8", "replace").split("\0"):
+        sha, _, message = record.lstrip("\n").partition("\n")
+        if sha:
+            commits.append((sha, message))
+    return commits
+
+
+def check_links(args, run):
+    """The session links in the commit messages and files named: each hit by its source and line,
+    never by its text, which is the private link."""
+    sources = [(f"commit {sha}", message) for r in args.commits for sha, message in commit_messages(r, run)]
+    sources += [(f"file {path}", read_text(path, f"file {path}")) for path in args.file]
+    hits = [{"source": source, "line": i + 1}
+            for source, text in sources for i, line in enumerate(text.splitlines()) if session_link(line)]
+    doc = {"outcome": "refused" if hits else "clean", "sources": len(sources), "hits": hits}
+    return doc, EXIT_NOT_READY if hits else EXIT_READY
+
+
 # ---------------------------------------------------------------- CLI
 
 def build_parser():
@@ -571,6 +612,12 @@ def build_parser():
     r.add_argument("--deny-file", metavar="FILE",
                    help="text that must not appear (private names), one entry per line; never printed")
     r.add_argument("--dry-run", action="store_true", help="run every check, read the pull request, post nothing")
+    c = sub.add_parser("check-links", allow_abbrev=False,
+                       help="find session links in commit messages and files before a push; no forge needed")
+    c.add_argument("--commits", action="append", default=[], metavar="RANGE",
+                   help="the commits to read, as git log takes them (for example origin/main..HEAD); repeatable")
+    c.add_argument("--file", action="append", default=[], metavar="FILE",
+                   help="a text file to read, such as a pull request description (UTF-8); repeatable")
     return p
 
 
@@ -581,7 +628,7 @@ def error_doc(command, e):
             else "not_found")
     code = {"usage": EXIT_USAGE, "unavailable": EXIT_PENDING}.get(kind, EXIT_NOT_READY)
     error = {"kind": kind, "message": str(e) if kind != "not_found" else "a record the pull request refers to was not found"}
-    if command in ("wait-review", "post-review"):
+    if command in ("wait-review", "post-review", "check-links"):
         return {"outcome": "error", "error": error}, code
     return {"status": "pending" if code == EXIT_PENDING else "not_ready", "ready": False, "error": error}, code
 
@@ -591,6 +638,9 @@ def summary(command, doc):
         return f"{command}: {doc['error']['kind']} error: {doc['error']['message']}"
     if command == "merge-check":
         return f"merge-check: {doc['verdict']}" + (f": {doc['error']['message']}" if "error" in doc else "")
+    if command == "check-links":
+        return (f"check-links: {doc['outcome']}, {doc['sources']} source(s)"
+                + "".join(f"; a session link in {h['source']} line {h['line']}" for h in doc["hits"]))
     if command == "post-review":
         failed = [f"{c['name']}" + (f" (line {c['line']})" if c.get("line") else "") + f": {c['detail']}"
                   for c in doc["checks"] if c["status"] == "failed"]
@@ -628,6 +678,13 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
             args = build_parser().parse_args(argv)
         except SystemExit as e:  # --help
             return EXIT_USAGE if e.code else 0
+        if command == "check-links":
+            if not args.commits and not args.file:
+                raise vd.UsageError("check-links needs --commits RANGE or --file FILE")
+            doc, code = check_links(args, run)
+            vd.emit(doc, stdout, None)
+            stderr.write(summary(command, doc) + "\n")
+            return code
         kind, api_base, owner, repo, number, token = resolve(args, env, run)
         if command == "wait-review":
             check_wait_args(args, kind)

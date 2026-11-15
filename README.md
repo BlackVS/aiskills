@@ -342,6 +342,31 @@ the rule for telling a selection-capable site from a fixed-reviewer one (the
 site's label list decides) and a known-sites table — update that table when a
 deployment changes.
 
+### No session links in git artifacts
+
+No commit message, pull request description, comment or review carries a
+link into an agent's session or conversation, on any remote. The rule is in
+`agents/review-gates.md`, and the pre-push review checks it, with
+`forge_gates.py check-links` where `forge-gates` is installed. Claude Code's
+own attribution adds such a link: a `Claude-Session:` trailer to commit
+messages and a session link under a pull request's footer. Turn that off in
+the client, once per machine, in `~/.claude/settings.json`:
+
+```json
+{
+  "attribution": {
+    "sessionUrl": false
+  }
+}
+```
+
+After that, the client's attribution guidance names only the
+`Co-Authored-By:` line, from the next request of a running session on. The
+setting covers Claude Code's own attribution and nothing else: not other
+clients, and not a link an agent writes into a text on its own, which the
+rule and the pre-push check cover. The installers do not set it, because
+they do not edit a client's settings.
+
 ## Enabling in a Claude Code project
 
 Project-scoped (only this repo sees them):
@@ -586,7 +611,9 @@ head. `merge-check` prints `verify-delivery`'s document. `post-review` posts
 a review file as one new comment only when its header names the current head
 by its full SHA, `VERDICT` and the verdict stand on lines of their own, the
 attribution line is there and no session link or `--deny-file` entry
-appears; it never edits a comment. Without a token
+appears; it never edits a comment. `check-links` reads commit messages
+(`--commits origin/main..HEAD`) and files such as a pull request description
+(`--file`) for a session link before a push, without a forge. Without a token
 file, the token comes on GitHub from `gh auth token --hostname` for the API's
 own host, with the CLI's global token variables removed, and on Gitea and
 GitLab from Git's credential helper, as `verify-delivery` reads it. Tests:

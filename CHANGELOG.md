@@ -9,6 +9,29 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+- **No session links in any git artifact, on any remote.** The review-gates
+  rule forbade a session or conversation URL only in a review comment and
+  left commits and pull request descriptions to the client's attribution,
+  which in Claude Code adds a `Claude-Session:` trailer and a session link.
+  The rule now covers commit messages, pull request titles and descriptions,
+  comments, reviews and QA reports on every remote, public or private; the
+  plain `Co-Authored-By:` line stays.
+  - For an agent: the pre-push review reads the pending commits' messages and
+    the pull request description for such a link, and a hit is fixed before
+    the push. `oh-code-review` no longer accepts a conversation link as
+    evidence on a private host either.
+  - For a person: the README shows the Claude Code setting that stops the
+    client from offering the link, `"attribution": {"sessionUrl": false}` in
+    `~/.claude/settings.json`. The installers do not set it.
+
+### Added
+- **`forge_gates.py check-links`.** Reads the messages of a commit range and
+  any text file (a pull request description) for a session URL or a
+  `Claude-Session:` trailer, without a forge or a token, and reports each hit
+  by its source and line, never by its text. `post-review` now refuses the
+  trailer form too, with the same line test.
+
 ## [1.40.1] - 2026-11-15
 
 1.40.0 was tagged and not published: its release job stopped at the

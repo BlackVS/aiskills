@@ -607,6 +607,7 @@ class PostContract(Gates):
             "attribution of another level": (local_review(attribution="Review: oh-code-review (max) via Claude Code"),
                                              {"attribution": 16}),
             "session link": (local_review() + "https://claude.ai/code/session_0123456789\n", {"session_links": 17}),
+            "session trailer": (local_review() + "Claude-Session: 0123456789\n", {"session_links": 17}),
             "older head": (local_review(sha=OLD), {"head": None}),
         }
         for name, (body, expected) in cases.items():
