@@ -9,6 +9,12 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.40.1] - 2026-11-15
+
+1.40.0 was tagged and not published: its release job stopped at the
+real-release test before publishing (the first entry below says why).
+1.40.1 ships everything listed under [1.40.0] together with that fix.
+
 ### Fixed
 - **The aiforge export's provenance lookup survives a rate-limited
   address.** 1.40.0 added one unauthenticated call per product to the forge's
@@ -34,6 +40,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
     the refusal fails the test.
 
 ## [1.40.0] - 2026-11-15
+
+Tagged and not published; these changes ship in 1.40.1.
 
 ### Security
 - **`boot.ps1` follows a download's redirects only to https.** Windows
