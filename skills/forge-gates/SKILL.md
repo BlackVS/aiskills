@@ -1,6 +1,6 @@
 ---
 name: forge-gates
-description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the pushed head; gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green); merge-check gives verify-delivery's verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution; check-links finds session links in commit messages and a pull request description; install-hook adds a git pre-push hook that refuses a head without a clean pre-push review recorded by record-review. Read-only on the forge except post-review; JSON on stdout. Use to wait for the external review, post or record a review, check text before a push, or decide whether to mark a pull request ready.
+description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the pushed head; gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green); merge-check gives verify-delivery's verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution; check-links and check-words find session links and private words before a push, never printing a word; install-hook adds a git pre-push hook that refuses a head without a clean review recorded by record-review, or a private word bound for a public remote. Read-only on the forge except post-review; JSON on stdout. Use to wait for the external review, post or record a review, check text before a push, or decide when to mark a PR ready.
 ---
 
 # Forge gates
@@ -29,6 +29,7 @@ names the skill to install.
     python3 scripts/forge_gates.py merge-check --pr PR
     python3 scripts/forge_gates.py post-review --pr PR --body-file FILE [--deny-file FILE] [--dry-run]
     python3 scripts/forge_gates.py check-links [--commits RANGE]... [--file FILE]...
+    python3 scripts/forge_gates.py check-words [--commits RANGE]... [--tree [DIR]] [--words FILE]
     python3 scripts/forge_gates.py record-review --head SHA --level medium --verdict clean|blocker
     python3 scripts/forge_gates.py install-hook [--repo DIR] [--shared-hooks-path]
     python3 scripts/forge_gates.py uninstall-hook [--repo DIR]
@@ -147,9 +148,14 @@ with the `line` it failed on:
   header's level when the header names one.
 - `session_links`: no link into an agent's session or conversation
   (claude.ai, chatgpt.com).
-- `deny_file`: no entry of `--deny-file` appears, matched as text in any case
-  (one entry per line; blank lines and `#` lines are skipped). Use it for
-  private host and deployment names; the entries are never printed.
+- `private_words`: no word of the machine's private-word file appears (see
+  "Private words" below). It applies by default whenever the forge's API host
+  is not listed in the private-hosts file; with no word file, or for a private
+  host, the check passes with a `note` that says which. Only the line number
+  is reported, never the word or the line.
+- `deny_file`: no entry of `--deny-file` appears, with the same file format
+  and matching as the private-word file. It adds to the word file, and it
+  applies on a private host too.
 - `size`: at most 65536 characters.
 - `state`: the pull request is open. A review posted after the merge is
   ignored by the delivery check, so it is refused.
@@ -242,10 +248,14 @@ forge, token or pull request, and nothing it writes is committed or pushed.
   stdin. For each pushed branch whose head adds commits the remote lacks,
   the head needs a record at level medium or above with the verdict
   `clean`, and the new commits' messages must carry no session link (as
-  `check-links`). Deletions, tags and pushes that add no commit (a new
-  branch at a commit the remote holds) are exempt. A refusal names the head
-  and the exact `record-review` command. Exit 0 lets the push go, 3 refuses
-  it.
+  `check-links`). On a public remote, nothing new may hold a private word
+  (see "Private words" below). That covers each pushed ref's name, a tag's
+  message, the new commits' messages, their added lines and their added
+  paths. Deletions, tags and pushes that add no commit (a new branch at a
+  commit the remote holds) need no review record. A tag is still read: the
+  commits it adds for session links, and it is checked for words. A refusal for a missing review names the head and the exact
+  `record-review` command; a refusal for a word names the commit and its
+  place. Exit 0 lets the push go, 3 refuses it.
 
 **The one-time skip is a person's, never an agent's.**
 `AISKILLS_PRE_PUSH_SKIP="<reason>" git push ...` lets that one push through
@@ -254,8 +264,71 @@ without a record. The hook prints `pre-push review gate SKIPPED for <sha>:
 `check-links` runs over that commit report, so the next review names it.
 Give the variable inline on the push, never `export` it: an exported value
 would skip every later push from that shell. An empty value skips nothing,
-and a session link is refused even then. `git push --no-verify` bypasses
-every hook without a trace; it is not a supported way past the gate.
+and a session link is refused even then. The skip also lets a private word
+through. The record names the checks it covered, `"checks": ["review",
+"private-words"]` or one of them, and the line printed ends with them. A
+reason that holds a private word skips nothing, because the record would
+carry it. `git push --no-verify` bypasses every hook without a trace; it is
+not a supported way past the gate.
+
+### Private words
+
+Names of a person's own deployment (hosts, machines, groups, users) must not
+reach a public repository. A list of them cannot live in the repository
+itself, so it lives on the machine. Two files, both outside every repository
+and never created or read by an installer:
+
+- **The private-word file** says what must not be written: `$AISKILLS_PRIVATE_WORDS`,
+  else `private-words` in the aiskills configuration directory
+  (`$XDG_CONFIG_HOME/aiskills`, default `~/.config/aiskills`; on Windows
+  `%APPDATA%\aiskills`).
+- **The private-hosts file** says where the words may be written:
+  `$AISKILLS_PRIVATE_HOSTS`, else `private-hosts` in the same directory.
+  Each line is a host, and an entry also covers its subdomains.
+
+Every other remote counts as public: an unknown host, a URL that does not
+parse, a local path, and a push to a bare URL. The hook decides by the URL
+git hands it as its second argument, the real destination. With a
+`url.<base>.insteadOf` rewrite, git passes the alias as the first argument
+and the rewritten URL as the second, so the check follows where the push
+goes, not what was typed.
+
+Both files are UTF-8, one entry per line. Blank lines and lines starting
+with `#` are skipped. In the word file, a line starting with `!` is an
+allowed literal: a match that lies wholly inside it is no hit. That suits a
+reviewer's public attribution link whose host shares a private name. An
+entry is matched literally (never as a regular expression), in any case, as
+a whole word: neither neighbour of a match may be an ASCII letter, a digit
+or `_`. So `group-<word>`, `<word>/cli` and `"<word>"` match, while a longer
+word that merely contains the entry does not. Choose entries that are not
+ordinary words, or every sentence that uses one is refused.
+
+**No output ever holds a word, nor the line it stands in.** A hit is reported
+by commit and place: `message line N`, `<path>:<line>`, or `path #N` when the
+path itself holds a word, and a ref's name is replaced by `#N`. Every command
+that reads the file also passes all it prints through a last scrub that
+replaces any match with `<private>`. A record file this tool writes never
+holds a word.
+
+Without a word file the check is off: the hook and `check-words` say so in
+one line and pass.
+
+`check-words` runs the same check by hand. `--commits RANGE` reads commits
+as the hook does, and `--tree [DIR]` reads the tracked files of a checkout,
+for a sweep before the hook was installed. Binary files are checked by
+path only and counted in `binary_files_not_read`. A diff is read as a
+stream, so its size has no limit. `outcome` is `clean` (exit 0), `refused`
+(exit 3) or `off` (exit 0, no word file).
+
+What the check does not do:
+- It does not read history already pushed: a commit a remote-tracking branch
+  holds is not read again. Removing a word means a new commit, and the
+  removed line is no hit.
+- It does not read text typed into a forge's web pages, issues or comments,
+  except a review posted with `post-review`.
+- It is no protection against a determined author: a word split across
+  lines, encoded, or in a binary file passes. It catches the slip, not the
+  intent, and does not replace the review rule.
 
 ## Exit codes
 
@@ -266,6 +339,7 @@ every hook without a trace; it is not a supported way past the gate.
 | `merge-check` | confirmed | not confirmed | pending | usage error |
 | `post-review` | posted, or would post (`--dry-run`) | refused | the forge refused or did not answer | usage error, or the token may not comment |
 | `check-links` | clean | a session link found | (none) | usage error |
+| `check-words` | clean, or off (no word file) | a private word found | (none) | usage error (no input, an unreadable word file) |
 | `record-review` | recorded | (none) | (none) | usage error (not a commit of the repository) |
-| `pre-push` | the push may go | refused: a head without a clean record, or a session link | (none) | usage error |
+| `pre-push` | the push may go | refused: a head without a clean record, a session link, or a private word on a public remote | (none) | usage error |
 | `install-hook`, `uninstall-hook` | installed, updated, removed, or absent | refused: a hook it did not write, or a shared hooks path without the flag | (none) | usage error |
