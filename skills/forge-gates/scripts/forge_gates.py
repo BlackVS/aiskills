@@ -763,12 +763,31 @@ def diff_hits(lines, words):
     binary files, whose content git does not show."""
     hits, binaries = [], 0
     sha, path, index, cols, new, in_hunk = None, None, 0, 1, 0, False
+    # The patch being read: its header, whether its new path was named (+++, rename to, copy to)
+    # or it deletes the file, and whether its path already hit.
+    patch = None
+
+    def new_path(text):
+        patch.update(named=True)
+        if words.hit(text) and not patch["hit"]:
+            patch.update(hit=True)
+            hits.append({"commit": sha, "in": "path", "path": f"path #{index}"})
+
+    def end_patch():
+        # A patch that never names its new path (an empty new file, a binary file, a mode change)
+        # is read by its header, which then holds no other path. A deletion adds no path.
+        if patch and not patch["named"] and not patch["gone"]:
+            new_path(patch["header"])
+
     for line in lines:
         if line.startswith("\x01"):
-            sha, path, index, in_hunk = line[1:].strip(), None, 0, False
+            end_patch()
+            sha, path, index, in_hunk, patch = line[1:].strip(), None, 0, False, None
         elif line.startswith("diff "):
+            end_patch()
             path, in_hunk = None, False
             index += 1
+            patch = {"header": line[5:], "named": False, "gone": False, "hit": False}
         elif in_hunk and line[:1] in (" ", "+", "-", "\\"):
             if line.startswith("\\"):
                 continue
@@ -781,14 +800,20 @@ def diff_hits(lines, words):
         elif line.startswith("@@"):
             m = HUNK.match(line)
             cols, new, in_hunk = (len(m.group(1)) - 1, int(m.group(2)), True) if m else (1, 0, False)
-        elif line.startswith(("+++ ", "rename to ", "copy to ", "Binary files ")):
+        elif patch is None:
+            continue
+        elif line.startswith("deleted file mode"):
+            patch.update(gone=True)
+        elif line.startswith(("+++ ", "rename to ", "copy to ")):
             text = line[4:] if line.startswith("+++ ") else line.split(" ", 2)[2]
-            if line.startswith("Binary files "):
-                binaries += 1
-            elif text != "/dev/null":
-                path = text[2:] if text.startswith("b/") else text
-            if words.hit(text):
-                hits.append({"commit": sha, "in": "path", "path": f"path #{index}"})
+            if text == "/dev/null":
+                patch.update(gone=True)
+                continue
+            path = text[2:] if line.startswith("+++ ") and text.startswith("b/") else text
+            new_path(text)
+        elif line.startswith("Binary files "):  # its path: a rename's, else the header's
+            binaries += 1
+    end_patch()
     return hits, binaries
 
 
@@ -983,9 +1008,12 @@ def pre_push(args, env, run, stdin):
             ref.update(status="exempt", detail="a deletion")
             continue
         found = []
-        if words.hit(remote_ref):
+        # Replaced against the whole word file even for a private remote: the ref goes into the
+        # skip record, a file this tool writes.
+        if every_word.hit(remote_ref):
             ref["ref"] = f"#{len(refs)}"
-            found.append({"in": "ref", "ref": ref["ref"]})
+            if words.hit(remote_ref):
+                found.append({"in": "ref", "ref": ref["ref"]})
         tag = remote_ref.startswith("refs/tags/")
         if tag and words and git(run, "cat-file", "-t", local) == "tag":
             body = git(run, "cat-file", "tag", local).partition("\n\n")[2]
@@ -1270,6 +1298,12 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
             args = build_parser().parse_args(argv)
         except SystemExit as e:  # --help
             return EXIT_USAGE if e.code else 0
+        if command == "check-words" and args.words:
+            try:
+                chosen = read_words(args.words, "private-word file")
+            except vd.UsageError:
+                chosen = Words([])
+            stdout.words = stderr.words = stdout.words + chosen
         if command in LOCAL:
             try:
                 if command == "check-links":

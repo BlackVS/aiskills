@@ -315,10 +315,11 @@ such as a token prefix that are meant to match inside longer text.
 
 **No output ever holds a word, nor the line it stands in.** A hit is reported
 by commit and place: `message line N`, `<path>:<line>`, or `path #N` when the
-path itself holds a word, and a ref's name is replaced by `#N`. Every command
-that reads the file also passes all it prints through a last scrub that
-replaces any match with `<private>`. A record file this tool writes never
-holds a word.
+path itself holds a word, and a ref's name that holds a word is replaced by
+`#N`, also on a private host. Every command that reads the file also passes
+all it prints through a last scrub that replaces any match with `<private>`
+(`check-words --words` scrubs with the file it names too). A record file this
+tool writes never holds a word.
 
 Without a word file the check is off: the hook and `check-words` say so in
 one line and pass.

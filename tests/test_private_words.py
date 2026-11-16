@@ -128,6 +128,48 @@ class PrePushWords(WordsRepo):
         self.assertEqual(code, 3)
         self.assertEqual([h["commit"] for h in doc["private_words"]["hits"]], [first])
 
+    def test_an_empty_new_file_is_checked_by_path_and_each_path_is_one_hit(self):
+        """An empty new file's patch has no +++ line: its path is read from the diff header."""
+        head = self.add("zorbex.txt", "", message="clean")
+        code, doc, _ = self.push_reviewed(head)
+        self.assertEqual((code, doc["private_words"]["hits"]), (3, [{"commit": head, "in": "path", "path": "path #1"}]))
+        head = self.add("vexhub.txt", "clean\n", message="clean")
+        self.assertEqual(self.push_reviewed(head)[1]["private_words"]["hits"],
+                         [{"commit": head, "in": "path", "path": "path #1"},  # git log: newest first
+                          {"commit": self.git("rev-parse", "HEAD~1"), "in": "path", "path": "path #1"}])
+
+    def test_renaming_or_deleting_a_private_name_already_pushed_is_no_hit(self):
+        """Only new paths are new text: the cleanup of a private name goes through."""
+        self.add("zorbex.txt", "")
+        self.add("vexhub.bin", b"\x00\x03")
+        self.add("kel-tarn.md", "notes\n")
+        self.git("push", "-q", "origin", "HEAD:main")  # pushed before; no hook in this repository
+        self.git("mv", "zorbex.txt", "empty.txt")
+        self.git("mv", "vexhub.bin", "blob.bin")
+        self.git("rm", "-q", "kel-tarn.md")
+        head = self.commit("rename and delete")
+        code, doc, _ = self.push_reviewed(head)
+        self.assertEqual((code, doc["private_words"]["hits"]), (0, []))
+
+    def test_a_renamed_and_edited_file_is_one_path_hit(self):
+        """Its new path stands in both `rename to` and `+++`."""
+        self.add("notes.md", "one\ntwo\nthree\nfour\n")
+        self.git("push", "-q", "origin", "HEAD:main")
+        self.git("mv", "notes.md", "zorbex.md")
+        (self.work / "zorbex.md").write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8", newline="\n")
+        self.git("add", "zorbex.md")
+        head = self.commit("rename and edit")
+        code, doc, _ = self.push_reviewed(head)
+        self.assertEqual((code, doc["private_words"]["hits"]), (3, [{"commit": head, "in": "path", "path": "path #1"}]))
+
+    def test_a_binary_file_renamed_to_a_private_name_is_refused(self):
+        self.add("blob.bin", b"\x00\x04")
+        self.git("push", "-q", "origin", "HEAD:main")
+        self.git("mv", "blob.bin", "zorbex.bin")
+        head = self.commit("rename")
+        code, doc, _ = self.push_reviewed(head)
+        self.assertEqual((code, doc["private_words"]["hits"]), (3, [{"commit": head, "in": "path", "path": "path #1"}]))
+
     def test_an_allowed_literal_passes_and_the_same_word_outside_it_does_not(self):
         head = self.add("a.txt", f"Review: https://{ALLOWED}/run/7\n")
         self.assertEqual(self.push_reviewed(head)[0], 0)
@@ -200,6 +242,17 @@ class PrePushWords(WordsRepo):
         self.assertNoLeak(record)
         self.assertEqual(json.loads(record)["checks"], ["private-words"])
 
+    def test_a_skip_to_a_private_host_records_no_ref_that_holds_a_word(self):
+        """The words are not checked there, but the skip record is a file this tool writes."""
+        head = self.commit("clean")
+        code, doc, err = self.run_fg("pre-push", "origin", "https://git.private.example/o/r.git",
+                                     stdin=self.push_line(head, "refs/heads/zorbex-fix"),
+                                     env=dict(self.env, **{fg.SKIP_VAR: "hotfix"}))
+        self.assertEqual((code, doc["refs"][0]["status"], doc["refs"][0]["checks"]), (0, "skipped", ["review"]))
+        record = (self.records() / f"{head}.skip.json").read_text(encoding="utf-8")
+        self.assertNoLeak(record, doc, err)
+        self.assertEqual(json.loads(record)["ref"], "#1")
+
     def test_a_skip_reason_that_holds_a_word_does_not_skip(self):
         head = self.add("a.txt", f"zorbex {LINE}\n")
         code, doc, err = self.push_reviewed(head, env=dict(self.env, **{fg.SKIP_VAR: "ok per Zorbex"}))
@@ -217,6 +270,17 @@ class CheckWords(WordsRepo):
         code, doc, err = self.run_fg("check-words", "--commits", f"{self.base}..HEAD")
         self.assertNoLeak(doc, err)
         self.assertEqual((code, [h["path"] for h in doc["hits"]]), (3, ["src/x.py"]))
+
+    def test_the_chosen_word_file_also_scrubs_the_output(self):
+        """--words names a file whose path may hold a word; no default file exists to scrub with."""
+        chosen = self.tmp / "zorbex" / "words"
+        chosen.parent.mkdir()
+        chosen.write_text(WORD_FILE, encoding="utf-8")
+        env = dict(self.env, **{fg.WORDS_VAR: str(self.tmp / "absent")})
+        code, doc, err = self.run_fg("check-words", "--tree", "--words", str(chosen), env=env)
+        self.assertEqual(code, 0)
+        self.assertNoLeak(doc, err)
+        self.assertIn(fg.WITHHELD, doc["words"])
 
     def test_off_without_a_word_file_and_a_usage_error_without_input(self):
         code, doc, err = self.run_fg("check-words", "--tree", "--words", str(self.tmp / "absent"))
