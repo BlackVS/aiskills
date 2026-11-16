@@ -153,9 +153,11 @@ with the `line` it failed on:
   is not listed in the private-hosts file; with no word file, or for a private
   host, the check passes with a `note` that says which. Only the line number
   is reported, never the word or the line.
-- `deny_file`: no entry of `--deny-file` appears, with the same file format
-  and matching as the private-word file. It adds to the word file, and it
-  applies on a private host too.
+- `deny_file`: no entry of `--deny-file` appears, matched as text in any case
+  (one entry per line; blank lines and `#` lines are skipped). Unlike the
+  word file it matches inside a longer word, so a token prefix or a fragment
+  of a host still matches; it has no `!` lines. It adds to the word file,
+  applies on a private host too, and its entries are never printed.
 - `size`: at most 65536 characters.
 - `state`: the pull request is open. A review posted after the merge is
   ignored by the delivery check, so it is refused.
@@ -298,10 +300,18 @@ with `#` are skipped. In the word file, a line starting with `!` is an
 allowed literal: a match that lies wholly inside it is no hit. That suits a
 reviewer's public attribution link whose host shares a private name. An
 entry is matched literally (never as a regular expression), in any case, as
-a whole word: neither neighbour of a match may be an ASCII letter, a digit
-or `_`. So `group-<word>`, `<word>/cli` and `"<word>"` match, while a longer
-word that merely contains the entry does not. Choose entries that are not
-ordinary words, or every sentence that uses one is refused.
+a whole word: at an edge of the entry that is an ASCII letter, a digit or
+`_`, the neighbouring character may not be one of those. So `group-<word>`,
+`<word>/cli` and `"<word>"` match, while a longer word that merely contains
+the entry does not. An edge that is punctuation is not bounded: an entry
+`<dir>/` matches `<dir>/sub/file`, and an entry `.<domain>` matches
+`git.<domain>`. Choose entries that are not ordinary words, or every
+sentence that uses one is refused.
+
+The word file does not catch a word inside a longer word: that keeps it
+from refusing ordinary text that merely contains an entry. `post-review
+--deny-file` keeps its released substring matching instead, for entries
+such as a token prefix that are meant to match inside longer text.
 
 **No output ever holds a word, nor the line it stands in.** A hit is reported
 by commit and place: `message line N`, `<path>:<line>`, or `path #N` when the

@@ -640,6 +640,15 @@ class PostContract(Gates):
         self.assertNotIn("internal-hub", json.dumps(doc).lower())
         self.assertEqual(self.post(local_review(), "--deny-file", str(deny))[0], 0)
 
+    def test_deny_file_entries_match_as_substrings_as_released(self):
+        """Unlike the word file, a deny entry matches inside a longer word: a token prefix, a host fragment."""
+        deny = self.tmp / "deny"
+        deny.write_text("tok_\nnternal-hu\n", encoding="utf-8")
+        for text in ("A token tok_abcDEF123 leaked.\n", "Seen on internal-hub.example.\n"):
+            with self.subTest(text=text):
+                code, doc = self.post(local_review() + text, "--deny-file", str(deny))
+                self.assertEqual((code, self.failed(doc)), (3, {"deny_file": 17}))
+
     def private_words_env(self, hosts=""):
         words, hosts_file = self.tmp / "private-words", self.tmp / "private-hosts"
         words.write_text("Zorbex\nvexhub\n!hands.vexhub.example\n", encoding="utf-8")

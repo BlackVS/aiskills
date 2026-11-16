@@ -530,8 +530,20 @@ def review_denies(args, env, api_base):
     else:
         deny = [("private_words", words, "private-word file")]
     if args.deny_file:
-        deny.append(("deny_file", read_words(args.deny_file, "deny file"), "deny file"))
+        deny.append(("deny_file", DenyFile(read_text(args.deny_file, "deny file")), "deny file"))
     return deny
+
+
+class DenyFile:
+    """post-review's --deny-file as released: one entry per line (blank and # lines skipped),
+    matched as a substring in any case, so a token prefix or a host fragment still matches."""
+
+    def __init__(self, text):
+        self.entries = [line.strip().lower() for line in text.splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")]
+
+    def lines(self, text):
+        return [i + 1 for i, line in enumerate(text.splitlines()) if any(e in line.lower() for e in self.entries)]
 
 
 def post_review(args, env, api_base, forge, kind, owner, repo, number, token, opener):
@@ -616,18 +628,28 @@ WITHHELD = "<private>"
 HUNK = re.compile(r"(@+) [^@]*\+(\d+)(?:,\d+)? @+")
 
 
+WORD_CHAR = re.compile(r"[A-Za-z0-9_]")
+
+
+def whole(entry):
+    """ENTRY's pattern: literal, and bounded only at an edge that is itself a word character. So a
+    match never runs on into a longer word, while `creds/` or `.host` still match where a path or
+    a name continues them."""
+    return ((r"(?<![A-Za-z0-9_])" if WORD_CHAR.match(entry[0]) else "") + re.escape(entry)
+            + (r"(?![A-Za-z0-9_])" if WORD_CHAR.match(entry[-1]) else ""))
+
+
 class Words:
-    """Entries matched literally, in any case, as whole words: neither neighbour of a match is an
-    ASCII letter, a digit or `_`. A match that lies wholly inside an allowed literal is no hit.
-    Nothing here ever returns or prints the text it matched."""
+    """Entries matched literally, in any case, as whole words: at an edge of the entry that is a
+    letter, a digit or `_`, the neighbouring character must not be one. A match that lies wholly
+    inside an allowed literal is no hit. Nothing here ever returns or prints the text it matched."""
 
     def __init__(self, entries, allowed=()):
-        def alternation(items):
-            return "|".join(sorted({re.escape(i) for i in items}, key=len, reverse=True))
         self.entries, self.allowed_literals = list(entries), list(allowed)
-        self.pattern = re.compile(r"(?<![A-Za-z0-9_])(?:" + alternation(entries) + r")(?![A-Za-z0-9_])",
-                                  re.I) if entries else None
-        self.allowed = re.compile(alternation(allowed), re.I) if allowed else None
+        by_length = sorted(set(entries), key=len, reverse=True)
+        self.pattern = re.compile("|".join(whole(e) for e in by_length), re.I) if entries else None
+        self.allowed = re.compile("|".join(re.escape(a) for a in sorted(set(allowed), key=len, reverse=True)),
+                                  re.I) if allowed else None
 
     def __bool__(self):
         return self.pattern is not None

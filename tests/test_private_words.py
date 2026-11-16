@@ -6,9 +6,9 @@ import json, os, pathlib, shutil, subprocess, sys, unittest
 
 from tests.test_pre_push import BoundaryBase, Repo, fg
 
-WORDS = ("zorbex", "kel-tarn", "vexhub")
+WORDS = ("zorbex", "kel-tarn", "vexhub", "vaultkeys/", ".zorbnet")
 ALLOWED = "hands.vexhub.example"
-WORD_FILE = "# made-up private names\n\nZorbex\nkel-tarn\nvexhub\n!" + ALLOWED + "\n"
+WORD_FILE = "# made-up private names\n\nZorbex\nkel-tarn\nvexhub\nvaultkeys/\n.zorbnet\n!" + ALLOWED + "\n"
 LINE = "the line that must never be shown"  # every hit line holds this marker too
 
 
@@ -29,6 +29,16 @@ class Matcher(unittest.TestCase):
         for text in ("zorbexes", "xzorbex", "zorbex_1", "zorbex9", "kel-tarns", "axb", "", "plain text"):
             self.assertFalse(w.hit(text), text)
 
+    def test_an_edge_that_is_not_a_word_character_is_not_bounded(self):
+        """A path or host entry keeps matching where a path or a name continues it."""
+        w = fg.Words(["vaultkeys/", ".zorbnet", "-x-"])
+        for text in ("path vaultkeys/forge/token.txt", "VaultKeys/a", "git.zorbnet", "api.ZORBNET.example",
+                     "a-x-b"):
+            self.assertTrue(w.hit(text), text)
+        # The word-character edge stays bounded: no match runs on into a longer word.
+        for text in ("myvaultkeys/a", "git.zorbnets", "vaultkeys", "zorbnet"):
+            self.assertFalse(w.hit(text), text)
+
     def test_an_allowed_literal_covers_only_itself(self):
         w = fg.Words(["vexhub"], [ALLOWED])
         self.assertFalse(w.hit("reviewed by https://HANDS.vexhub.example/run/1"))
@@ -45,7 +55,8 @@ class Matcher(unittest.TestCase):
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         path.write_text(WORD_FILE, encoding="utf-8")
         w = fg.read_words(path, "private-word file")
-        self.assertEqual((w.entries, w.allowed_literals), (["Zorbex", "kel-tarn", "vexhub"], [ALLOWED]))
+        self.assertEqual((w.entries, w.allowed_literals),
+                         (["Zorbex", "kel-tarn", "vexhub", "vaultkeys/", ".zorbnet"], [ALLOWED]))
         path.write_bytes(b"\xff\xfe")
         with self.assertRaises(fg.vd.UsageError) as e:
             fg.read_words(path, "private-word file")
@@ -240,6 +251,21 @@ class WordsBoundary(BoundaryBase):
     def records_text(self):
         d = self.records()
         return "".join(f.read_text(encoding="utf-8") for f in d.glob("*.json")) if d.exists() else ""
+
+    def test_entries_with_a_punctuation_edge_are_refused_in_a_real_push(self):
+        """A path entry ending in / and a host entry starting with . match where text continues them."""
+        for name, text in (("path", "path vaultkeys/forge/token.txt"), ("host", "see git.zorbnet for it")):
+            with self.subTest(entry=name):
+                self.git("checkout", "-q", "--detach", self.base)
+                f = self.work / f"{name}.txt"
+                f.write_text(f"{text} {LINE}\n", encoding="utf-8", newline="\n")
+                self.git("add", "--", f.name)
+                head = self.commit(f"add {name}")
+                self.assertEqual(self.tool("record-review", "--head", head, "--level", "medium",
+                                           "--verdict", "clean").returncode, 0)
+                p = self.git_push("origin", f"HEAD:refs/heads/{name}")
+                self.assertNotEqual(p.returncode, 0, p.stderr)
+                self.assertIn(f"a private word in commit {head} {name}.txt:1", p.stderr)
 
     def test_a_refused_push_shows_no_word_and_no_line(self):
         p = self.git_push("origin", "HEAD:refs/heads/feat")
