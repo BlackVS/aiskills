@@ -9,6 +9,23 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-11-16
+
+The pre-push hook of `forge-gates` now also keeps private names off
+public remotes (#133). **A hook installed with 1.42.0 needs no
+reinstall.** The hook file calls the `forge_gates.py` that installed it
+by its absolute path, so re-running the installer, which upgrades that
+copy in place, gives the hook the new check. Run `install-hook` again
+only if the hook should call a copy in a different place, or if the
+Python it names is gone. The check is off until you write a
+private-word file, one entry per line: `$AISKILLS_PRIVATE_WORDS`, else
+`~/.config/aiskills/private-words` (`$XDG_CONFIG_HOME/aiskills/` when
+that is set) on Linux and macOS, and `%APPDATA%\aiskills\private-words`
+on Windows. Without the file the hook says in one line that the check is
+off and lets the push go. A `private-hosts` file in the same directory
+lists the hosts where the words may go. No installer creates or reads
+either file.
+
 ### Added
 - **The pre-push hook keeps private names off public remotes.** A person
   keeps a private-word file outside every repository (the names of their
