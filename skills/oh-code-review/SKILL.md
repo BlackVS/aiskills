@@ -346,6 +346,14 @@ with `forge_gates.py check-links --commits <upstream>..HEAD --file <description
 file>` where the `forge-gates` skill is installed. A hit is a finding fixed
 before the push.
 
+Where the repository has the `forge-gates` pre-push hook (`forge_gates.py
+install-hook`), the last step of a pre-push review is its record:
+`forge_gates.py record-review --head <sha> --level medium --verdict clean`,
+or `--verdict blocker` while a finding stands. Record only a review that ran,
+of the head about to be pushed. At the pre-merge level, name in the findings
+every push of the range that skipped the gate (`check-links` lists them
+under `skips`).
+
 The same caution applies to the review content itself: never expose internal
 infrastructure identifiers — private hostnames and domains, deployment or hub
 names, backend binding names, token and credential names or paths. Describe

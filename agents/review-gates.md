@@ -86,6 +86,14 @@ Rules:
   <upstream>..HEAD --file <description file>`. A hit is a finding, fixed
   before the push by rewording the unpushed commit or the description;
   history already pushed is not rewritten.
+- Where the `forge-gates` pre-push hook is installed (`forge_gates.py
+  install-hook`), git refuses a push whose head has no clean review recorded
+  at medium or above; the reviewer records it with `forge_gates.py
+  record-review` as the last step of the pre-push review. Only a person may
+  skip it, for one push, with the reason inline:
+  `AISKILLS_PRE_PUSH_SKIP="<reason>" git push ...`. An agent never sets
+  that variable, nobody `export`s it, and the next review names every
+  skipped push. `git push --no-verify` is not a way past the gate.
 - Nothing internal goes into text posted to a PR — review, QA report, or any
   comment: no private hostnames or domains, hub/deployment names, backend
   binding names, token or credential names/paths, including inside quoted

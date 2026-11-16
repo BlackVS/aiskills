@@ -293,15 +293,18 @@ class ExportCases(unittest.TestCase):
         self.assertNotIn("AICREW_BASE", text)
 
     def test_readme_for_releases_that_publish_their_installers(self):
-        self.forge.add("aicrew", "v0.10.0", release("aicrew", "v0.10.0", AICREW + ["boot.sh", "boot.ps1", "install-aicrewd.sh"]))
+        self.forge.add("aicrew", "v0.11.0", release("aicrew", "v0.11.0", AICREW + ["boot.sh", "boot.ps1", "install-aicrewd.sh"]))
         self.forge.add("aiskills", "v1.38.0", release("aiskills", "v1.38.0", ["aiskills-1.38.0.tar.gz", "aiskills-1.38.0.zip"]))
         r = self.run_export("--aiskills", "v1.38.0")
         self.assertEqual(r.returncode, 0, r.stderr)
         text = (self.out / "README.txt").read_text(encoding="utf-8")
-        self.assertIn("AICREW_BASE=<dir> bash <dir>/aicrew/v0.10.0/install-aicrewd.sh", text)
-        # aicrew's installers do not document the https form yet: README.txt says so
-        self.assertIn("From an https server: aicrew's installers do not document that form yet;", text)
-        self.assertNotIn("<url>/aicrew", text)
+        self.assertIn("AICREW_BASE=<dir> bash <dir>/aicrew/v0.11.0/install-aicrewd.sh", text)
+        # aicrew v0.11.0's installers document the https form, as boot.sh and
+        # install-aicrewd.sh show it: "curl -fsSL <url>/aicrew/<tag>/<script> | AICREW_BASE=<url> bash"
+        self.assertIn("curl -fsSL <url>/aicrew/v0.11.0/boot.sh | AICREW_BASE=<url> bash", text)
+        self.assertIn("curl -fsSL <url>/aicrew/v0.11.0/install-aicrewd.sh | AICREW_BASE=<url> bash", text)
+        self.assertIn("irm <url>/aicrew/v0.11.0/boot.ps1 | iex", text)
+        self.assertNotIn("installers do not document that form yet", text)
         self.assertIn("does not publish boot.sh, boot.ps1 as release assets", text)
         self.assertIn("tar -xzf aiskills-1.38.0.tar.gz && ./aiskills-1.38.0/install.sh --user", text)
         self.assertNotIn("AI_SKILLS_EXPORT", text)

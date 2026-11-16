@@ -1,6 +1,6 @@
 ---
 name: forge-gates
-description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the head just pushed (any SHA abbreviation, trusted authors only, a correlated failure comment ends the wait); gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green at the head); merge-check gives verify-delivery's delivery verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution; check-links finds session links in commit messages and a pull request description before a push. Read-only except post-review; JSON on stdout. Use when an agent must wait for the external review, post its own review, check text before a push, or decide whether to mark a pull request ready.
+description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the pushed head; gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green); merge-check gives verify-delivery's verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution; check-links finds session links in commit messages and a pull request description; install-hook adds a git pre-push hook that refuses a head without a clean pre-push review recorded by record-review. Read-only on the forge except post-review; JSON on stdout. Use to wait for the external review, post or record a review, check text before a push, or decide whether to mark a pull request ready.
 ---
 
 # Forge gates
@@ -29,6 +29,9 @@ names the skill to install.
     python3 scripts/forge_gates.py merge-check --pr PR
     python3 scripts/forge_gates.py post-review --pr PR --body-file FILE [--deny-file FILE] [--dry-run]
     python3 scripts/forge_gates.py check-links [--commits RANGE]... [--file FILE]...
+    python3 scripts/forge_gates.py record-review --head SHA --level medium --verdict clean|blocker
+    python3 scripts/forge_gates.py install-hook [--repo DIR] [--shared-hooks-path]
+    python3 scripts/forge_gates.py uninstall-hook [--repo DIR]
 
 `PR` is a pull or merge request URL, `owner/repo#N`, or `owner/repo` with
 `--number`. Each command also takes every option of `verify-delivery`
@@ -207,7 +210,52 @@ It needs no forge, token or pull request. Each hit is reported in `hits` by
 its source (`commit <sha>` or `file <path>`) and line, never by its text.
 `outcome` is `clean` (exit 0) or `refused` (exit 3). No `--commits` and no
 `--file`, a range that starts with `-`, a range git does not know, or an
-unreadable file is a usage error (exit 2).
+unreadable file is a usage error (exit 2). A commit in the ranges whose push
+skipped the pre-push review gate is listed in `skips` (head, reason, time);
+it does not change the outcome, and the next review names it.
+
+### The pre-push review gate
+
+Makes git refuse a push whose head has no clean pre-push review recorded, so
+the order "review, then push" no longer rests on memory alone. It needs no
+forge, token or pull request, and nothing it writes is committed or pushed.
+
+- **`install-hook`** writes `pre-push` into the hooks directory git uses for
+  the repository (`--repo`, default the current one), `core.hooksPath`
+  included. The hook names this Python and this script by absolute path, so
+  it runs where git's own shell has no `python3`, as on Windows. It never
+  replaces a pre-push hook it did not write: it refuses and names the file.
+  A `core.hooksPath` from the global or system git configuration serves
+  every repository of the machine, so the hook goes there only with
+  `--shared-hooks-path`. Run it again after the skill moved; if the script
+  is gone, the hook refuses every push and says how to reinstall or remove
+  it.
+- **`uninstall-hook`** removes only the hook `install-hook` wrote.
+- **`record-review --head SHA --level LEVEL --verdict clean|blocker`** is the
+  last step of the pre-push review. It writes `<sha>.json` under
+  `aiskills/pre-push/` in the repository's common git directory, which every
+  worktree shares and `git status` never shows. The record binds to one
+  commit: after an amend, a rebase or an update from the base, the new head
+  is reviewed and recorded again. An agent records its own review, so the
+  record keeps the order, not proof that the review was done well.
+- **`pre-push REMOTE [URL]`** is what the hook runs, with git's lines on
+  stdin. For each pushed branch whose head adds commits the remote lacks,
+  the head needs a record at level medium or above with the verdict
+  `clean`, and the new commits' messages must carry no session link (as
+  `check-links`). Deletions, tags and pushes that add no commit (a new
+  branch at a commit the remote holds) are exempt. A refusal names the head
+  and the exact `record-review` command. Exit 0 lets the push go, 3 refuses
+  it.
+
+**The one-time skip is a person's, never an agent's.**
+`AISKILLS_PRE_PUSH_SKIP="<reason>" git push ...` lets that one push through
+without a record. The hook prints `pre-push review gate SKIPPED for <sha>:
+<reason>` and writes `<sha>.skip.json`, which later `pre-push` and
+`check-links` runs over that commit report, so the next review names it.
+Give the variable inline on the push, never `export` it: an exported value
+would skip every later push from that shell. An empty value skips nothing,
+and a session link is refused even then. `git push --no-verify` bypasses
+every hook without a trace; it is not a supported way past the gate.
 
 ## Exit codes
 
@@ -218,3 +266,6 @@ unreadable file is a usage error (exit 2).
 | `merge-check` | confirmed | not confirmed | pending | usage error |
 | `post-review` | posted, or would post (`--dry-run`) | refused | the forge refused or did not answer | usage error, or the token may not comment |
 | `check-links` | clean | a session link found | (none) | usage error |
+| `record-review` | recorded | (none) | (none) | usage error (not a commit of the repository) |
+| `pre-push` | the push may go | refused: a head without a clean record, or a session link | (none) | usage error |
+| `install-hook`, `uninstall-hook` | installed, updated, removed, or absent | refused: a hook it did not write, or a shared hooks path without the flag | (none) | usage error |

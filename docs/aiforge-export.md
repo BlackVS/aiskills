@@ -205,8 +205,9 @@ and the copy runs with `powershell -File`, the copy inside the `try` with
 shares under `RemoteSigned`, and a failed copy must not run a copy an
 interrupted run left behind). An https export's runs with
 `irm <url>/<product>/<tag>/boot.ps1 | iex`, the base variable set first. aimem's and aiskills' installers document and test the
-https form; aicrew's do not yet, so README.txt gives aicrew only the
-directory form.
+https form, and so do aicrew's from v0.11.0, the first aicrew release
+that publishes its installers, so README.txt gives every product both
+forms.
 
 ## Process sets
 

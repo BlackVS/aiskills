@@ -28,7 +28,9 @@ except ImportError:
     vd = None
 
 EXIT_READY, EXIT_USAGE, EXIT_NOT_READY, EXIT_PENDING = 0, 2, 3, 4
-COMMANDS = ("wait-review", "gates", "merge-check", "post-review", "check-links")
+COMMANDS = ("wait-review", "gates", "merge-check", "post-review", "check-links",
+            "record-review", "pre-push", "install-hook", "uninstall-hook")
+LOCAL = ("check-links", "record-review", "pre-push", "install-hook", "uninstall-hook")  # no forge needed
 # gh lets these override its stored logins whatever --hostname names: a token for instance A
 # would be returned for B. They are removed from the environment gh is run with.
 GH_OVERRIDES = {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST"}
@@ -557,16 +559,17 @@ def post_review(args, forge, kind, owner, repo, number, token, opener):
 
 def commit_messages(revisions, run):
     """[(sha, message)] of the commits git log lists for REVISIONS (a range such as
-    origin/main..HEAD), newest first."""
-    if revisions.startswith("-"):
+    origin/main..HEAD, or a list of git log's revision arguments), newest first."""
+    revs = [revisions] if isinstance(revisions, str) else list(revisions)
+    if isinstance(revisions, str) and revisions.startswith("-"):
         raise vd.UsageError("--commits takes a revision range, not an option")
     try:
-        p = run(["git", "log", "-z", "--format=%H%n%B", revisions, "--"], capture_output=True, timeout=60)
+        p = run(["git", "log", "-z", "--format=%H%n%B", *revs, "--"], capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         raise vd.UsageError(f"git log cannot run: {e}")
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise vd.UsageError(f"git log {revisions} failed" + (f": {err[0]}" if err else ""))
+        raise vd.UsageError(f"git log {' '.join(revs)} failed" + (f": {err[0]}" if err else ""))
     commits = []
     for record in p.stdout.decode("utf-8", "replace").split("\0"):
         sha, _, message = record.lstrip("\n").partition("\n")
@@ -575,15 +578,216 @@ def commit_messages(revisions, run):
     return commits
 
 
+def link_hits(sources):
+    return [{"source": source, "line": i + 1}
+            for source, text in sources for i, line in enumerate(text.splitlines()) if session_link(line)]
+
+
 def check_links(args, run):
     """The session links in the commit messages and files named: each hit by its source and line,
-    never by its text, which is the private link."""
-    sources = [(f"commit {sha}", message) for r in args.commits for sha, message in commit_messages(r, run)]
+    never by its text, which is the private link. Also the pushes of these commits that skipped
+    the pre-push review gate, which the next review names."""
+    commits = [c for r in args.commits for c in commit_messages(r, run)]
+    sources = [(f"commit {sha}", message) for sha, message in commits]
     sources += [(f"file {path}", read_text(path, f"file {path}")) for path in args.file]
-    hits = [{"source": source, "line": i + 1}
-            for source, text in sources for i, line in enumerate(text.splitlines()) if session_link(line)]
+    hits = link_hits(sources)
     doc = {"outcome": "refused" if hits else "clean", "sources": len(sources), "hits": hits}
+    skips = skip_records(run, [sha for sha, _ in commits]) if commits else []
+    if skips:
+        doc["skips"] = skips
     return doc, EXIT_NOT_READY if hits else EXIT_READY
+
+
+# ---------------------------------------------------------------- the pre-push review gate
+
+ZERO_SHA = "0" * 40
+LEVELS = ("low", "medium", "high", "max", "ultra")  # a record counts from medium up
+SKIP_VAR = "AISKILLS_PRE_PUSH_SKIP"
+HOOK_MARKER = "# aiskills pre-push review gate: written by forge_gates.py install-hook"
+
+
+class Refused(Exception):
+    """A local command declined to act; the message says why and what to do."""
+
+
+def git(run, *args, repo=None, ok=(0,)):
+    """git's stdout, stripped; a usage error when git fails (any exit outside OK)."""
+    cmd = ["git"] + (["-C", str(repo)] if repo else []) + list(args)
+    try:
+        p = run(cmd, capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise vd.UsageError(f"git cannot run: {e}")
+    if p.returncode not in ok:
+        err = p.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise vd.UsageError(f"git {' '.join(args)} failed" + (f": {err[0]}" if err else ""))
+    return p.stdout.decode("utf-8", "replace").strip() if p.returncode == 0 else None
+
+
+def records_dir(run, repo=None):
+    """Where the review records live: inside the repository's common git directory, so every
+    worktree shares them and nothing there is committed, pushed or shown by git status."""
+    return pathlib.Path(git(run, "rev-parse", "--path-format=absolute", "--git-common-dir", repo=repo)) / "aiskills" / "pre-push"
+
+
+def full_sha(run, rev, repo=None):
+    if rev.startswith("-"):
+        raise vd.UsageError("--head takes a commit, not an option")
+    sha = git(run, "rev-parse", "--verify", "--quiet", rev + "^{commit}", repo=repo, ok=(0, 1))
+    if not sha:
+        raise vd.UsageError(f"{rev} is not a commit of this repository")
+    return sha
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_json(path, doc):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def read_record(path):
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def record_review(args, run):
+    head = full_sha(run, args.head, args.repo)
+    record = {"head": head, "level": args.level, "verdict": args.verdict, "time": now(),
+              "tool": "forge_gates.py record-review"}
+    path = records_dir(run, args.repo) / f"{head}.json"
+    write_json(path, record)
+    return {"outcome": "recorded", "record": record, "path": str(path)}, EXIT_READY
+
+
+def review_problem(record, head):
+    """Why RECORD does not let HEAD through, or None when it does."""
+    if record is None:
+        return "no pre-push review is recorded for it"
+    if record.get("head") != head:
+        return f"its record names another commit ({str(record.get('head'))[:12]})"
+    if record.get("verdict") != "clean":
+        return f"its recorded review found a blocker (verdict {record.get('verdict')})"
+    if record.get("level") not in LEVELS[1:]:
+        return f"its recorded review ran at level {record.get('level')}, below medium"
+    return None
+
+
+def skip_records(run, shas, repo=None):
+    d = records_dir(run, repo)
+    out = []
+    for sha in shas:
+        r = read_record(d / f"{sha}.skip.json")
+        if r is not None:
+            out.append({"head": sha, "reason": r.get("reason"), "time": r.get("time")})
+    return out
+
+
+def pre_push(args, env, run, stdin):
+    """git's pre-push hook: each pushed branch head that adds commits needs a clean review
+    recorded at medium or above, and its new commits carry no session link."""
+    d = records_dir(run)
+    reason = (env.get(SKIP_VAR) or "").strip()
+    # A push to a URL names no remote: then a commit any remote-tracking branch holds counts as
+    # pushed, so history already pushed elsewhere is not read again.
+    named = git(run, "config", "--get", f"remote.{args.remote}.url", ok=(0, 1)) is not None
+    already = f"--remotes={args.remote}" if named else "--remotes"
+    refs, hits, skips = [], [], []
+    for line in stdin.read().splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) != 4:
+            raise vd.UsageError(f"not a pre-push line from git: {line!r}")
+        _, local, remote_ref, remote = parts
+        ref = {"ref": remote_ref, "head": local}
+        refs.append(ref)
+        if local == ZERO_SHA:
+            ref.update(status="exempt", detail="a deletion")
+            continue
+        if remote_ref.startswith("refs/tags/"):
+            ref.update(status="exempt", detail="a tag")
+            continue
+        revs = [local, "--not", already]
+        if remote != ZERO_SHA and git(run, "cat-file", "-e", remote + "^{commit}", ok=(0, 1, 128)) is not None:
+            revs.append(remote)
+        new = git(run, "rev-list", *revs).split()
+        if not new:
+            ref.update(status="exempt", detail="it adds no commit the remote lacks")
+            continue
+        hits += link_hits([(f"commit {sha}", message) for sha, message in commit_messages(revs, run)])
+        skips += [s for s in skip_records(run, new) if s["head"] != local]
+        problem = review_problem(read_record(d / f"{local}.json"), local)
+        if problem is None:
+            ref["status"] = "reviewed"
+        elif reason:
+            write_json(d / f"{local}.skip.json", {"head": local, "ref": remote_ref, "reason": reason, "time": now()})
+            ref.update(status="skipped", detail=reason)
+        else:
+            ref.update(status="refused", detail=problem)
+    refused = hits or any(r["status"] == "refused" for r in refs)
+    doc = {"outcome": "refused" if refused else "clean", "refs": refs, "hits": hits}
+    if skips:
+        doc["skips"] = skips
+    return doc, EXIT_NOT_READY if refused else EXIT_READY
+
+
+def hook_path(run, repo, shared):
+    """The pre-push hook file git runs. A hooks directory set in the global or system
+    configuration is every repository's: the gate goes there only when SHARED says so."""
+    setting = git(run, "config", "--show-scope", "--get", "core.hooksPath", repo=repo, ok=(0, 1))
+    if setting:
+        scope = setting.split(None, 1)[0]
+        if scope in ("global", "system") and not shared:
+            raise Refused(f"core.hooksPath is set in the {scope} git configuration ({setting.split(None, 1)[-1]}): "
+                          "a hook there runs for every repository of this machine. Pass --shared-hooks-path "
+                          "to install the gate there anyway")
+    return pathlib.Path(git(run, "rev-parse", "--path-format=absolute", "--git-path", "hooks", repo=repo)) / "pre-push"
+
+
+def sh_quote(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def hook_script():
+    fg = pathlib.Path(__file__).resolve().as_posix()
+    py = pathlib.Path(sys.executable).resolve().as_posix()
+    return (f"#!/bin/sh\n{HOOK_MARKER}; remove it with uninstall-hook.\n"
+            f"fg={sh_quote(fg)}\npy={sh_quote(py)}\n"
+            'if [ ! -f "$fg" ]; then\n'
+            '  echo "aiskills pre-push gate: $fg is missing: install forge-gates and run its install-hook again, '
+            'or delete $0 to remove the gate" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            'exec "$py" "$fg" pre-push "$@" >/dev/null\n')
+
+
+def install_hook(args, run):
+    hook = hook_path(run, args.repo, args.shared_hooks_path)
+    existed = hook.exists()
+    if existed and HOOK_MARKER not in hook.read_text(encoding="utf-8", errors="replace"):
+        raise Refused(f"{hook} is a pre-push hook this command did not write: it is left as it is")
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    with open(hook, "w", encoding="utf-8", newline="\n") as f:
+        f.write(hook_script())
+    hook.chmod(0o755)
+    return {"outcome": "updated" if existed else "installed", "hook": str(hook)}, EXIT_READY
+
+
+def uninstall_hook(args, run):
+    hook = hook_path(run, args.repo, True)
+    if not hook.exists():
+        return {"outcome": "absent", "hook": str(hook)}, EXIT_READY
+    if HOOK_MARKER not in hook.read_text(encoding="utf-8", errors="replace"):
+        raise Refused(f"{hook} is a pre-push hook this command did not write: it is left as it is")
+    hook.unlink()
+    return {"outcome": "removed", "hook": str(hook)}, EXIT_READY
 
 
 # ---------------------------------------------------------------- CLI
@@ -618,6 +822,25 @@ def build_parser():
                    help="the commits to read, as git log takes them (for example origin/main..HEAD); repeatable")
     c.add_argument("--file", action="append", default=[], metavar="FILE",
                    help="a text file to read, such as a pull request description (UTF-8); repeatable")
+    rr = sub.add_parser("record-review", allow_abbrev=False,
+                        help="record the pre-push review of a head, which the pre-push hook reads")
+    rr.add_argument("--head", required=True, help="the commit reviewed (any name git resolves; recorded by full SHA)")
+    rr.add_argument("--level", required=True, choices=LEVELS, help="the review's level; the hook counts medium and above")
+    rr.add_argument("--verdict", required=True, choices=("clean", "blocker"),
+                    help="clean: every finding fixed or waived; blocker: a finding stands")
+    rr.add_argument("--repo", metavar="DIR", help="the repository (default: the current directory)")
+    pp = sub.add_parser("pre-push", allow_abbrev=False,
+                        help="git's pre-push hook: reads git's lines on stdin; the hook install-hook writes runs it")
+    pp.add_argument("remote", help="the remote's name (or its URL when the push names none)")
+    pp.add_argument("url", nargs="?", help="the remote's URL (unused; git passes it)")
+    for name, text in (("install-hook", "write the pre-push hook that runs the review gate"),
+                       ("uninstall-hook", "remove the pre-push hook install-hook wrote")):
+        h = sub.add_parser(name, allow_abbrev=False, help=text)
+        h.add_argument("--repo", metavar="DIR", help="the repository (default: the current directory)")
+        if name == "install-hook":
+            h.add_argument("--shared-hooks-path", action="store_true",
+                           help="install even when core.hooksPath comes from the global or system configuration, "
+                                "which puts the gate on every repository that uses it")
     return p
 
 
@@ -628,9 +851,31 @@ def error_doc(command, e):
             else "not_found")
     code = {"usage": EXIT_USAGE, "unavailable": EXIT_PENDING}.get(kind, EXIT_NOT_READY)
     error = {"kind": kind, "message": str(e) if kind != "not_found" else "a record the pull request refers to was not found"}
-    if command in ("wait-review", "post-review", "check-links"):
+    if command in ("wait-review", "post-review") + LOCAL:
         return {"outcome": "error", "error": error}, code
     return {"status": "pending" if code == EXIT_PENDING else "not_ready", "ready": False, "error": error}, code
+
+
+def skip_note(s):
+    return f"the push of {s['head']} skipped the pre-push review gate ({s['time']}): {s['reason']}"
+
+
+def pre_push_summary(doc):
+    lines = []
+    for r in doc["refs"]:
+        if r["status"] == "refused":
+            lines += [f"pre-push review gate: {r['ref']} at {r['head']} is refused: {r['detail']}.",
+                      "  Run the medium review of this head, fix or have waived every finding, then record it:",
+                      f'    "{pathlib.Path(sys.executable).resolve().as_posix()}" "{pathlib.Path(__file__).resolve().as_posix()}" '
+                      f"record-review --head {r['head']} "
+                      "--level medium --verdict clean",
+                      "  A record binds to one commit: after an amend, a rebase or an update from the base, "
+                      "review the new head and record it."]
+        elif r["status"] == "skipped":
+            lines.append(f"pre-push review gate SKIPPED for {r['head']}: {r['detail']}")
+    lines += [f"pre-push: a session link in {h['source']} line {h['line']}: remove it before the push" for h in doc["hits"]]
+    lines += [f"pre-push: earlier, {skip_note(s)}; the next review names it" for s in doc.get("skips", [])]
+    return "\n".join(lines + [f"pre-push: {doc['outcome']}, {len(doc['refs'])} ref(s)"])
 
 
 def summary(command, doc):
@@ -640,7 +885,15 @@ def summary(command, doc):
         return f"merge-check: {doc['verdict']}" + (f": {doc['error']['message']}" if "error" in doc else "")
     if command == "check-links":
         return (f"check-links: {doc['outcome']}, {doc['sources']} source(s)"
-                + "".join(f"; a session link in {h['source']} line {h['line']}" for h in doc["hits"]))
+                + "".join(f"; a session link in {h['source']} line {h['line']}" for h in doc["hits"])
+                + "".join(f"; {skip_note(s)}" for s in doc.get("skips", [])))
+    if command == "record-review":
+        r = doc["record"]
+        return f"record-review: recorded {r['level']} {r['verdict']} for {r['head']}"
+    if command in ("install-hook", "uninstall-hook"):
+        return f"{command}: {doc['outcome']}: {doc['hook']}"
+    if command == "pre-push":
+        return pre_push_summary(doc)
     if command == "post-review":
         failed = [f"{c['name']}" + (f" (line {c['line']})" if c.get("line") else "") + f": {c['detail']}"
                   for c in doc["checks"] if c["status"] == "failed"]
@@ -661,7 +914,8 @@ def summary(command, doc):
     return f"gates: {doc['status']} at {doc['pr']['head_sha'][:12]}" + (": " + "; ".join(reasons) if reasons else "")
 
 
-def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.sleep, clock=time.time, run=subprocess.run):
+def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.sleep, clock=time.time, run=subprocess.run,
+         stdin=None):
     env = os.environ if env is None else env
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     argv = sys.argv[1:] if argv is None else argv
@@ -678,12 +932,22 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
             args = build_parser().parse_args(argv)
         except SystemExit as e:  # --help
             return EXIT_USAGE if e.code else 0
-        if command == "check-links":
-            if not args.commits and not args.file:
-                raise vd.UsageError("check-links needs --commits RANGE or --file FILE")
-            doc, code = check_links(args, run)
+        if command in LOCAL:
+            try:
+                if command == "check-links":
+                    if not args.commits and not args.file:
+                        raise vd.UsageError("check-links needs --commits RANGE or --file FILE")
+                    doc, code = check_links(args, run)
+                elif command == "record-review":
+                    doc, code = record_review(args, run)
+                elif command == "pre-push":
+                    doc, code = pre_push(args, env, run, stdin or sys.stdin)
+                else:
+                    doc, code = (install_hook if command == "install-hook" else uninstall_hook)(args, run)
+            except Refused as e:
+                doc, code = {"outcome": "refused", "reason": str(e)}, EXIT_NOT_READY
             vd.emit(doc, stdout, None)
-            stderr.write(summary(command, doc) + "\n")
+            stderr.write((f"{command}: refused: {doc['reason']}" if "reason" in doc else summary(command, doc)) + "\n")
             return code
         kind, api_base, owner, repo, number, token = resolve(args, env, run)
         if command == "wait-review":
