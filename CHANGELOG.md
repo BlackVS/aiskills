@@ -9,6 +9,36 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- **The pre-push hook keeps private names off public remotes.** A person
+  keeps a private-word file outside every repository (the names of their
+  own hosts, machines, groups and users) and a private-hosts file that
+  says where those names may go. On a push to any other remote, the hook
+  of `forge-gates` refuses new text that holds a word: a ref's name, a
+  tag's message, a new commit's message, its added lines and its added
+  paths. Matching is literal, case-insensitive and whole-word (an entry's
+  punctuation edge, as in `dir/` or `.domain`, is not bounded). A `!` line
+  allows a word inside one fixed string, such as a reviewer's attribution
+  link. A refusal names the commit and `file:line`, never the word and
+  never the line it stands in, and everything the commands print passes a
+  last scrub. Without a word file the check is off and says so in one
+  line. The one-time skip covers it too, and its record names the checks
+  it skipped; a skip reason that holds a word skips nothing.
+  `forge_gates.py check-words` runs the same check over commits or a
+  checkout's tracked files. The hook judges the real destination: with a
+  `url.<base>.insteadOf` rewrite, git passes the alias as the hook's first
+  argument and the rewritten URL as its second, and the check uses the
+  second. It does not read history already pushed, text typed into a
+  forge's web pages, or a word that is split or encoded. The installers
+  are unchanged, and so is the hook file `install-hook` writes: a machine
+  that installed the 1.42.0 hook gets the check by upgrading the skill.
+
+### Changed
+- **`post-review` checks the private-word file by default** (check
+  `private_words`), unless the forge's host is in the private-hosts file.
+  `--deny-file` is unchanged: it still matches any substring, and it adds
+  to the word file.
+
 ## [1.42.0] - 2026-11-16
 
 The pre-push review gate is now held by git instead of by memory (#131).

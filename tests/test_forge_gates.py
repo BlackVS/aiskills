@@ -234,11 +234,14 @@ class Gates:
     # ---- running the script
     def run_fg(self, command, *extra, env=None, args=None):
         out, err = io.StringIO(), io.StringIO()
-        env = {self.ENV[self.forge]: str(self.token_file)} if env is None else env
+        env = dict({self.ENV[self.forge]: str(self.token_file)} if env is None else env)
+        if command == "post-review":  # never this machine's own word and host files
+            env.setdefault(fg.WORDS_VAR, str(self.tmp / "no-private-words"))
+            env.setdefault(fg.HOSTS_VAR, str(self.tmp / "no-private-hosts"))
         argv = [command, "--pr", self.PR[self.forge], *(self.ARGS[self.forge] if args is None else args), *extra]
         code = fg.main(argv, env=env, stdout=out, stderr=err, opener=self.fake, sleep=self.clock.sleep,
                        clock=self.clock, run=self.gh)
-        text = out.getvalue() + err.getvalue()
+        text = self.output = out.getvalue() + err.getvalue()
         for secret in (TOKEN, CLI_TOKEN, GLOBAL_TOKEN):
             self.assertNotIn(secret, text, "no token ever appears in the output")
         self.assertEqual(err.getvalue().count("\n"), 1, "one summary line on stderr")
@@ -636,6 +639,46 @@ class PostContract(Gates):
         self.assertEqual((code, self.failed(doc)), (3, {"deny_file": 17}))
         self.assertNotIn("internal-hub", json.dumps(doc).lower())
         self.assertEqual(self.post(local_review(), "--deny-file", str(deny))[0], 0)
+
+    def test_deny_file_entries_match_as_substrings_as_released(self):
+        """Unlike the word file, a deny entry matches inside a longer word: a token prefix, a host fragment."""
+        deny = self.tmp / "deny"
+        deny.write_text("tok_\nnternal-hu\n", encoding="utf-8")
+        for text in ("A token tok_abcDEF123 leaked.\n", "Seen on internal-hub.example.\n"):
+            with self.subTest(text=text):
+                code, doc = self.post(local_review() + text, "--deny-file", str(deny))
+                self.assertEqual((code, self.failed(doc)), (3, {"deny_file": 17}))
+
+    def private_words_env(self, hosts=""):
+        words, hosts_file = self.tmp / "private-words", self.tmp / "private-hosts"
+        words.write_text("Zorbex\nvexhub\n!hands.vexhub.example\n", encoding="utf-8")
+        hosts_file.write_text(hosts, encoding="utf-8")
+        return {self.ENV[self.forge]: str(self.token_file), fg.WORDS_VAR: str(words), fg.HOSTS_VAR: str(hosts_file)}
+
+    def test_the_private_word_file_applies_by_default_and_never_shows_a_word_or_its_line(self):
+        env = self.private_words_env()
+        line = "the line that must never be shown"
+        code, doc = self.post(local_review() + f"Deployed on group-zorbex, {line}.\n", env=env)
+        self.assertEqual((code, self.failed(doc)), (3, {"private_words": 17}))
+        for text in ("zorbex", line):
+            self.assertNotIn(text, self.output.lower())
+        self.assertEqual(self.posts(), [])
+        # The allowed literal passes; the same word outside it does not.
+        self.assertEqual(self.post(local_review() + "Review: https://hands.vexhub.example/run/1\n", env=env)[0], 0)
+        self.assertEqual(self.post(local_review() + "Seen on vexhub.\n", env=dict(env))[0], 3)
+
+    def test_a_forge_on_a_private_host_does_not_use_the_word_file(self):
+        host = fg.remote_host(self.API[self.forge])
+        env = self.private_words_env(hosts=host.split(".", 1)[-1] + "\n")
+        code, doc = self.post(local_review() + "Deployed on group-zorbex.\n", env=env)
+        self.assertEqual(code, 0, json.dumps(doc, indent=1))
+        [note] = [c for c in doc["checks"] if c["name"] == "private_words"]
+        self.assertIn("listed as private", note["note"])
+        # An explicit --deny-file still applies there.
+        deny = self.tmp / "deny"
+        deny.write_text("zorbex\n", encoding="utf-8")
+        self.assertEqual(self.failed(self.post(local_review() + "Deployed on group-zorbex.\n",
+                                               "--deny-file", str(deny), env=env)[1]), {"deny_file": 17})
 
     def test_forge_refusals(self):
         for answer, expected in ((403, 2), (500, 4)):

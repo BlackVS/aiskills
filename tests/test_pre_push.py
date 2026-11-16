@@ -24,7 +24,9 @@ class Repo(unittest.TestCase):
         self.globalcfg = self.tmp / "gitconfig"
         self.globalcfg.write_text("", encoding="utf-8")
         self.env = {k: v for k, v in os.environ.items() if k != fg.SKIP_VAR}
-        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(self.globalcfg))
+        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(self.globalcfg),
+                        **{fg.WORDS_VAR: str(self.tmp / "no-private-words"),
+                           fg.HOSTS_VAR: str(self.tmp / "no-private-hosts")})
         self.remote = self.tmp / "remote.git"
         self.work = self.tmp / "work"
         self.git_in(self.tmp, "init", "-q", "--bare", "-b", "main", str(self.remote))
@@ -231,7 +233,7 @@ class Install(Repo):
         self.assertEqual(self.run_fg("uninstall-hook", "--repo", str(self.work))[1]["outcome"], "absent")
 
 
-class Boundary(Repo):
+class BoundaryBase(Repo):
     """A real git push through the hook, installed from a copy of the skill under a path with a space."""
 
     def setUp(self):
@@ -250,6 +252,8 @@ class Boundary(Repo):
     def push(self, env=None):
         return self.git_in(self.work, "push", "origin", "HEAD:refs/heads/feat", check=False, env=env)
 
+
+class Boundary(BoundaryBase):
     def test_the_hook_refuses_until_the_head_is_recorded(self):
         p = self.tool("install-hook")
         self.assertEqual(p.returncode, 0, p.stderr)

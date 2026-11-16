@@ -28,9 +28,9 @@ except ImportError:
     vd = None
 
 EXIT_READY, EXIT_USAGE, EXIT_NOT_READY, EXIT_PENDING = 0, 2, 3, 4
-COMMANDS = ("wait-review", "gates", "merge-check", "post-review", "check-links",
+COMMANDS = ("wait-review", "gates", "merge-check", "post-review", "check-links", "check-words",
             "record-review", "pre-push", "install-hook", "uninstall-hook")
-LOCAL = ("check-links", "record-review", "pre-push", "install-hook", "uninstall-hook")  # no forge needed
+LOCAL = ("check-links", "check-words", "record-review", "pre-push", "install-hook", "uninstall-hook")  # no forge needed
 # gh lets these override its stored logins whatever --hostname names: a token for instance A
 # would be returned for B. They are removed from the environment gh is run with.
 GH_OVERRIDES = {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST"}
@@ -418,15 +418,6 @@ def session_link(line):
     return bool(SESSION_URL.search(line) or SESSION_TRAILER.match(line))
 
 
-def deny_entries(path):
-    """The deny file's entries: one per line, matched as text in any case; blank lines and lines
-    starting with # are skipped. The entries are never printed."""
-    if not path:
-        return []
-    return [line.strip().lower() for line in read_text(path, "deny file").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")]
-
-
 def review_checks(text, header, verdict_re, deny):
     """The checks of a review text before it is posted: [{name, status, detail?, line?}]. HEADER is
     the configured pattern of the review being posted, VERDICT_RE verify-delivery's READY pattern,
@@ -488,9 +479,13 @@ def review_checks(text, header, verdict_re, deny):
 
     private = [i + 1 for i, l in enumerate(lines) if session_link(l)]
     check("session_links", private and "a link into an agent's session or conversation: remove it", private[0] if private else None)
-    denied = [i + 1 for i, l in enumerate(lines) if any(e in l.lower() for e in deny)]
-    check("deny_file", denied and "the text holds an entry of the deny file (the entry is not shown)",
-          denied[0] if denied else None)
+    for name, words, what in deny:
+        if words is None:  # a list not used here; WHAT says why
+            checks.append({"name": name, "status": "passed", "note": what})
+            continue
+        denied = words.lines(text)
+        check(name, denied and f"the text holds an entry of the {what} (neither the entry nor the line is shown)",
+              denied[0] if denied else None)
     check("size", len(text) > MAX_BODY and f"longer than {MAX_BODY} characters")
     return checks, sha
 
@@ -524,12 +519,39 @@ def post_comment(kind, forge, number, token, body, opener):
     return c.get("html_url") or (f"{forge.mr.get('web_url')}#note_{c['id']}" if kind == "gitlab" and c.get("id") else None)
 
 
-def post_review(args, forge, kind, owner, repo, number, token, opener):
+def review_denies(args, env, api_base):
+    """The word lists a review is checked against: the private-word file unless the forge's host
+    is listed as private, and --deny-file when given; a list not used carries the reason instead."""
+    words, path = private_words(env)
+    if not words:
+        deny = [("private_words", None, off_note(path))]
+    elif is_private(remote_host(api_base), private_hosts(env)):
+        deny = [("private_words", None, "the forge's host is listed as private: the private-word file is not used")]
+    else:
+        deny = [("private_words", words, "private-word file")]
+    if args.deny_file:
+        deny.append(("deny_file", DenyFile(read_text(args.deny_file, "deny file")), "deny file"))
+    return deny
+
+
+class DenyFile:
+    """post-review's --deny-file as released: one entry per line (blank and # lines skipped),
+    matched as a substring in any case, so a token prefix or a host fragment still matches."""
+
+    def __init__(self, text):
+        self.entries = [line.strip().lower() for line in text.splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")]
+
+    def lines(self, text):
+        return [i + 1 for i, line in enumerate(text.splitlines()) if any(e in line.lower() for e in self.entries)]
+
+
+def post_review(args, env, api_base, forge, kind, owner, repo, number, token, opener):
     text = read_text(args.body_file, "review file")
     header = dict(args.reviews).get(args.post_as)
     if header is None:
         raise vd.UsageError("--post-as names a review that is not configured (see --review)")
-    checks, sha = review_checks(text, header, args.verdict, deny_entries(args.deny_file))
+    checks, sha = review_checks(text, header, args.verdict, review_denies(args, env, api_base))
     pr = read_pull(forge, kind, number)
     state = {"name": "state", "state": pr["state"], "status": "passed" if pr["state"] == "open" else "failed"}
     if pr["state"] != "open":
@@ -595,6 +617,259 @@ def check_links(args, run):
     skips = skip_records(run, [sha for sha, _ in commits]) if commits else []
     if skips:
         doc["skips"] = skips
+    return doc, EXIT_NOT_READY if hits else EXIT_READY
+
+
+# ---------------------------------------------------------------- private words
+
+WORDS_VAR = "AISKILLS_PRIVATE_WORDS"
+HOSTS_VAR = "AISKILLS_PRIVATE_HOSTS"
+WITHHELD = "<private>"
+HUNK = re.compile(r"(@+) [^@]*\+(\d+)(?:,\d+)? @+")
+
+
+WORD_CHAR = re.compile(r"[A-Za-z0-9_]")
+
+
+def whole(entry):
+    """ENTRY's pattern: literal, and bounded only at an edge that is itself a word character. So a
+    match never runs on into a longer word, while `creds/` or `.host` still match where a path or
+    a name continues them."""
+    return ((r"(?<![A-Za-z0-9_])" if WORD_CHAR.match(entry[0]) else "") + re.escape(entry)
+            + (r"(?![A-Za-z0-9_])" if WORD_CHAR.match(entry[-1]) else ""))
+
+
+class Words:
+    """Entries matched literally, in any case, as whole words: at an edge of the entry that is a
+    letter, a digit or `_`, the neighbouring character must not be one. A match that lies wholly
+    inside an allowed literal is no hit. Nothing here ever returns or prints the text it matched."""
+
+    def __init__(self, entries, allowed=()):
+        self.entries, self.allowed_literals = list(entries), list(allowed)
+        by_length = sorted(set(entries), key=len, reverse=True)
+        self.pattern = re.compile("|".join(whole(e) for e in by_length), re.I) if entries else None
+        self.allowed = re.compile("|".join(re.escape(a) for a in sorted(set(allowed), key=len, reverse=True)),
+                                  re.I) if allowed else None
+
+    def __bool__(self):
+        return self.pattern is not None
+
+    def __add__(self, other):
+        return Words(self.entries + other.entries, self.allowed_literals + other.allowed_literals)
+
+    def hit(self, text):
+        if self.pattern is None or not text:
+            return False
+        spans = [m.span() for m in self.allowed.finditer(text)] if self.allowed else []
+        return any(not any(a <= m.start() and m.end() <= b for a, b in spans) for m in self.pattern.finditer(text))
+
+    def lines(self, text):
+        """The 1-based numbers of TEXT's lines that hold a hit."""
+        return [i + 1 for i, line in enumerate(text.splitlines()) if self.hit(line)]
+
+    def scrub(self, text):
+        """TEXT with every match replaced, allowed or not: the last net before anything is printed."""
+        return self.pattern.sub(WITHHELD, text) if self.pattern is not None else text
+
+
+def read_words(path, what):
+    """A word file: one entry per line, blank lines and lines starting with # skipped; a line
+    starting with ! is an allowed literal, inside which the entries are no hit."""
+    try:
+        text = pathlib.Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise vd.UsageError(f"the {what} {path} is not UTF-8 text")
+    except OSError:
+        raise vd.UsageError(f"the {what} {path} cannot be read")
+    entries, allowed = [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("!"):
+            if line[1:].strip():
+                allowed.append(line[1:].strip())
+        else:
+            entries.append(line)
+    return Words(entries, allowed)
+
+
+def config_dir(env):
+    if os.name == "nt" and env.get("APPDATA"):
+        return pathlib.Path(env["APPDATA"]) / "aiskills"
+    home = env.get("HOME") or os.path.expanduser("~")
+    return pathlib.Path(env.get("XDG_CONFIG_HOME") or pathlib.Path(home) / ".config") / "aiskills"
+
+
+def words_path(env):
+    return pathlib.Path(env.get(WORDS_VAR) or config_dir(env) / "private-words")
+
+
+def private_words(env, path=None):
+    """(Words, path) of the machine's private-word file; Words is empty when there is no file."""
+    path = pathlib.Path(path) if path else words_path(env)
+    return (read_words(path, "private-word file") if path.exists() else Words([])), path
+
+
+def private_hosts(env):
+    path = pathlib.Path(env.get(HOSTS_VAR) or config_dir(env) / "private-hosts")
+    return read_words(path, "private-hosts file").entries if path.exists() else []
+
+
+def remote_host(url):
+    """The host of a git remote URL (https://, ssh://, git://, or scp-like user@host:path); None
+    for a local path or anything that does not parse, which counts as public."""
+    if not url:
+        return None
+    if "://" in url:
+        try:
+            return urllib.parse.urlsplit(url).hostname or None
+        except ValueError:
+            return None
+    m = re.match(r"(?:[^@/\\]+@)?([^/\\:@]+):", url)
+    return m.group(1).lower() if m and len(m.group(1)) > 1 else None
+
+
+def is_private(host, hosts):
+    host = (host or "").lower().rstrip(".")
+    return bool(host) and any(host == h.lower() or host.endswith("." + h.lower()) for h in hosts)
+
+
+def off_note(path):
+    return f"no private-word file at {path}; the private-word check is off"
+
+
+def git_stream(env, gitdir, args):
+    """git's stdout line by line, never held whole: a diff of any size is read in flat memory."""
+    try:
+        p = subprocess.Popen(["git", "--git-dir", gitdir, *args], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=dict(env))
+    except OSError as e:
+        raise vd.UsageError(f"git cannot run: {e}")
+    with p.stdout:
+        for raw in p.stdout:
+            yield raw.decode("utf-8", "replace").rstrip("\r\n")
+    if p.wait() != 0:
+        raise vd.UsageError(f"git {args[0]} failed (exit {p.returncode})")
+
+
+def where(path, index, words):
+    """How a hit's file is named: by its path, or by its place when the path itself holds a word."""
+    return f"path #{index}" if words.hit(path) else path
+
+
+def diff_hits(lines, words):
+    """The hits in `git log -p` output, by commit and file:line, never by text; and the number of
+    binary files, whose content git does not show."""
+    hits, binaries = [], 0
+    sha, path, index, cols, new, in_hunk = None, None, 0, 1, 0, False
+    # The patch being read: its header, whether its new path was named (+++, rename to, copy to)
+    # or it deletes the file, and whether its path already hit.
+    patch = None
+
+    def new_path(text):
+        patch.update(named=True)
+        if words.hit(text) and not patch["hit"]:
+            patch.update(hit=True)
+            hits.append({"commit": sha, "in": "path", "path": f"path #{index}"})
+
+    def end_patch():
+        # A patch that never names its new path (an empty new file, a binary file, a mode change)
+        # is read by its header, which then holds no other path. A deletion adds no path.
+        if patch and not patch["named"] and not patch["gone"]:
+            new_path(patch["header"])
+
+    for line in lines:
+        if line.startswith("\x01"):
+            end_patch()
+            sha, path, index, in_hunk, patch = line[1:].strip(), None, 0, False, None
+        elif line.startswith("diff "):
+            end_patch()
+            path, in_hunk = None, False
+            index += 1
+            patch = {"header": line[5:], "named": False, "gone": False, "hit": False}
+        elif in_hunk and line[:1] in (" ", "+", "-", "\\"):
+            if line.startswith("\\"):
+                continue
+            prefix, body = line[:cols], line[cols:]
+            if "-" in prefix:
+                continue
+            if "+" in prefix and words.hit(body):
+                hits.append({"commit": sha, "in": "line", "path": where(path or "", index, words), "line": new})
+            new += 1
+        elif line.startswith("@@"):
+            m = HUNK.match(line)
+            cols, new, in_hunk = (len(m.group(1)) - 1, int(m.group(2)), True) if m else (1, 0, False)
+        elif patch is None:
+            continue
+        elif line.startswith("deleted file mode"):
+            patch.update(gone=True)
+        elif line.startswith(("+++ ", "rename to ", "copy to ")):
+            text = line[4:] if line.startswith("+++ ") else line.split(" ", 2)[2]
+            if text == "/dev/null":
+                patch.update(gone=True)
+                continue
+            path = text[2:] if line.startswith("+++ ") and text.startswith("b/") else text
+            new_path(text)
+        elif line.startswith("Binary files "):  # its path: a rename's, else the header's
+            binaries += 1
+    end_patch()
+    return hits, binaries
+
+
+def word_hits_in_commits(revs, words, env, run):
+    """The private-word hits in the commits REVS names: their messages, the lines they add and
+    the paths they add, each commit on its own; and the count of binary files not read."""
+    hits = [{"commit": sha, "in": "message", "line": n}
+            for sha, message in commit_messages(revs, run) for n in words.lines(message)]
+    gitdir = git(run, "rev-parse", "--absolute-git-dir")
+    diff, binaries = diff_hits(git_stream(env, gitdir, [
+        "-c", "core.quotePath=false", "log", "-p", "-U0", "-M", "--cc", "--no-ext-diff", "--no-textconv",
+        "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--format=%x01%H", *revs, "--"]), words)
+    return hits + diff, binaries
+
+
+def word_hits_in_tree(top, words, run):
+    """The private-word hits in the tracked files of the checkout at TOP, by file:line."""
+    names = git(run, "ls-files", "-z", repo=top) or ""
+    hits, binaries = [], 0
+    for index, name in enumerate(n for n in names.split("\0") if n):
+        shown = where(name, index + 1, words)
+        if shown != name:
+            hits.append({"in": "path", "path": shown})
+        try:
+            data = (pathlib.Path(top) / name).read_bytes()
+        except OSError:
+            continue
+        if b"\0" in data[:8000]:
+            binaries += 1
+            continue
+        hits += [{"in": "line", "path": shown, "line": n} for n in words.lines(data.decode("utf-8", "replace"))]
+    return hits, binaries
+
+
+def hit_text(h):
+    place = {"message": f"message line {h.get('line')}", "path": h.get("path"),
+             "ref": f"the name of ref {h.get('ref')}", "tag": f"the message of tag {h.get('ref')}",
+             "reason": "the skip reason"}.get(h["in"], f"{h.get('path')}:{h.get('line')}")
+    return (f"commit {h['commit']} " if h.get("commit") else "") + place
+
+
+def check_words(args, env, run):
+    words, path = private_words(env, args.words)
+    if not words:
+        return {"outcome": "off", "words": str(path), "note": off_note(path), "hits": []}, EXIT_READY
+    hits, binaries = [], 0
+    for r in args.commits:
+        if r.startswith("-"):
+            raise vd.UsageError("--commits takes a revision range, not an option")
+        h, b = word_hits_in_commits([r], words, env, run)
+        hits, binaries = hits + h, binaries + b
+    if args.tree:
+        top = git(run, "rev-parse", "--show-toplevel", repo=args.tree)
+        h, b = word_hits_in_tree(top, words, run)
+        hits, binaries = hits + h, binaries + b
+    doc = {"outcome": "refused" if hits else "clean", "words": str(path), "hits": hits, "binary_files_not_read": binaries}
     return doc, EXIT_NOT_READY if hits else EXIT_READY
 
 
@@ -689,50 +964,93 @@ def skip_records(run, shas, repo=None):
     return out
 
 
+def pre_push_words(args, env, run):
+    """The words the push is checked for, and what the result says about the check. A remote
+    whose host is listed private is not checked; its host is never named in the result."""
+    words, path = private_words(env)
+    if not words:
+        return words, {"state": "off", "note": off_note(path)}
+    url = args.url or git(run, "config", "--get", f"remote.{args.remote}.url", ok=(0, 1)) or args.remote
+    if is_private(remote_host(url), private_hosts(env)):
+        return Words([]), {"state": "not checked", "note": "the remote's host is listed as private"}
+    return words, {"state": "on", "file": str(path)}
+
+
 def pre_push(args, env, run, stdin):
     """git's pre-push hook: each pushed branch head that adds commits needs a clean review
-    recorded at medium or above, and its new commits carry no session link."""
+    recorded at medium or above, its new commits carry no session link, and on a public remote
+    no new text (a ref's name, a tag's message, a commit's message, added lines and paths) holds
+    a private word."""
     d = records_dir(run)
+    words, check = pre_push_words(args, env, run)
+    # Checked against the whole word file even for a private remote: the skip record stays local
+    # but is a file this tool writes, and no file it writes holds a private word.
+    every_word = private_words(env)[0]
     reason = (env.get(SKIP_VAR) or "").strip()
+    reason_refused = bool(reason) and every_word.hit(reason)
+    if reason_refused:
+        reason = ""
     # A push to a URL names no remote: then a commit any remote-tracking branch holds counts as
     # pushed, so history already pushed elsewhere is not read again.
     named = git(run, "config", "--get", f"remote.{args.remote}.url", ok=(0, 1)) is not None
     already = f"--remotes={args.remote}" if named else "--remotes"
-    refs, hits, skips = [], [], []
-    for line in stdin.read().splitlines():
+    refs, hits, skips, word_hits, binaries = [], [], [], [], 0
+    for n, line in enumerate(stdin.read().splitlines(), 1):
         if not line.strip():
             continue
         parts = line.split()
         if len(parts) != 4:
-            raise vd.UsageError(f"not a pre-push line from git: {line!r}")
+            raise vd.UsageError(f"line {n} of git's input is not a pre-push line")
         _, local, remote_ref, remote = parts
         ref = {"ref": remote_ref, "head": local}
         refs.append(ref)
         if local == ZERO_SHA:
             ref.update(status="exempt", detail="a deletion")
             continue
-        if remote_ref.startswith("refs/tags/"):
-            ref.update(status="exempt", detail="a tag")
-            continue
+        found = []
+        # Replaced against the whole word file even for a private remote: the ref goes into the
+        # skip record, a file this tool writes.
+        if every_word.hit(remote_ref):
+            ref["ref"] = f"#{len(refs)}"
+            if words.hit(remote_ref):
+                found.append({"in": "ref", "ref": ref["ref"]})
+        tag = remote_ref.startswith("refs/tags/")
+        if tag and words and git(run, "cat-file", "-t", local) == "tag":
+            body = git(run, "cat-file", "tag", local).partition("\n\n")[2]
+            if words.hit(body):
+                found.append({"in": "tag", "ref": ref["ref"]})
         revs = [local, "--not", already]
         if remote != ZERO_SHA and git(run, "cat-file", "-e", remote + "^{commit}", ok=(0, 1, 128)) is not None:
             revs.append(remote)
         new = git(run, "rev-list", *revs).split()
-        if not new:
-            ref.update(status="exempt", detail="it adds no commit the remote lacks")
-            continue
-        hits += link_hits([(f"commit {sha}", message) for sha, message in commit_messages(revs, run)])
-        skips += [s for s in skip_records(run, new) if s["head"] != local]
-        problem = review_problem(read_record(d / f"{local}.json"), local)
-        if problem is None:
-            ref["status"] = "reviewed"
+        if new:
+            hits += link_hits([(f"commit {sha}", message) for sha, message in commit_messages(revs, run)])
+            skips += [s for s in skip_records(run, new) if s["head"] != local]
+            if words:
+                h, b = word_hits_in_commits(revs, words, env, run)
+                found, binaries = found + h, binaries + b
+        word_hits += found
+        unreviewed = review_problem(read_record(d / f"{local}.json"), local) if new and not tag else None
+        problems = ([unreviewed] if unreviewed else []) + (["it adds text that holds a private word"] if found else [])
+        checks = (["review"] if unreviewed else []) + (["private-words"] if found else [])
+        if not problems:
+            if tag:
+                ref.update(status="exempt", detail="a tag")
+            elif not new:
+                ref.update(status="exempt", detail="it adds no commit the remote lacks")
+            else:
+                ref["status"] = "reviewed"
         elif reason:
-            write_json(d / f"{local}.skip.json", {"head": local, "ref": remote_ref, "reason": reason, "time": now()})
-            ref.update(status="skipped", detail=reason)
+            write_json(d / f"{local}.skip.json", {"head": local, "ref": ref["ref"], "reason": reason,
+                                                   "checks": checks, "time": now()})
+            ref.update(status="skipped", detail=reason, checks=checks)
         else:
-            ref.update(status="refused", detail=problem)
+            ref.update(status="refused", detail="; ".join(problems), unreviewed=bool(unreviewed))
     refused = hits or any(r["status"] == "refused" for r in refs)
-    doc = {"outcome": "refused" if refused else "clean", "refs": refs, "hits": hits}
+    doc = {"outcome": "refused" if refused else "clean", "refs": refs, "hits": hits,
+           "private_words": dict(check, hits=word_hits, binary_files_not_read=binaries)}
+    if reason_refused:
+        doc["skip_refused"] = "the skip reason holds a private word (not shown): give another reason"
     if skips:
         doc["skips"] = skips
     return doc, EXIT_NOT_READY if refused else EXIT_READY
@@ -822,6 +1140,15 @@ def build_parser():
                    help="the commits to read, as git log takes them (for example origin/main..HEAD); repeatable")
     c.add_argument("--file", action="append", default=[], metavar="FILE",
                    help="a text file to read, such as a pull request description (UTF-8); repeatable")
+    cw = sub.add_parser("check-words", allow_abbrev=False,
+                        help="find the words of the private-word file in commits or a checkout's tracked files; "
+                             "never prints a word or the line it stands in")
+    cw.add_argument("--commits", action="append", default=[], metavar="RANGE",
+                    help="the commits to read, as git log takes them (for example origin/main..HEAD); repeatable")
+    cw.add_argument("--tree", nargs="?", const=".", metavar="DIR",
+                    help="read the tracked files of the checkout at DIR (default: the current one)")
+    cw.add_argument("--words", metavar="FILE",
+                    help=f"the word file (default ${WORDS_VAR}, else private-words in the aiskills config directory)")
     rr = sub.add_parser("record-review", allow_abbrev=False,
                         help="record the pre-push review of a head, which the pre-push hook reads")
     rr.add_argument("--head", required=True, help="the commit reviewed (any name git resolves; recorded by full SHA)")
@@ -863,7 +1190,9 @@ def skip_note(s):
 def pre_push_summary(doc):
     lines = []
     for r in doc["refs"]:
-        if r["status"] == "refused":
+        if r["status"] == "refused" and not r.get("unreviewed"):
+            lines.append(f"pre-push review gate: {r['ref']} at {r['head']} is refused: {r['detail']}.")
+        elif r["status"] == "refused":
             lines += [f"pre-push review gate: {r['ref']} at {r['head']} is refused: {r['detail']}.",
                       "  Run the medium review of this head, fix or have waived every finding, then record it:",
                       f'    "{pathlib.Path(sys.executable).resolve().as_posix()}" "{pathlib.Path(__file__).resolve().as_posix()}" '
@@ -872,8 +1201,17 @@ def pre_push_summary(doc):
                       "  A record binds to one commit: after an amend, a rebase or an update from the base, "
                       "review the new head and record it."]
         elif r["status"] == "skipped":
-            lines.append(f"pre-push review gate SKIPPED for {r['head']}: {r['detail']}")
+            lines.append(f"pre-push review gate SKIPPED for {r['head']}: {r['detail']} "
+                         f"(checks skipped: {', '.join(r['checks'])})")
     lines += [f"pre-push: a session link in {h['source']} line {h['line']}: remove it before the push" for h in doc["hits"]]
+    pw = doc.get("private_words", {})
+    if pw.get("note"):
+        lines.append(f"pre-push: {pw['note']}")
+    lines += [f"pre-push: a private word in {hit_text(h)} (not shown): remove it before the push" for h in pw.get("hits", [])]
+    if pw.get("binary_files_not_read"):
+        lines.append(f"pre-push: {pw['binary_files_not_read']} binary file(s) checked by path only")
+    if doc.get("skip_refused"):
+        lines.append(f"pre-push: {doc['skip_refused']}")
     lines += [f"pre-push: earlier, {skip_note(s)}; the next review names it" for s in doc.get("skips", [])]
     return "\n".join(lines + [f"pre-push: {doc['outcome']}, {len(doc['refs'])} ref(s)"])
 
@@ -887,6 +1225,13 @@ def summary(command, doc):
         return (f"check-links: {doc['outcome']}, {doc['sources']} source(s)"
                 + "".join(f"; a session link in {h['source']} line {h['line']}" for h in doc["hits"])
                 + "".join(f"; {skip_note(s)}" for s in doc.get("skips", [])))
+    if command == "check-words":
+        if doc["outcome"] == "off":
+            return f"check-words: {doc['note']}"
+        return (f"check-words: {doc['outcome']}, {len(doc['hits'])} hit(s)"
+                + "".join(f"; a private word in {hit_text(h)}" for h in doc["hits"])
+                + (f"; {doc['binary_files_not_read']} binary file(s) checked by path only"
+                   if doc.get("binary_files_not_read") else ""))
     if command == "record-review":
         r = doc["record"]
         return f"record-review: recorded {r['level']} {r['verdict']} for {r['head']}"
@@ -914,6 +1259,19 @@ def summary(command, doc):
     return f"gates: {doc['status']} at {doc['pr']['head_sha'][:12]}" + (": " + "; ".join(reasons) if reasons else "")
 
 
+class Scrubbed:
+    """A text stream that withholds every private word written to it."""
+
+    def __init__(self, stream, words):
+        self.stream, self.words = stream, words
+
+    def write(self, text):
+        return self.stream.write(self.words.scrub(text))
+
+    def flush(self):
+        getattr(self.stream, "flush", lambda: None)()
+
+
 def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.sleep, clock=time.time, run=subprocess.run,
          stdin=None):
     env = os.environ if env is None else env
@@ -926,18 +1284,36 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
         stdout.write(json.dumps({"error": {"kind": "usage", "message": message}}, indent=2) + "\n")
         stderr.write(f"forge-gates: {message}\n")
         return EXIT_USAGE
+    # The last net: whatever these commands print passes through the private-word file's scrub,
+    # whatever path the text took. The checks themselves report positions, never text.
+    if command in LOCAL + ("post-review",):
+        try:
+            net = private_words(env)[0]
+        except vd.UsageError:
+            net = Words([])
+        stdout, stderr = Scrubbed(stdout, net), Scrubbed(stderr, net)
     token = None
     try:
         try:
             args = build_parser().parse_args(argv)
         except SystemExit as e:  # --help
             return EXIT_USAGE if e.code else 0
+        if command == "check-words" and args.words:
+            try:
+                chosen = read_words(args.words, "private-word file")
+            except vd.UsageError:
+                chosen = Words([])
+            stdout.words = stderr.words = stdout.words + chosen
         if command in LOCAL:
             try:
                 if command == "check-links":
                     if not args.commits and not args.file:
                         raise vd.UsageError("check-links needs --commits RANGE or --file FILE")
                     doc, code = check_links(args, run)
+                elif command == "check-words":
+                    if not args.commits and not args.tree:
+                        raise vd.UsageError("check-words needs --commits RANGE or --tree [DIR]")
+                    doc, code = check_words(args, env, run)
                 elif command == "record-review":
                     doc, code = record_review(args, run)
                 elif command == "pre-push":
@@ -958,7 +1334,7 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
         elif command == "gates":
             doc, code = gates(args, forge, kind, owner, repo, number)
         elif command == "post-review":
-            doc, code = post_review(args, forge, kind, owner, repo, number, token, opener)
+            doc, code = post_review(args, env, api_base, forge, kind, owner, repo, number, token, opener)
         else:
             doc, code = wait_review(args, forge, kind, owner, repo, number, clock, sleep)
     except (vd.UsageError, vd.Unavailable, vd.NotFound) as e:
