@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-11-16
+
+The pre-push review gate is now held by git instead of by memory (#131).
+`forge_gates.py install-hook` puts a `pre-push` hook into a repository
+that asks for it, and git then refuses a push whose head has no clean
+review at medium or above recorded with `forge_gates.py record-review`;
+the same check refuses a session link in the new commits' messages. No
+installer installs the hook: re-run the installer to get the new
+`forge_gates.py`, then run `install-hook` in each checkout that should
+enforce the gate. Also in this release, aiforge-export gives aicrew the
+same https install form as aimem and aiskills.
+
 ### Added
 - **A git pre-push hook enforces the pre-push review.** `forge_gates.py
   install-hook` writes a `pre-push` hook into a repository; git then refuses
