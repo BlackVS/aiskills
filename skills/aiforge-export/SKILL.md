@@ -64,8 +64,8 @@ What it refuses, each with a message naming the URL or file:
 - an `--out` that already exists.
 
 A release that publishes its files but not yet its installer scripts as
-assets (aicrew's releases so far, aiskills' releases before the boot
-scripts became assets) is still exported; `README.txt` says what is missing
+assets (aicrew's releases before v0.11.0, aiskills' releases before the
+boot scripts became assets) is still exported; `README.txt` says what is missing
 and how to install from the verified files by hand.
 
 The format, its six rules and what each installer does with it are in

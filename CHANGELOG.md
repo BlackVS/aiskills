@@ -9,6 +9,27 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- **A git pre-push hook enforces the pre-push review.** `forge_gates.py
+  install-hook` writes a `pre-push` hook into a repository; git then refuses
+  a push whose head has no clean review at medium or above recorded with
+  `forge_gates.py record-review`, the last step of the pre-push review
+  (oh-code-review and the review-gates rules say so). The same check refuses
+  a session link in the new commits' messages. Deletions, tags and pushes
+  that add no commit are exempt. The hook never replaces a hook it did not
+  write, goes into a global or system `core.hooksPath` only with
+  `--shared-hooks-path`, and `uninstall-hook` removes it. A person can skip
+  one push with `AISKILLS_PRE_PUSH_SKIP="<reason>" git push ...`: the skip
+  is printed, recorded, and named by the next review. The installers do not
+  install the hook; a repository opts in with the command.
+
+### Changed
+- **aiforge-export gives aicrew the https form.** aicrew v0.11.0, its first
+  release that publishes its installers, documents `curl ... |
+  AICREW_BASE=<url> bash` and `irm ... | iex` in `boot.sh`, `boot.ps1` and
+  `install-aicrewd.sh`, so `README.txt` gives aicrew both forms, as it does
+  aimem and aiskills.
+
 ## [1.41.0] - 2026-11-15
 
 One change: the rule against session and conversation links now covers every

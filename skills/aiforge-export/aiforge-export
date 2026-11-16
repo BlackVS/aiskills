@@ -306,18 +306,18 @@ def export_product(product, tag, platforms, download_base, api_base, dest, log):
 
 
 # Per product: its base variable, the execution policy its Windows boot script runs
-# under, the shell installers README.txt names, as (who runs it, script, arguments),
-# and whether the product's installers document the https form, piped as their
-# connected one-liners are: aimem's ADMIN-MANUAL ("curl ... | AIMEM_BASE=... bash",
-# "irm ... | iex"; install-hub.sh runs alone), aiskills' README and its boot tests.
+# under, and the shell installers README.txt names, as (who runs it, script, arguments).
+# Every product's installers document the https form, piped as their connected
+# one-liners are: aimem's ADMIN-MANUAL ("curl ... | AIMEM_BASE=... bash", "irm ... | iex";
+# install-hub.sh runs alone), aiskills' README and its boot tests, and aicrew's boot.sh,
+# boot.ps1 and install-aicrewd.sh from v0.11.0, its first release that publishes them.
 COMMANDS = {
     "aimem": ("AIMEM_BASE", "RemoteSigned",
-              (("A workstation (Linux, macOS)", "boot.sh", ""), ("A hub, as root", "install-hub.sh", "")), True),
+              (("A workstation (Linux, macOS)", "boot.sh", ""), ("A hub, as root", "install-hub.sh", ""))),
     "aicrew": ("AICREW_BASE", "RemoteSigned",
-               (("A workstation (Linux, macOS)", "boot.sh", ""), ("The aicrewd service, as root", "install-aicrewd.sh", "")),
-               False),
+               (("A workstation (Linux, macOS)", "boot.sh", ""), ("The aicrewd service, as root", "install-aicrewd.sh", ""))),
     "aiskills": ("AI_SKILLS_EXPORT", "Bypass",
-                 (("Linux, macOS", "boot.sh", ""), ("For every project of this user", "boot.sh", "--user -s core")), True),
+                 (("Linux, macOS", "boot.sh", ""), ("For every project of this user", "boot.sh", "--user -s core"))),
 }
 
 
@@ -325,7 +325,7 @@ def install_commands(product, tag):
     """The commands for both forms of an export: a directory (<dir>), where a script is
     run in place, and an https server (<url>), where it is piped from the server as the
     connected one-liners are. Either way the base variable names the export's root."""
-    var, policy, scripts, https = COMMANDS[product]
+    var, policy, scripts = COMMANDS[product]
     rel = f"{product}/{tag}"
     out = ["From a directory:"]
     for who, script, args in scripts:
@@ -340,9 +340,6 @@ def install_commands(product, tag):
             f'      Copy-Item -LiteralPath "$env:{var}\\{product}\\{tag}\\boot.ps1" -Destination $boot -ErrorAction Stop',
             f"      powershell -NoProfile -ExecutionPolicy {policy} -File $boot",
             f"    }} finally {{ Remove-Item Env:{var}; Remove-Item -LiteralPath $boot -ErrorAction SilentlyContinue }}"]
-    if not https:
-        return out + [f"From an https server: {product}'s installers do not document that form yet;",
-                      "copy the directory and install from it as above."]
     out += ["From an https server:"]
     for who, script, args in scripts:
         out += [f"  {who}:", f"    curl -fsSL <url>/{rel}/{script} | {var}=<url> bash" + (f" -s -- {args}" if args else "")]

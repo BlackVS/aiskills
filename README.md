@@ -600,6 +600,8 @@ helper, `skills/forge-gates/scripts/forge_gates.py`, imports
 python3 skills/forge-gates/scripts/forge_gates.py wait-review --pr https://github.com/OWNER/REPO/pull/123 --head <full SHA>
 python3 skills/forge-gates/scripts/forge_gates.py gates --pr https://github.com/OWNER/REPO/pull/123
 python3 skills/forge-gates/scripts/forge_gates.py post-review --pr https://github.com/OWNER/REPO/pull/123 --body-file review.md --dry-run
+python3 skills/forge-gates/scripts/forge_gates.py install-hook
+python3 skills/forge-gates/scripts/forge_gates.py record-review --head <full SHA> --level medium --verdict clean
 ```
 
 `wait-review` waits for the external reviewer's comment for the pushed head
@@ -613,11 +615,21 @@ by its full SHA, `VERDICT` and the verdict stand on lines of their own, the
 attribution line is there and no session link or `--deny-file` entry
 appears; it never edits a comment. `check-links` reads commit messages
 (`--commits origin/main..HEAD`) and files such as a pull request description
-(`--file`) for a session link before a push, without a forge. Without a token
+(`--file`) for a session link before a push, without a forge. `install-hook`
+writes a git `pre-push` hook into the repository (never over a hook it did
+not write, and into a hooks directory from the global or system git
+configuration only with `--shared-hooks-path`). From then on git refuses a
+push whose head has no clean review at medium or above recorded by
+`record-review`, the last step of the pre-push review; `uninstall-hook`
+removes it. The installers do not install the hook: a repository opts in
+with that command. A person skips it for one push with
+`AISKILLS_PRE_PUSH_SKIP="<reason>" git push ...`, which is printed and
+named by the next review. Without a token
 file, the token comes on GitHub from `gh auth token --hostname` for the API's
 own host, with the CLI's global token variables removed, and on Gitea and
 GitLab from Git's credential helper, as `verify-delivery` reads it. Tests:
-`tests/test_forge_gates.py`.
+`tests/test_forge_gates.py`, `tests/test_check_links.py` and
+`tests/test_pre_push.py`.
 
 ## Compatibility rules
 
