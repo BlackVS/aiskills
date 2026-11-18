@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.44.0] - 2026-11-18
+
+A hands deployment now shows when it cannot reach its forges, and loses
+no Gitea review request to an outage (#135). The Auto Reviews page lists
+each forge as reachable, failing (since when, and why) or quiet, and the
+Gitea receiver sweeps the org's open pull requests for a request whose
+webhook was lost. The GitHub poller no longer stops on a pull request
+with two explicit reviewer labels (#136). Only a hands site has anything
+to do: `consumers/openhands-review-hook/UPDATING.md`, row 1.44.0, lists
+the files to deploy and the services to restart. The skills, prompts and
+installers are unchanged.
+
 ### Fixed
 - hands: one pull request with more than one explicit reviewer label
   (`review-this:<a>` and `review-this:<b>`) stopped the GitHub poller's
