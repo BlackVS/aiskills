@@ -48,13 +48,19 @@ No checkout needed. Linux and macOS:
 curl -fsSL https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.sh | bash
 ```
 
-Windows (PowerShell):
+Windows, in a PowerShell window:
 
 ```powershell
+irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex
+```
+
+From `cmd.exe` or a script, wrap the same line:
+
+```bat
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex"
 ```
 
-Either line downloads the latest
+Each of these lines downloads the latest
 [release](https://github.com/BlackVS/aiskills/releases)'s archive
 (`aiskills-X.Y.Z.tar.gz`) and its `SHA256SUMS` into a temporary directory. It
 checks the archive's SHA-256 against `SHA256SUMS`, runs the real installer
@@ -86,10 +92,11 @@ $env:AI_SKILLS_ARGS = 'C:\path\to\project -Tool codex -Skills all'; irm $B | iex
 (These lines run as typed in a PowerShell window, also on a fresh Windows
 machine whose execution policy is `Restricted`: `boot.ps1` allows scripts for
 its own process while the installer runs and puts the setting back. Only a
-policy set by Group Policy stops it, with a message that names the policy.
-The `powershell -NoProfile -ExecutionPolicy Bypass -Command "..."` wrapper
-shown above is for `cmd.exe` and for scripts. Quote a project path that
-contains spaces inside `AI_SKILLS_ARGS`.) Project-level installs are
+policy that a process cannot lift, such as one set by Group Policy, stops
+it. The message then names the policy, its scope and the two ways out: a
+policy that runs local script files (`RemoteSigned` is enough), or the bash
+one-liner in Git Bash, which runs no PowerShell script. Quote a project path
+that contains spaces inside `AI_SKILLS_ARGS`.) Project-level installs are
 committed with the project, so every clone and every client on it sees the
 same skills; user-level installs follow the person across projects.
 

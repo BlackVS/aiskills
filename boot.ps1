@@ -1,11 +1,14 @@
-# aiskills one-line installer for Windows (no checkout needed).
+# aiskills one-line installer for Windows (no checkout needed). In a PowerShell window:
+#
+#   irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex
+#
+# That works under the default execution policy (Restricted) too: the installer is a
+# file, so this script allows scripts for its own process while the installer runs and
+# then puts the setting back. Only a policy that a process cannot lift (Group Policy)
+# stops it, with a message that names the ways out. From cmd.exe or a script, wrap the
+# same line:
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex"
-#
-# or, in a PowerShell window, just the quoted part: irm .../boot.ps1 | iex. That works
-# under the default execution policy (Restricted) too: the installer is a file, so this
-# script allows scripts for its own process while the installer runs and then puts the
-# setting back. Only a policy set by Group Policy stops it, with a message.
 #
 # It downloads one release's archive into a temporary directory, checks it
 # against the release's SHA256SUMS, runs install.ps1 from it and removes the
@@ -281,7 +284,8 @@ try {
         $policy = Get-EffectivePolicy
         if ($policy -in $refusing) {
             $scope = try { (Get-ExecutionPolicy -List | Where-Object { [string]$_.ExecutionPolicy -ne 'Undefined' } | Select-Object -First 1).Scope } catch { 'unknown' }
-            throw "ERROR: the execution policy ($policy, scope $scope) does not let PowerShell run the installer, and it cannot be lifted for this process; nothing was installed. See Get-ExecutionPolicy -List."
+            $setBy = if ([string]$scope -in 'MachinePolicy', 'UserPolicy') { ' That scope is set by Group Policy, which only its administrator changes.' } else { '' }
+            throw "ERROR: the execution policy ($policy, scope $scope) does not let PowerShell run the installer, and it cannot be lifted for this process; nothing was installed.$setBy Ways out: a policy that runs local script files (RemoteSigned is enough), or the bash one-liner in Git Bash, which runs no PowerShell script (see README.md). Get-ExecutionPolicy -List shows every scope."
         }
         Write-Host "The execution policy refuses script files: allowing them for this process while the installer runs, then restoring the setting."
     }
