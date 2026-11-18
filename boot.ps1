@@ -175,7 +175,11 @@ New-Item -ItemType Directory -Force $dest | Out-Null
 # `irm | iex` runs in the caller's session: the digest handed to the installer is restored afterwards,
 # and so is the process's execution policy when it has to be lifted for the installer (below)
 $callerDigest = $env:AI_SKILLS_ARCHIVE_SHA256
-$callerPolicy = $null
+$callerPolicy = $env:PSExecutionPolicyPreference
+$policyLifted = $false
+# The effective execution policy; 'unreadable' where the cmdlet's own module is refused
+# (PowerShell 7 under AllSigned does not load it without a trusted publisher).
+function Get-EffectivePolicy { try { [string](Get-ExecutionPolicy -ErrorAction Stop) } catch { 'unreadable' } }
 try {
     $tgz = Join-Path $dest 'src.tar.gz'
     $from = if ($base) { $base } else { 'https://github.com' }
@@ -266,16 +270,18 @@ try {
     # install.ps1 is a file, and the execution policy applies to files: Restricted (the default
     # on Windows client editions) and AllSigned refuse it, although this script, piped to iex,
     # runs under any policy. Allow scripts for this process only, while the installer runs; the
-    # finally block puts the caller's setting back. A policy set above the process scope (Group
-    # Policy) cannot be lifted from here: say so, instead of failing inside the call.
-    if ([string](Get-ExecutionPolicy) -in 'Restricted', 'AllSigned') {
-        $callerPolicy = [string](Get-ExecutionPolicy -Scope Process)
-        # under a Group Policy setting the cmdlet sets the scope and then reports the override as an error
-        try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction Stop } catch { }
-        $policy = [string](Get-ExecutionPolicy)
-        if ($policy -in 'Restricted', 'AllSigned') {
-            $scope = (Get-ExecutionPolicy -List | Where-Object { [string]$_.ExecutionPolicy -ne 'Undefined' } | Select-Object -First 1).Scope
-            throw "ERROR: the execution policy $policy (scope $scope) does not let PowerShell run the installer, and it cannot be lifted for this process; nothing was installed. See Get-ExecutionPolicy -List."
+    # finally block puts the caller's setting back. The process scope of the policy is the
+    # environment variable below, so no cmdlet is needed to set it. A policy set above the
+    # process scope (Group Policy) cannot be lifted from here: say so, instead of failing
+    # inside the call.
+    $refusing = 'Restricted', 'AllSigned', 'unreadable'
+    if ((Get-EffectivePolicy) -in $refusing) {
+        $policyLifted = $true
+        $env:PSExecutionPolicyPreference = 'Bypass'
+        $policy = Get-EffectivePolicy
+        if ($policy -in $refusing) {
+            $scope = try { (Get-ExecutionPolicy -List | Where-Object { [string]$_.ExecutionPolicy -ne 'Undefined' } | Select-Object -First 1).Scope } catch { 'unknown' }
+            throw "ERROR: the execution policy ($policy, scope $scope) does not let PowerShell run the installer, and it cannot be lifted for this process; nothing was installed. See Get-ExecutionPolicy -List."
         }
         Write-Host "The execution policy refuses script files: allowing them for this process while the installer runs, then restoring the setting."
     }
@@ -283,9 +289,7 @@ try {
     # installer through PowerShell's own parser, exactly as typed on a command line.
     Invoke-Expression ("& '" + $installer.Replace("'", "''") + "' " + $argString)
 } finally {
-    if ($null -ne $callerPolicy) {
-        try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy $callerPolicy -Force -ErrorAction Stop } catch { }
-    }
+    if ($policyLifted) { $env:PSExecutionPolicyPreference = $callerPolicy }  # $null removes the variable: the scope is Undefined again
     $env:AI_SKILLS_ARCHIVE_SHA256 = $callerDigest
     Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
 }
