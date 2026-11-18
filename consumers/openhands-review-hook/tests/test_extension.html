@@ -243,6 +243,10 @@ try {
   line = await showLogin({state:'present', expires: inDays(3)});
   check(line.textContent.startsWith('Login ends in 3 days, on ') && line.textContent.includes('Log in to this account again on the hands host before then') && 'problem' in line.dataset && line.getAttribute('role') === 'alert', 'A login in its last week warns: ' + line.textContent);
   check(!loginOf('Codex'), 'A row without a login has no line');
+  line = await showLogin({state:'present', expires: inDays(6)});
+  check(line.textContent.startsWith('Login ends in 6 days, on ') && 'problem' in line.dataset, 'Six days left warns: ' + line.textContent);
+  line = await showLogin({state:'present', expires: inDays(7)});
+  check(line.textContent.endsWith('(7 days).') && !('problem' in line.dataset), 'Seven days left does not warn yet: ' + line.textContent);
   line = await showLogin({state:'present', expires: inDays(1)});
   check(line.textContent.startsWith('Login ends in 1 day, on '), 'One day is singular: ' + line.textContent);
   line = await showLogin({state:'ended', expires: inDays(-5)});
