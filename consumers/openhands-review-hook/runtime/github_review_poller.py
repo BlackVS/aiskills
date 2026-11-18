@@ -38,7 +38,9 @@ host:
   WORKSPACES_DIR / LABEL_REQUEST / LABEL_WORKING / LABEL_DONE / WATCH_MINUTES
                      as in review_hook.py
   REVIEW_RUNS_DIR    directory of review-runs-github.json, the in-flight runs
-                     a restart re-attaches to, default /opt/openhands/hooks
+                     a restart re-attaches to, and of forge-status-github.json,
+                     the last poll's outcome that the Auto Reviews page shows,
+                     default /opt/openhands/hooks
   MARKER             default "[hands-bot review]" - what the posted comment
                      must START with
   REVIEW_AUTHOR      the GitHub login that posts the review comments, default
@@ -61,7 +63,7 @@ import json
 import re
 from review_policy import requested_profiles
 from review_runner import recovered_head, next_page, patch_identity, retried
-from review_runner import Runner, RunStore
+from review_runner import ForgeStatus, Runner, RunStore
 import os
 import threading
 import time
@@ -92,7 +94,10 @@ WATCH_SECONDS = int(os.environ.get("WATCH_MINUTES", "45")) * 60
 MARKER = os.environ.get("MARKER", "[hands-bot review]")
 PROMPT_FILE = os.environ.get("PROMPT_FILE", "/opt/openhands/hooks/github_review_prompt.txt")
 REVIEW_AUTHOR = os.environ.get("REVIEW_AUTHOR", "").strip()
-RUNS = RunStore(os.path.join(os.environ.get("REVIEW_RUNS_DIR", "/opt/openhands/hooks"), "review-runs-github.json"))
+RUNS_DIR = os.environ.get("REVIEW_RUNS_DIR", "/opt/openhands/hooks")
+RUNS = RunStore(os.path.join(RUNS_DIR, "review-runs-github.json"))
+# The last poll's outcome, for the Auto Reviews page: an outage cannot be reported on GitHub itself.
+STATUS = ForgeStatus(RUNS_DIR, "github", POLL_SECONDS, log=print)
 
 # Same palette as the Gitea org labels, so the two hosts look alike.
 LABEL_COLORS = {L_REQUEST: "0e8a16", L_WORKING: "fbca04", L_DONE: "5319e7"}
@@ -402,6 +407,8 @@ while True:
             ensure_request_labels(repo)
             if request_labels(names):
                 trigger(repo, num, title)
+        STATUS.ok()
     except Exception as e:
         log(f"poll error: {e}")
+        STATUS.failed(e)
     time.sleep(POLL_SECONDS)

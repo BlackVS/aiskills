@@ -327,6 +327,64 @@ class RunStore:
             return self._write(runs)
 
 
+def contact_error(error):
+    """A forge error as short, fixed-form text for the status file: the HTTP status, else the
+    operating system's description (for example "Temporary failure in name resolution"), else
+    the exception's type. Never the exception's whole message, which can quote a URL."""
+    if isinstance(error, urllib.error.HTTPError):
+        return f'HTTP {error.code}'
+    reason = getattr(error, 'reason', error)
+    if not isinstance(reason, BaseException):  # a URLError whose reason is plain text
+        reason = error
+    text = getattr(reason, 'strerror', None)
+    if isinstance(reason, (TimeoutError, ssl.SSLError)) or not isinstance(text, str) or not text:
+        text = type(reason).__name__
+    return text[:200]
+
+
+class ForgeStatus:
+    """The receiver's last contact with its forge, in a small JSON file that the Auto Reviews
+    control API shows (forge-status-<forge>.json beside the run state). A receiver that cannot
+    reach its forge cannot say so on a pull request, and a webhook it could not act on is lost,
+    so this file is where an outage shows: `ok`, `checked` (the last contact, either way),
+    `since` (the first failure of the current outage) and `error`. `interval` is how often the
+    receiver checks, so a reader can tell a receiver that stopped from one that is quiet.
+    Writes replace the file atomically and never raise: the status is never a reason to stop."""
+
+    def __init__(self, directory, forge, interval, log=print, clock=time.time):
+        self.path = Path(directory) / f'forge-status-{forge}.json'
+        self.forge, self.interval, self.log, self.clock = forge, int(interval), log, clock
+        self.lock = threading.Lock()
+        self.since = None
+        self.failed_write = False
+
+    def ok(self):
+        with self.lock:
+            if self.since is not None:
+                self.log(f'{self.forge} reachable again (unreachable since {time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.since))})')
+            self.since = None
+            self._write(True, None)
+
+    def failed(self, error):
+        with self.lock:
+            if self.since is None:
+                self.since = self.clock()
+            self._write(False, contact_error(error))
+
+    def _write(self, ok, error):
+        data = {'forge': self.forge, 'ok': ok, 'checked': int(self.clock()),
+                'since': None if ok else int(self.since), 'error': error, 'interval': self.interval}
+        try:
+            tmp = self.path.with_name(self.path.name + '.tmp')
+            tmp.write_text(json.dumps(data, sort_keys=True))
+            os.replace(tmp, self.path)
+            self.failed_write = False
+        except OSError as e:
+            if not self.failed_write:  # once per run of failures, not on every poll
+                self.log(f'forge status not saved: {self.path.name}: {type(e).__name__}')
+            self.failed_write = True
+
+
 class Runner:
     def __init__(self, api, app_api, set_label, profile_info, fail, log=print,
                  marker='[hands-bot review]', bot=None, working='hands-reviewing',

@@ -9,6 +9,23 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+- hands: the receivers record their last contact with the forge in
+  `forge-status-<forge>.json` beside the run state, and the Auto Reviews
+  page shows it (`GET /api/review-control/status`): one line per forge,
+  saying whether it is reachable, since when it is failing and why, or that a
+  receiver has gone quiet (no contact for three check intervals and a
+  minute: stopped or hung). An outage could not be seen before: a receiver
+  that cannot reach its forge cannot comment on a pull request, and the
+  journal was the only trace.
+- hands: the Gitea receiver sweeps the org's open pull requests every
+  `SWEEP_MINUTES` (default 5, `0` turns it off) and once at start, and
+  starts a request whose webhook was lost. Gitea sends each webhook once,
+  so a `review-this` added during an outage, or while the receiver was
+  stopped, waited until someone re-added the label. A start from the sweep
+  that fails with the request label still on only cleans up, so the PR does
+  not get a comment on every sweep.
+
 ## [1.43.0] - 2026-11-16
 
 The pre-push hook of `forge-gates` now also keeps private names off

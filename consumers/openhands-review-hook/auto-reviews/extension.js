@@ -66,10 +66,13 @@ export function activate(host) {
       .auto-reviews [data-spinner] {display:none;width:16px;height:16px;flex-shrink:0;border:2px solid currentColor;border-right-color:transparent;border-radius:50%}
       .auto-reviews[data-busy=true] [data-spinner] {display:inline-block;animation:auto-reviews-spin .8s linear infinite}
       .auto-reviews [data-elapsed] {margin-left:auto;white-space:nowrap;font-size:13px}
+      .auto-reviews [data-forges] {margin:12px 0;font-size:14px}
+      .auto-reviews [data-forges]>li[data-problem] {font-weight:600}
       @keyframes auto-reviews-spin {to {transform:rotate(360deg)}}
       @media (prefers-reduced-motion:reduce) {.auto-reviews[data-busy=true] [data-spinner] {animation:none}}
     </style><h1>Auto Reviews</h1>
       <p>Choose a provider, model and reasoning effort for automatic pull request reviews.</p>
+      <ul data-forges aria-live="polite" hidden></ul>
       <div data-feedback><span data-spinner aria-hidden="true"></span><span role="status" aria-live="polite">Loading saved settings and provider connections…</span><span data-elapsed aria-hidden="true"></span></div>
       <form data-review><p data-warning="settings" role="alert"></p><fieldset><legend>Primary reviewer</legend><label>Provider <select name="primaryProvider"></select></label><label>Model <select name="primaryModel"></select></label><label>Reasoning effort <select name="primaryEffort"></select></label><p data-warning="primary" role="alert"></p><p data-advisory="primary" role="status"></p></fieldset>
       <fieldset><legend>Secondary reading profile</legend><label>Provider <select name="secondaryProvider"></select></label><label>Model <select name="secondaryModel"></select></label><label>Reasoning effort <select name="secondaryEffort"></select></label><p data-secondary-hint></p><p data-warning="secondary" role="alert"></p><p data-advisory="secondary" role="status"></p></fieldset>
@@ -103,7 +106,7 @@ export function activate(host) {
     systemTheme.addEventListener("change", syncTheme);
     syncTheme();
     const form = root.querySelector("[data-review]"), add = root.querySelector("[data-provider]");
-    const status = root.querySelector('[role="status"]');
+    const status = root.querySelector('[data-feedback] [role="status"]');  // the page's message line, not a row's or a list's
 
     const roles = ['primary', 'secondary', 'fallback'];
     const select = (role, type) => form.elements[role + type];
@@ -211,9 +214,36 @@ export function activate(host) {
       else if (current) { model.add(new Option(current + " (not advertised; choose a model)", "", true, true)); }
       if (!data.models.length) throw new Error("This provider returned no models.");
     }
+    // The receivers' contact with their forges. An outage cannot be reported on a pull request,
+    // so it shows here; a server without the status endpoint shows nothing.
+    const forgeNames = {github: 'GitHub', gitea: 'Gitea'};
+    const when = seconds => new Date(seconds * 1000).toLocaleString();
+    function forgeLine(f) {
+      const name = forgeNames[f.forge] || f.forge;
+      if (!f.ok && !f.checked) return `${name}: ${f.error || 'status unreadable'}.`;
+      if (!f.ok) return `${name}: failing since ${when(f.since ?? f.checked)}` + (f.error ? ` (${f.error})` : '')
+        + `, last tried ${when(f.checked)}. Review requests made meanwhile start once it works again.`;
+      if (f.stale) return `${name}: no contact since ${when(f.checked)}. Its receiver may have stopped; check the service.`;
+      return `${name}: reachable, checked ${when(f.checked)}.`;
+    }
+    async function loadStatus() {
+      let data;
+      try { data = await request('/api/review-control/status'); } catch { return; }
+      if (disposed || !Array.isArray(data?.forges)) return;
+      const list = root.querySelector('[data-forges]');
+      list.replaceChildren(...data.forges.map(f => {
+        const row = document.createElement('li');
+        row.textContent = forgeLine(f);  // text only: the error comes from the server
+        if (!f.ok || f.stale) row.dataset.problem = '';
+        return row;
+      }));
+      list.hidden = !data.forges.length;
+    }
+    const statusTimer = setInterval(loadStatus, 60000);
     async function load(force = false, pending = null) {
       if (force) modelCache.clear();
       lock(true); message("Loading saved settings and provider connections…");
+      loadStatus();
       try {
         const [settings, inventory] = await Promise.all([request('/api/review-control/settings'), request('/api/review-control/providers')]);
         if (disposed) return;
@@ -427,6 +457,6 @@ export function activate(host) {
       message('Unsaved changes discarded. Restored your last loaded or saved settings.');
     };
     load();
-    return () => { disposed = true; clearInterval(progressTimer); themeObserver.disconnect(); systemTheme.removeEventListener("change", syncTheme); add.reset(); root.remove(); };
+    return () => { disposed = true; clearInterval(progressTimer); clearInterval(statusTimer); themeObserver.disconnect(); systemTheme.removeEventListener("change", syncTheme); add.reset(); root.remove(); };
   });
 }

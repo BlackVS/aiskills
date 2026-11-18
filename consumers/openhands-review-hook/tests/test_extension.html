@@ -6,9 +6,10 @@ import {activate} from '../auto-reviews/extension.js';
 const settings = {revision: 0, primary: 'astra', secondary: null, fallback: 'opus'};
 const providers = [{id:'acp:codex',name:'Codex',kind:'subscription',efforts:['low','medium','high','xhigh'],switchable:false}, {id:'acp:claude-code',name:'Claude',kind:'subscription',efforts:[],switchable:false}];
 const selections = {astra:{provider:'acp:codex',model:'astra',effort:null,switch:false},opus:{provider:'acp:claude-code',model:'opus',effort:null,switch:false}};
-let probeFailure = null, lastSaved, lastProvider, lastUpdate, lastUpdatePath, lastProbe, probeModels = [{id:'qwen',label:'Qwen'}], conflict = false, probeOK = true, writes = 0, modelRequests = 0, probeRequests = 0, puts = 0, mountPage, failModels = false, legacy = false, problems = {};
+let probeFailure = null, lastSaved, lastProvider, lastUpdate, lastUpdatePath, lastProbe, probeModels = [{id:'qwen',label:'Qwen'}], conflict = false, probeOK = true, writes = 0, modelRequests = 0, probeRequests = 0, puts = 0, mountPage, failModels = false, legacy = false, problems = {}, forgeStatus = null;
 const host = {apiVersion:'1', registerPage(id, callback) { mountPage = () => callback({container:document.querySelector('main')}); return mountPage(); },
 agentServer:{async request({path,method,body}) {
+  if(path === '/api/review-control/status') { if(!forgeStatus) { const error = Error('HTTP request failed (404)'); error.name = 'HttpError'; error.status = 404; throw error; } return forgeStatus; }  // null: a server without the endpoint
   if(path === '/api/review-control/test-provider') { probeRequests++; lastProbe = {...body};
     if(probeFailure) { if(probeFailure.throws) { const error = Error('HTTP request failed (' + probeFailure.status + ' )'); error.name = 'HttpError'; error.status = probeFailure.status; if('body' in probeFailure) error.response = probeFailure.body; throw error; } return probeFailure.body; }  // Canvas throws an HttpError carrying the parsed body in `response`  // an error status, as the host helper may report it
     return probeOK ? {ok:true,models:probeModels} : {ok:false,message:'Authentication rejected.'}; }
@@ -211,6 +212,25 @@ try {
   corruptForm.elements.primaryProvider.value='acp:codex'; corruptForm.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   problems = {}; conflict = false; corruptForm.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.revision === 0 && lastSaved.primary.model === 'astra' && warn('settings') === '', 'Explicit Save from the unreadable state replaces the file');
-  document.querySelector('#result').textContent='PASS: restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  // the receivers' forge contact: nothing from a server without the endpoint, one text line per forge otherwise
+  const forgeList = () => document.querySelector('[data-forges]');
+  check(forgeList().hidden && !forgeList().children.length, 'A server without the status endpoint shows no forge lines');
+  forgeStatus = {now: 1700000310, forges: [
+    {forge:'github', ok:false, checked:1700000300, since:1700000000, error:'Temporary failure in name resolution', interval:120, stale:false},
+    {forge:'gitea', ok:true, checked:1700000200, since:null, error:null, interval:300, stale:true},
+    {forge:'<b>other</b>', ok:true, checked:1700000250, since:null, error:null, interval:0, stale:false}]};
+  document.querySelector('[data-reload]').click(); await settle();
+  let forgeRows = [...forgeList().children];
+  check(!forgeList().hidden && forgeRows.length === 3, 'One line per forge');
+  check(forgeRows[0].textContent.startsWith('GitHub: failing since ') && forgeRows[0].textContent.includes('(Temporary failure in name resolution)')
+    && forgeRows[0].textContent.includes('start once it works again') && 'problem' in forgeRows[0].dataset, 'An unreachable forge says since when and why: ' + forgeRows[0].textContent);
+  check(forgeRows[1].textContent.startsWith('Gitea: no contact since ') && forgeRows[1].textContent.includes('may have stopped') && 'problem' in forgeRows[1].dataset, 'A receiver that went quiet is flagged: ' + forgeRows[1].textContent);
+  check(forgeRows[2].textContent.startsWith('<b>other</b>: reachable, checked ') && !('problem' in forgeRows[2].dataset) && !forgeList().querySelector('b'), 'A reachable forge is a plain line, and names are text, not HTML');
+  forgeStatus = {now: 1700000310, forges: [{forge:'gitea', ok:false, checked:null, since:null, error:'status file unreadable', interval:0, stale:false}]};
+  document.querySelector('[data-reload]').click(); await settle();
+  forgeRows = [...forgeList().children];
+  check(forgeRows.length === 1 && forgeRows[0].textContent === 'Gitea: status file unreadable.' && 'problem' in forgeRows[0].dataset, 'An unreadable status file is shown as such: ' + forgeRows[0].textContent);
+  forgeStatus = null;
+  document.querySelector('#result').textContent='PASS: forge contact lines (failing, quiet, reachable, unreadable, none without the endpoint), restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>

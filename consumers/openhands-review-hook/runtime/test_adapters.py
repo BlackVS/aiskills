@@ -33,7 +33,7 @@ class FakeServer(ThreadingHTTPServer):
 
 class AdapterTests(unittest.TestCase):
     def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False, blind=False, own=False,
-                    two=False):
+                    two=False, swept=False, raced=False, outage=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
         label is taken off again; the request is put back
@@ -63,7 +63,14 @@ class AdapterTests(unittest.TestCase):
         changes ever comes (lost, as Gitea sends each once), so their counts are still due when the run
         ends; the run's end drops them, and the request then asked again from the token's account runs
         again (#64 item 24). With OWN (other than 'quiet') or TWO, the fake forge sends a webhook for every
-        label change it applies, as Gitea does."""
+        label change it applies, as Gitea does. SWEPT (Gitea): no webhook comes at all (it was lost in
+        an outage); the receiver's sweep finds the request on the open PRs and runs it. With KEPT, the
+        sweep's failed start leaves its label on and comments nothing, as GitHub's poll does: the next
+        sweep runs it. RACED (with SWEPT): the sweep's read of the PR's labels is held, and a webhook for
+        the same request comes meanwhile. The webhook must find the PR reserved and leave it: had it
+        read the labels too, it would run the request, and the held sweep, released after that run
+        ended, would start the consumed request again. OUTAGE (Gitea, with REFUSED, the sweep off): the
+        labels were read, then the start's write failed on the forge: the status file must say so."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = ({'review-this', 'hands-reviewing'} if own in (True, 'other') and kept else
@@ -83,6 +90,7 @@ class AdapterTests(unittest.TestCase):
         label_reads = []  # the repository labels the adapter looked up
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
         blind_left = [3 if blind else 0]
+        held, release, second_read = threading.Event(), threading.Event(), threading.Event()  # RACED
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_GET(self): self.handle_request()
@@ -92,13 +100,25 @@ class AdapterTests(unittest.TestCase):
                 path = urllib.parse.unquote(self.path.split('?')[0])
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length']))) if self.headers.get('Content-Length') else None
                 result, link = None, None
+                if raced and self.command == 'GET' and path == '/forge/repos/owner/repo/issues/1/labels':
+                    if not held.is_set():  # the first read of the request's labels waits for the test
+                        held.set(); release.wait(30)
+                    elif not release.is_set():
+                        second_read.set()  # another caller read them while the first was held
                 if path == '/forge/search/issues':
                     query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)['q'][0]
                     items = [] if 'label:' in query else [{'repository_url': 'https://example.test/repos/owner/repo', 'number': 1, 'title': 'test', 'labels': [{'name': n} for n in labels]}]
                     if blocked and items:
                         items.insert(0, {'repository_url': 'https://example.test/repos/owner/repo', 'number': 2, 'title': 'other', 'labels': [{'name': 'review-this'}]})
                     result = {'items': items}
-                elif path == '/forge/repos/issues/search': result = []
+                elif path == '/forge/repos/issues/search':
+                    # the sweep asks for every open PR; restart recovery asks for those with hands-reviewing
+                    sweeping = swept and 'labels=' not in self.path
+                    result = [{'repository': {'full_name': 'owner/repo'}, 'number': 1, 'title': 'test',
+                               'labels': [{'name': n} for n in labels]}] if sweeping else []
+                    if sweeping:  # listed first: two explicit reviewer labels are skipped, the sweep goes on
+                        result.insert(0, {'repository': {'full_name': 'owner/repo'}, 'number': 2, 'title': 'two',
+                                          'labels': [{'name': 'review-this:codex-astra'}, {'name': 'review-this:claude-opus'}]})
                 elif path == '/forge/user': result = {'login': 'test-bot'}  # the token's account
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}}
                 elif blocked and path.startswith('/forge/repos/owner/repo/issues/2/labels'):
@@ -183,12 +203,12 @@ class AdapterTests(unittest.TestCase):
                 PROMPT_FILE=str(root/'prompt'), WORKSPACES_DIR='/tmp/reviews', REVIEW_POLL_SECONDS='1',
                 GITHUB_OWNER='owner', GITHUB_REPOS='owner/repo', REVIEW_ORG='owner',
                 BOT_NAME='test-bot', MARKER='[test-bot review]', POLL_SECONDS='1', HOOK_PORT=str(hook_port),
-                REVIEW_RUNS_DIR=str(root), PYTHONUNBUFFERED='1')
+                SWEEP_MINUTES='0' if outage else '0.02', REVIEW_RUNS_DIR=str(root), PYTHONUNBUFFERED='1')
             script = 'github_review_poller.py' if github else 'review_hook.py'
             proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name(script))],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
             def request(sender='someone', listed=('review-this',), action='label_updated'):
-                if github:
-                    return  # the poller finds the request label on its own
+                if github or (swept and not raced):
+                    return  # the poller, or the sweep, finds the request label on its own
                 body = json.dumps({'action':action,'repository':{'full_name':'owner/repo'},'sender':{'login':sender},
                                    'pull_request':{'number':1,'title':'test','labels':[{'name': n} for n in listed]}}).encode()
                 hook = urllib.request.Request(f'http://127.0.0.1:{hook_port}/hooks/gitea',data=body,
@@ -222,7 +242,20 @@ class AdapterTests(unittest.TestCase):
             if (own or two) and own != 'quiet':  # Gitea reports each label change as the token's account, with the labels it left
                 echo.append(send_echo)
             try:
-                request('test-bot' if own == 'idle' else 'someone')
+                if raced:
+                    self.assertTrue(held.wait(12), 'the sweep never read the labels')
+                    request('someone')  # the webhook of the same request
+                    if second_read.wait(1.5):  # it read them too: let its run end before the sweep goes on
+                        done.wait(12)
+                    release.set()
+                else:
+                    request('test-bot' if own == 'idle' else 'someone')
+                if outage:  # the labels were read, then the forge refused the start's write
+                    self.assertTrue(refusal.wait(12), 'the request never reached the label change')
+                    time.sleep(.5)
+                    status = json.loads((root/'forge-status-gitea.json').read_text())
+                    self.assertEqual((status['ok'], status['error'], status['interval']), (False, 'HTTP 503', 0), status)
+                    self.assertIsNotNone(status['since'])
                 if two:  # the start fails on the second label; the first removal's webhook comes back
                     self.assertTrue(refusal.wait(12), 'the start never reached the second request label')
                     time.sleep(1.5)
@@ -240,8 +273,8 @@ class AdapterTests(unittest.TestCase):
                     self.assertEqual(starts, [])
                     if stuck:  # the forge refused that too: the label stays, the PR is released all the same
                         self.assertTrue(cleanup.is_set()); self.assertIn('hands-reviewing', labels)
-                    elif kept and github:
-                        pass  # the request label stayed: the next poll may already have run it
+                    elif kept and (github or swept):
+                        pass  # the request label stayed: the next poll or sweep may already have run it
                     else:
                         self.assertNotIn('hands-reviewing', labels, 'the failed start takes hands-reviewing off again (#64 item 17)')
                     if own is True:  # the webhook of the receiver's own removal is handled, and starts nothing
@@ -269,6 +302,16 @@ class AdapterTests(unittest.TestCase):
                 self.assertIn('review-this:claude-opus', label_reads, 'every reviewer profile gets its request label')
                 self.assertNotIn('review-this:default', label_reads, "Canvas's default profile gets no request label")
             self.assertEqual(echo_errors, [], 'every echo webhook reaches the receiver')
+            # the poll or sweep reached the forge, and says so for the Auto Reviews page
+            status = json.loads((root/f'forge-status-{"github" if github else "gitea"}.json').read_text())
+            self.assertEqual((status['forge'], status['ok'], status['since'], status['error']),
+                             ('github' if github else 'gitea', True, None, None), output)
+            if raced:
+                self.assertFalse(second_read.is_set(), 'the webhook read the labels of a PR the sweep had reserved')
+                self.assertEqual(output.count('review trigger: owner/repo#1'), 1, output)
+            if swept:
+                self.assertIn('request found by the sweep: owner/repo#1', output)
+                self.assertNotIn('owner/repo#2', output); self.assertNotIn('sweep error', output)
             if two:
                 self.assertEqual(starts, [], "the webhook of the start's own label change started a review")
                 self.assertEqual([f['body'].split('\n')[0] for f in failures],
@@ -287,7 +330,7 @@ class AdapterTests(unittest.TestCase):
             # REFUSED fails the first write (hands-reviewing), before the request label comes off
             expected = ([] if stuck else [reported] if lost else
                         [reported + '; its request label is still on the pull request: remove it before adding it again']
-                        if (kept or refused) and not github else [])
+                        if (kept or refused) and not (github or swept) else [])
             self.assertEqual([f['body'].split('\n')[0] for f in failures], expected)
             if blind:
                 self.assertEqual(blind_left, [0], 'the labels were read after the failed write')
@@ -530,6 +573,10 @@ class AdapterTests(unittest.TestCase):
     def test_gitea_adapter_falls_back_to_the_start_when_labels_cannot_be_read(self):
         self.run_adapter(False, refused=True, blind=True)
         self.run_adapter(False, kept=True, blind=True)
+    def test_gitea_adapter_sweep_runs_a_request_whose_webhook_was_lost(self): self.run_adapter(False, swept=True)
+    def test_gitea_adapter_sweep_stays_quiet_while_the_request_label_remains(self): self.run_adapter(False, kept=True, swept=True)
+    def test_gitea_adapter_sweep_and_webhook_start_a_request_once(self): self.run_adapter(False, swept=True, raced=True)
+    def test_gitea_adapter_records_a_start_that_fails_on_the_forge(self): self.run_adapter(False, refused=True, outage=True)
     def test_gitea_adapter_ignores_its_own_label_changes(self): self.run_adapter(False, kept=True, own=True)
     def test_gitea_adapter_uses_up_its_own_change_without_a_request_label(self): self.run_adapter(False, lost=True, own=True)
     def test_gitea_adapter_serves_the_same_change_from_another_account(self): self.run_adapter(False, kept=True, own='other')

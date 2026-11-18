@@ -166,6 +166,32 @@ with a message giving the count and how many of those profiles Auto Reviews
 generated (`review-...`); delete the ones no longer selected in Canvas and save
 again. A selection that matches an existing profile still saves. Profiles created from shared connections reference those connections; variants of existing inline-key profiles stay in Canvas's LLM profile store.
 
+### Forge reachability
+
+A receiver that cannot reach its forge cannot say so on a pull request, so
+the Auto Reviews page says it instead. Each receiver writes its last contact
+with the forge to `forge-status-<forge>.json` in `REVIEW_RUNS_DIR` (beside
+the run state): whether it worked, when, since when it has been failing, and
+the error as short fixed text (`HTTP 502`, `Temporary failure in name
+resolution`). The GitHub poller writes it after every poll. The Gitea
+receiver writes it after every sweep (below), when a webhook fails on a
+forge error, and when a request starts. `GET /api/review-control/status` lists the files, and the page
+shows one line per forge: reachable and when it was checked, failing since
+when and why, or no contact for more than three check intervals and a
+minute, which means the receiver has stopped or hangs. The journal logs
+`<forge> reachable again (unreachable since ...)` when an outage ends.
+
+Gitea sends each webhook once, so a request whose webhook came during an
+outage, or while the receiver was stopped, used to stay on the PR with
+nothing to act on it. The Gitea receiver now also sweeps the org's open PRs
+every `SWEEP_MINUTES` (default 5; `0` turns the sweep off) and once at
+start: a PR that carries a request label and has no run starts as if its
+webhook had come (journal: `request found by the sweep`). A start from the
+sweep that fails while the request label is still on only cleans up, as
+GitHub's poll does, so the next sweep tries again and the PR gets no comment
+on every sweep. GitHub needs no sweep: its poller finds the label on every
+poll.
+
 ## Model sources and existing profiles
 
 Auto Reviews supports both existing Canvas model profiles and shared API provider
@@ -339,6 +365,7 @@ Use the host's existing Canvas authentication when calling these endpoints:
 | --- | --- |
 | Unauthenticated `GET /api/review-control/settings` | 401 |
 | Authenticated `GET /api/review-control/providers` | API and installed account providers, no credentials |
+| Authenticated `GET /api/review-control/status` | One entry per receiver, `ok: true`, `checked` within its interval; the Auto Reviews page shows a "reachable" line for each |
 | `GET /api/review-control/models?provider=acp%3Acodex` | Live account model list |
 | `PUT /api/review-control/settings` with current revision and selections | Saved profile references and incremented revision |
 | `PUT` with a `secondary` selection while the primary is an account agent | 400; nothing prepared or saved |
@@ -357,7 +384,7 @@ Customize > Apps. Neither operation requires a Canvas container restart.
 The browser fixture in `tests/test_extension.html` exercises the actual
 extension module with fake APIs. Open it with a local static file server, or
 headless Chrome with file-module access enabled. A successful run displays
-`PASS` for selection restore, provider changes, save, provider creation
+`PASS` for the forge contact lines, selection restore, provider changes, save, provider creation
 (and the request that tests it), provider edits (the connection they update,
 and leaving edit mode), a token of spaces refused, credential clearing, HTML escaping, failure handling,
 reload, Test connection refreshing the model list, connection-test errors
