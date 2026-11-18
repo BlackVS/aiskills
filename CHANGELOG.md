@@ -9,6 +9,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+- hands: one pull request with more than one explicit reviewer label
+  (`review-this:<a>` and `review-this:<b>`) stopped the GitHub poller's
+  whole poll, every poll, so no other request on GitHub ran while it stood.
+  The poller now skips that PR, serves the others, and posts one note on it
+  naming the labels and asking to keep one. The PR's comments are the
+  record, so a restart does not post the note again.
+
 ### Added
 - hands: the receivers record their last contact with the forge in
   `forge-status-<forge>.json` beside the run state, and the Auto Reviews

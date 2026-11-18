@@ -105,6 +105,8 @@ LABEL_COLORS = {L_REQUEST: "0e8a16", L_WORKING: "fbca04", L_DONE: "5319e7"}
 in_flight = set()
 lock = threading.Lock()
 labeled_repos = set()
+AMBIGUOUS_NOTE = "more than one explicit reviewer label"
+ambiguous_noted = set()  # (repo, num, explicit labels) whose note is on the PR
 
 
 def log(msg):
@@ -314,11 +316,37 @@ def search_prs(label=None):
     ]
 
 
+def ambiguous(repo, num, names):
+    """A PR with more than one explicit reviewer label names no reviewer: it is skipped, and the
+    other PRs are served (one such PR used to stop every poll). The PR gets one note naming the
+    labels; the PR's comments are the record, so a restart does not post it again, and the same
+    labels are noted once per run. A note that cannot be posted is tried at the next poll."""
+    explicit = tuple(sorted(n for n in names if n.startswith(L_REQUEST + ":")))
+    key = (repo, num, explicit)
+    if key in ambiguous_noted:
+        return
+    log(f"request skipped: {repo}#{num}: {AMBIGUOUS_NOTE} ({', '.join(explicit)})")
+    listed = ", ".join(f"`{n}`" for n in explicit)
+    try:
+        comments = api(f"/repos/{repo}/issues/{num}/comments") or []
+        if not any(AMBIGUOUS_NOTE in (c.get("body") or "") and listed in (c.get("body") or "") for c in comments):
+            note_review(repo, num, f"{AMBIGUOUS_NOTE} on this pull request ({listed}), so no reviewer is chosen. "
+                                   "Remove all but one; the review starts at the next poll.")
+        ambiguous_noted.add(key)
+    except Exception as e:
+        log(f"note not posted: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip())
+
+
 def trigger(repo, num, title):
     key = (repo, num)
     # The search index lags label edits by up to a minute; trust only the
     # live label state, same as the Gitea receiver does for redeliveries.
-    requested = request_labels(labels_of(repo, num))
+    live = labels_of(repo, num)
+    try:
+        requested = request_labels(live)
+    except ValueError:  # the labels changed since the search: the same as there
+        ambiguous(repo, num, live)
+        return
     if not requested:
         return
     label, profile = requested[0]
@@ -405,7 +433,12 @@ while True:
         # the request-label variants are matched client-side.
         for repo, num, title, names in search_prs():
             ensure_request_labels(repo)
-            if request_labels(names):
+            try:
+                wanted = request_labels(names)
+            except ValueError:
+                ambiguous(repo, num, names)
+                continue
+            if wanted:
                 trigger(repo, num, title)
         STATUS.ok()
     except Exception as e:

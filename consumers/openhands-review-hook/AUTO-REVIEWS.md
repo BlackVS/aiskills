@@ -8,6 +8,9 @@ the Canvas Extensions backend API (verified on Agent Canvas 1.17.0).
 
 The primary profile handles `review-this`. A single explicit
 `review-this:<profile>` label overrides it; multiple explicit labels are rejected.
+The GitHub poller skips such a PR, serves the others and posts one note on it
+naming the labels (journal: `request skipped`); the Gitea receiver does not
+start it either.
 The GitHub poller creates one such label per agent profile in every repository
 it polls, except for Canvas's `default` profile: Canvas starts its chats from
 that profile and may repoint it to another model on its own, so a label for it
