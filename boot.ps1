@@ -2,6 +2,11 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/BlackVS/aiskills/main/boot.ps1 | iex"
 #
+# or, in a PowerShell window, just the quoted part: irm .../boot.ps1 | iex. That works
+# under the default execution policy (Restricted) too: the installer is a file, so this
+# script allows scripts for its own process while the installer runs and then puts the
+# setting back. Only a policy set by Group Policy stops it, with a message.
+#
 # It downloads one release's archive into a temporary directory, checks it
 # against the release's SHA256SUMS, runs install.ps1 from it and removes the
 # download. The archive's digest is recorded in the installed manifest
@@ -167,8 +172,10 @@ function Test-Archive([string]$SumsLabel, [string]$ArchiveLabel) {
 }
 $dest = Join-Path ([IO.Path]::GetTempPath()) ('aiskills-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $dest | Out-Null
-# `irm | iex` runs in the caller's session: the digest handed to the installer is restored afterwards
+# `irm | iex` runs in the caller's session: the digest handed to the installer is restored afterwards,
+# and so is the process's execution policy when it has to be lifted for the installer (below)
 $callerDigest = $env:AI_SKILLS_ARCHIVE_SHA256
+$callerPolicy = $null
 try {
     $tgz = Join-Path $dest 'src.tar.gz'
     $from = if ($base) { $base } else { 'https://github.com' }
@@ -256,10 +263,29 @@ try {
         Write-Host "No AI_SKILLS_ARGS given: running install.ps1 -User -Skills all -Prompts -AgentsMd (version $v)"
         '-User -Skills all -Prompts -AgentsMd'
     }
+    # install.ps1 is a file, and the execution policy applies to files: Restricted (the default
+    # on Windows client editions) and AllSigned refuse it, although this script, piped to iex,
+    # runs under any policy. Allow scripts for this process only, while the installer runs; the
+    # finally block puts the caller's setting back. A policy set above the process scope (Group
+    # Policy) cannot be lifted from here: say so, instead of failing inside the call.
+    if ([string](Get-ExecutionPolicy) -in 'Restricted', 'AllSigned') {
+        $callerPolicy = [string](Get-ExecutionPolicy -Scope Process)
+        # under a Group Policy setting the cmdlet sets the scope and then reports the override as an error
+        try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction Stop } catch { }
+        $policy = [string](Get-ExecutionPolicy)
+        if ($policy -in 'Restricted', 'AllSigned') {
+            $scope = (Get-ExecutionPolicy -List | Where-Object { [string]$_.ExecutionPolicy -ne 'Undefined' } | Select-Object -First 1).Scope
+            throw "ERROR: the execution policy $policy (scope $scope) does not let PowerShell run the installer, and it cannot be lifted for this process; nothing was installed. See Get-ExecutionPolicy -List."
+        }
+        Write-Host "The execution policy refuses script files: allowing them for this process while the installer runs, then restoring the setting."
+    }
     # The flags are a plain string (from the environment), so hand them to the
     # installer through PowerShell's own parser, exactly as typed on a command line.
     Invoke-Expression ("& '" + $installer.Replace("'", "''") + "' " + $argString)
 } finally {
+    if ($null -ne $callerPolicy) {
+        try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy $callerPolicy -Force -ErrorAction Stop } catch { }
+    }
     $env:AI_SKILLS_ARCHIVE_SHA256 = $callerDigest
     Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
 }

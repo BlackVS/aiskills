@@ -736,6 +736,50 @@ class PowerShellBootExport(ExportCases, unittest.TestCase):
 WINDOWS_POWERSHELL = shutil.which("powershell") if os.name == "nt" else None
 
 
+@unittest.skipUnless(os.name == "nt" and PWSH, "the execution policy is enforced on Windows only")
+class PowerShellBootExecutionPolicy(BootContract, unittest.TestCase):
+    """boot.ps1 as `irm | iex` runs it, in a session whose execution policy refuses script files
+    (Restricted is the default on Windows client editions; every other test passes Bypass). The
+    boot script is text, so it runs; install.ps1 is a file, so it did not."""
+
+    def run_piped(self, shell, policy="Restricted", before=""):
+        script = (f"Set-Variable -Name HOME -Value '{self.home}' -Force; $env:AI_SKILLS_ARCHIVE = '{self.archive}'; " + before +
+                  "$boot = Get-Content -Raw -LiteralPath '" + str(ROOT / "boot.ps1") + "'; "
+                  "try { Invoke-Expression $boot } catch { Write-Output \"failure=[$_]\" }; "
+                  "Write-Output \"after: process=$(Get-ExecutionPolicy -Scope Process) effective=$(Get-ExecutionPolicy)\"")
+        return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", policy, "-Command", script],
+                              capture_output=True, text=True, env=clean_env())
+
+    def shells(self):
+        return sorted({s for s in (PWSH, PWSH7, WINDOWS_POWERSHELL) if s})
+
+    def run_boot(self):  # the shared contract (the digest reaches the manifest) holds under Restricted too
+        return self.run_piped(PWSH)
+
+    def test_the_installer_runs_under_a_policy_that_refuses_script_files(self):
+        for shell in self.shells():
+            for policy in ("Restricted", "AllSigned"):
+                with self.subTest(shell=os.path.basename(shell), policy=policy):
+                    shutil.rmtree(self.home, ignore_errors=True); self.home.mkdir()
+                    r = self.run_piped(shell, policy)
+                    self.assertNotIn("failure=", r.stdout, r.stdout + r.stderr)
+                    self.assert_user_install(r)
+                    self.assertIn("allowing them for this process while the installer runs", r.stdout)  # never silently
+                    # the session is the caller's: its policy is back as it was
+                    self.assertIn(f"after: process={policy} effective={policy}", r.stdout)
+
+    def test_a_policy_that_cannot_be_lifted_is_named_and_nothing_is_installed(self):
+        # a Group Policy setting outranks the process scope; here the cmdlet that would lift it does nothing
+        for shell in self.shells():
+            with self.subTest(shell=os.path.basename(shell)):
+                shutil.rmtree(self.home, ignore_errors=True); self.home.mkdir()
+                r = self.run_piped(shell, before="function Set-ExecutionPolicy { }; ")
+                self.assertIn("failure=[ERROR: the execution policy Restricted (scope Process) does not let PowerShell run the installer", r.stdout, r.stdout + r.stderr)
+                self.assertIn("nothing was installed", r.stdout)
+                self.assertFalse((self.home / ".claude").exists(), "something was installed")
+                self.assertIn("after: process=Restricted effective=Restricted", r.stdout)
+
+
 def documented_export_forms():
     """Every documented Windows install from a directory export, by where it is documented:
     README.md's block, boot.ps1's header and README.txt's block for each product."""
