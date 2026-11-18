@@ -9,6 +9,24 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`irm .../boot.ps1 | iex` installs under the default execution
+  policy.** On a Windows machine whose policy is `Restricted` (the
+  default on client editions) or `AllSigned`, the one-liner typed in a
+  PowerShell window downloaded and verified the archive and then stopped:
+  the boot script, piped to `iex`, runs under any policy, but the
+  installer is a file, and PowerShell refused it ("running scripts is
+  disabled on this system"). `boot.ps1` now allows scripts for its own
+  process while the installer runs (through the process scope's
+  environment variable, `PSExecutionPolicyPreference`), says so in one
+  line, and puts the caller's setting back afterwards, also when the
+  installer fails. A
+  policy set by Group Policy cannot be lifted from a process: the script
+  then stops before the installer with a message that names the policy
+  and its scope, and installs nothing. The `powershell -ExecutionPolicy Bypass -Command`
+  wrapper keeps working and is no longer needed in a PowerShell window.
+
 ## [1.44.0] - 2026-11-18
 
 A hands deployment now shows when it cannot reach its forges, and loses

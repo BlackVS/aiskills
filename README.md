@@ -83,9 +83,13 @@ $env:AI_SKILLS_ARGS = 'C:\path\to\project -AgentsMd'; irm $B | iex        # proj
 $env:AI_SKILLS_ARGS = 'C:\path\to\project -Tool codex -Skills all'; irm $B | iex   # project level, Codex only
 ```
 
-(On a fresh Windows machine wrap the line as `powershell -NoProfile
--ExecutionPolicy Bypass -Command "..."` as shown above; quote a project path
-that contains spaces inside `AI_SKILLS_ARGS`.) Project-level installs are
+(These lines run as typed in a PowerShell window, also on a fresh Windows
+machine whose execution policy is `Restricted`: `boot.ps1` allows scripts for
+its own process while the installer runs and puts the setting back. Only a
+policy set by Group Policy stops it, with a message that names the policy.
+The `powershell -NoProfile -ExecutionPolicy Bypass -Command "..."` wrapper
+shown above is for `cmd.exe` and for scripts. Quote a project path that
+contains spaces inside `AI_SKILLS_ARGS`.) Project-level installs are
 committed with the project, so every clone and every client on it sees the
 same skills; user-level installs follow the person across projects.
 

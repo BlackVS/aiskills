@@ -736,6 +736,77 @@ class PowerShellBootExport(ExportCases, unittest.TestCase):
 WINDOWS_POWERSHELL = shutil.which("powershell") if os.name == "nt" else None
 
 
+@unittest.skipUnless(os.name == "nt" and PWSH, "the execution policy is enforced on Windows only")
+class PowerShellBootExecutionPolicy(BootContract, unittest.TestCase):
+    """boot.ps1 as `irm | iex` runs it, in a session whose execution policy refuses script files
+    (Restricted is the default on Windows client editions; every other test passes Bypass). The
+    boot script is text, so it runs; install.ps1 is a file, so it did not."""
+
+    # a Group Policy setting outranks the process scope: whatever the process sets, the answer stays the same
+    GROUP_POLICY = ("function Get-ExecutionPolicy { param([switch]$List, $Scope, $ErrorAction) "
+                    "if ($List) { [pscustomobject]@{ Scope = 'MachinePolicy'; ExecutionPolicy = 'Restricted' } } else { 'Restricted' } }; ")
+
+    def run_piped(self, shell, policy="Restricted", before=""):
+        probe = self.tmp / "probe.ps1"
+        probe.write_text("Write-Output 'probe: a script file ran'" + chr(10), encoding="utf-8")
+        script = (f"Set-Variable -Name HOME -Value '{self.home}' -Force; $env:AI_SKILLS_ARCHIVE = '{self.archive}'; " + before +
+                  "$boot = Get-Content -Raw -LiteralPath '" + str(ROOT / "boot.ps1") + "'; "
+                  "try { Invoke-Expression $boot } catch { Write-Output ('failure=[' + $_ + ']') }; "
+                  "Write-Output ('after: process=[' + $env:PSExecutionPolicyPreference + ']'); "
+                  f"try {{ & '{probe}' }} catch {{ Write-Output 'probe: refused' }}")
+        env = clean_env()
+        if os.path.basename(shell).lower().startswith("powershell"):
+            # a runner step's shell is PowerShell 7, whose module path Windows PowerShell cannot load its own modules from
+            env = {k: v for k, v in env.items() if k.upper() != "PSMODULEPATH"}
+        return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", policy, "-Command", script],
+                              capture_output=True, text=True, env=env)
+
+    def shells(self):
+        return sorted({s for s in (PWSH, PWSH7, WINDOWS_POWERSHELL) if s})
+
+    def run_boot(self):  # the shared contract (the digest reaches the manifest) holds under Restricted too
+        return self.run_piped(PWSH)
+
+    def test_the_installer_runs_under_a_policy_that_refuses_script_files(self):
+        for shell in self.shells():
+            for policy in ("Restricted", "AllSigned"):
+                with self.subTest(shell=os.path.basename(shell), policy=policy):
+                    shutil.rmtree(self.home, ignore_errors=True); self.home.mkdir()
+                    r = self.run_piped(shell, policy)
+                    self.assertNotIn("failure=", r.stdout, r.stdout + r.stderr)
+                    self.assert_user_install(r)
+                    self.assertIn("allowing them for this process while the installer runs", r.stdout)  # never silently
+                    # the session is the caller's: its policy is back as it was, and refuses a script file again
+                    self.assertIn(f"after: process=[{policy}]", r.stdout)
+                    self.assertIn("probe: refused", r.stdout); self.assertNotIn("probe: a script file ran", r.stdout)
+
+    def test_a_policy_that_cannot_be_lifted_is_named_and_nothing_is_installed(self):
+        for shell in self.shells():
+            with self.subTest(shell=os.path.basename(shell)):
+                shutil.rmtree(self.home, ignore_errors=True); self.home.mkdir()
+                r = self.run_piped(shell, before=self.GROUP_POLICY)
+                self.assertIn("failure=[ERROR: the execution policy (Restricted, scope MachinePolicy) does not let PowerShell run the installer", r.stdout, r.stdout + r.stderr)
+                self.assertIn("nothing was installed", r.stdout)
+                self.assertFalse((self.home / ".claude").exists(), "something was installed")
+                self.assertIn("after: process=[Restricted]", r.stdout)
+
+    def test_a_policy_whose_own_cmdlet_does_not_load_is_lifted_too(self):
+        # PowerShell 7 under AllSigned refuses the module that holds Get-ExecutionPolicy until scripts are allowed
+        unreadable = ("function Get-ExecutionPolicy { param([switch]$List, $Scope, $ErrorAction) "
+                      "if ($env:PSExecutionPolicyPreference -ne 'Bypass') { throw 'the module could not be loaded' }; 'Bypass' }; ")
+        r = self.run_piped(PWSH, "AllSigned", before=unreadable)
+        self.assertNotIn("failure=", r.stdout, r.stdout + r.stderr)
+        self.assert_user_install(r)
+        self.assertIn("after: process=[AllSigned]", r.stdout)
+        self.assertIn("probe: refused", r.stdout)
+
+    def test_a_policy_that_runs_script_files_is_left_alone(self):
+        r = self.run_piped(PWSH, "RemoteSigned")
+        self.assert_user_install(r)
+        self.assertNotIn("allowing them for this process", r.stdout)
+        self.assertIn("after: process=[RemoteSigned]", r.stdout)
+
+
 def documented_export_forms():
     """Every documented Windows install from a directory export, by where it is documented:
     README.md's block, boot.ps1's header and README.txt's block for each product."""
