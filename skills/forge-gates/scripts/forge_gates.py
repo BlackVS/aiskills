@@ -337,8 +337,10 @@ def poll(args, forge, kind, number, head, since):
                                            "verdict": word.group(1) if word else None,
                                            "ready_verdict": bool(args.verdict.search(c["body"] or "")),
                                            "url": c["url"], "author": c["author"], "created_at": c["created_at"]}}
+    # a comment that is itself a review (it carries a configured review's header, the local one
+    # included) is never the reviewer's failure comment, whatever its prose says
     failures = [c for c in reversed(trusted) if args.failure.search(c["body"] or "") and names_head(c["body"], head)
-                and vd.when(c["created_at"])]
+                and vd.when(c["created_at"]) and not any(p.search(c["body"] or "") for p in args.review_headers)]
     correlation = {}
     if failures:  # the label events are read only when there is a failure to correlate
         label = label_added(forge, kind, number, args.request_label)
@@ -395,6 +397,7 @@ def check_wait_args(args, kind):
         raise vd.UsageError(f"an author allowlist is required on {'GitLab' if kind == 'gitlab' else 'Gitea'}: give "
                             f"--review-author {args.wait_for}=LOGIN (or --trust-any-author where only trusted accounts can comment)")
     args.wait_pattern = (args.wait_for, patterns[args.wait_for])
+    args.review_headers = list(patterns.values())
     try:
         args.failure = re.compile(args.failure_pattern)
     except re.error:
