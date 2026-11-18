@@ -33,7 +33,7 @@ class FakeServer(ThreadingHTTPServer):
 
 class AdapterTests(unittest.TestCase):
     def run_adapter(self, github, refused=False, blocked=False, stuck=False, lost=False, kept=False, blind=False, own=False,
-                    two=False, swept=False, raced=False, outage=False):
+                    two=False, swept=False, raced=False, outage=False, ambiguous=False):
         """A request runs the primary, hits a rate limit and completes on the fallback. REFUSED: the
         forge stores the first write of hands-reviewing but answers it 503, so no run starts and the
         label is taken off again; the request is put back
@@ -70,7 +70,9 @@ class AdapterTests(unittest.TestCase):
         the same request comes meanwhile. The webhook must find the PR reserved and leave it: had it
         read the labels too, it would run the request, and the held sweep, released after that run
         ended, would start the consumed request again. OUTAGE (Gitea, with REFUSED, the sweep off): the
-        labels were read, then the start's write failed on the forge: the status file must say so."""
+        labels were read, then the start's write failed on the forge: the status file must say so.
+        AMBIGUOUS (GitHub): another PR, listed first, carries two explicit reviewer labels on every
+        poll. It is skipped with one note, whatever the number of polls, and the request still runs."""
         head = 'a' * 40
         names = ['review-this', 'hands-reviewing', 'hands-reviewed', 'review-this:codex-astra', 'review-this:claude-opus']
         labels = ({'review-this', 'hands-reviewing'} if own in (True, 'other') and kept else
@@ -90,6 +92,7 @@ class AdapterTests(unittest.TestCase):
         label_reads = []  # the repository labels the adapter looked up
         done, refusal, cleanup = threading.Event(), threading.Event(), threading.Event()
         blind_left = [3 if blind else 0]
+        ambiguous_notes = []  # AMBIGUOUS: the notes posted on PR 3
         held, release, second_read = threading.Event(), threading.Event(), threading.Event()  # RACED
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
@@ -108,6 +111,9 @@ class AdapterTests(unittest.TestCase):
                 if path == '/forge/search/issues':
                     query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)['q'][0]
                     items = [] if 'label:' in query else [{'repository_url': 'https://example.test/repos/owner/repo', 'number': 1, 'title': 'test', 'labels': [{'name': n} for n in labels]}]
+                    if ambiguous and items:
+                        items.insert(0, {'repository_url': 'https://example.test/repos/owner/repo', 'number': 3, 'title': 'two reviewers',
+                                         'labels': [{'name': 'review-this:codex-astra'}, {'name': 'review-this:claude-opus'}]})
                     if blocked and items:
                         items.insert(0, {'repository_url': 'https://example.test/repos/owner/repo', 'number': 2, 'title': 'other', 'labels': [{'name': 'review-this'}]})
                     result = {'items': items}
@@ -121,6 +127,10 @@ class AdapterTests(unittest.TestCase):
                                           'labels': [{'name': 'review-this:codex-astra'}, {'name': 'review-this:claude-opus'}]})
                 elif path == '/forge/user': result = {'login': 'test-bot'}  # the token's account
                 elif path == '/forge/repos/owner/repo/pulls/1': result = {'state': 'open', 'head': {'sha': head}}
+                elif ambiguous and path == '/forge/repos/owner/repo/issues/3/comments':
+                    if self.command == 'POST':
+                        ambiguous_notes.append(body['body'])
+                    result = [{'user': {'login': 'test-bot'}, 'body': b} for b in ambiguous_notes]
                 elif blocked and path.startswith('/forge/repos/owner/repo/issues/2/labels'):
                     if self.command == 'DELETE':  # PR 2's request label cannot be taken off: its start fails on every poll
                         refusal.set(); self.send_response(403); self.send_header('Content-Length', '0'); self.end_headers(); return
@@ -350,6 +360,13 @@ class AdapterTests(unittest.TestCase):
             failures.clear()
             if blocked:
                 self.assertIn('review start failed: owner/repo#2: HTTPError 403', output)
+            if ambiguous:
+                self.assertEqual(len(ambiguous_notes), 1, ambiguous_notes)
+                self.assertIn('more than one explicit reviewer label', ambiguous_notes[0])
+                self.assertIn('`review-this:claude-opus`, `review-this:codex-astra`', ambiguous_notes[0])
+                self.assertGreaterEqual(output.count('polling'), 1)
+                self.assertNotIn('poll error', output)
+                self.assertEqual(output.count('request skipped: owner/repo#3'), 1, output)
             if own == 'quiet':
                 # the start's two writes were counted and their webhooks never came: the run's end drops
                 # them, so the re-request is served and starts a run again (#64 item 24)
@@ -588,6 +605,7 @@ class AdapterTests(unittest.TestCase):
     def test_gitea_adapter_serves_a_request_from_its_own_account(self): self.run_adapter(False, own='idle')
     def test_gitea_adapter_ends_its_own_counts_with_the_run(self): self.run_adapter(False, own='quiet')
     def test_github_adapter_serves_other_prs_past_a_failing_start(self): self.run_adapter(True, blocked=True)
+    def test_github_adapter_skips_a_pr_with_two_reviewer_labels(self): self.run_adapter(True, ambiguous=True)
 
     def run_restart(self, github, held=False, down=False, boundary=False, broken=False):
         """The receiver is killed while a review conversation runs and started again:
