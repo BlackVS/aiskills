@@ -24,8 +24,16 @@ content fixes inside existing skills. The current version is in `VERSION`.
   installer fails. A
   policy set by Group Policy cannot be lifted from a process: the script
   then stops before the installer with a message that names the policy
-  and its scope, and installs nothing. The `powershell -ExecutionPolicy Bypass -Command`
-  wrapper keeps working and is no longer needed in a PowerShell window.
+  and its scope, and installs nothing. The `powershell -ExecutionPolicy
+  Bypass -Command` wrapper keeps working and is no longer needed in a
+  PowerShell window.
+- **`forge-gates`: `wait-review` no longer takes a review for the
+  reviewer's failure.** It answered `reviewer_failed` when a trusted
+  comment naming the head contained the failure phrase (`could not run`)
+  anywhere in its text, so a local review that used the phrase in a
+  sentence ended the wait while the external review was still running. A
+  comment that carries a review header is now never a failure comment;
+  the reviewer's own failure comment ends the wait as before.
 
 ## [1.44.0] - 2026-11-18
 

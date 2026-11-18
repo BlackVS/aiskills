@@ -57,7 +57,9 @@ Run it in the background right after adding the request label.
   Its author must pass the same trust rules as in `gates`; an untrusted
   comment never ends the wait.
 - A failure comment of the reviewer (`--failure-pattern`, default
-  `could not run`) ends the wait only when its author is trusted, it names
+  `could not run`) ends the wait only when its author is trusted, it is
+  not itself a review (a comment with a review header, such as the local
+  review, may use the phrase in a sentence), it names
   the head or no SHA at all (the groups of a UUID, such as the conversation
   id a failure names, are no SHA), and it is newer than the latest time the request
   label (`--request-label`, default `review-this`, `review-this:<profile>`

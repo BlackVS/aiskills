@@ -426,6 +426,18 @@ class WaitContract(Gates):
         code, doc = self.wait("--timeout", "60")
         self.assertEqual((code, doc["outcome"], doc["correlation"]), (4, "timeout", "label"))
 
+    def test_a_review_that_uses_the_failure_phrase_is_no_failure(self):
+        # the implementer's own review, posted while the external one runs, may say "could not run" in a sentence
+        del self.comments[2]
+        self.comment(local_review().replace("Add the widget.", "Install where the installer could not run before."),
+                     minutes=-5)
+        code, doc = self.wait()
+        self.assertEqual((code, doc["outcome"]), (4, "timeout"), json.dumps(doc))
+        # the reviewer's real failure comment, later, still ends the wait
+        self.comment(f"⚠️ The external review could not run for {HEAD[:7]}.", minutes=-4)
+        code, doc = self.wait()
+        self.assertEqual((code, doc["outcome"]), (3, "reviewer_failed"), json.dumps(doc))
+
     def test_a_conversation_uuid_in_the_failure_is_no_head(self):
         # hands names the conversation; its first group, `e039be33`, is not a SHA of another head
         del self.comments[2]
