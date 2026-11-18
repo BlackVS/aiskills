@@ -10,6 +10,16 @@ prevents double-fires).
 A service restart is safe mid-run: each run is recorded on disk once its
 conversation exists, and the next start re-attaches a watcher to it.
 
+Gitea sends each webhook once. One that arrives while the receiver cannot
+reach Gitea (an outage of the network or of Gitea), or while the receiver is
+stopped, would leave its request label on the PR with nothing to act on it.
+So the receiver also sweeps the org every SWEEP_MINUTES, and once at start:
+an open PR that carries a request label and has no run starts as if its
+webhook had come. The sweep's outcome, a webhook that failed on a forge
+error, and a request that reached Gitea are written to
+forge-status-gitea.json, which the Auto Reviews page shows: an outage cannot
+be reported on the PR itself.
+
 Which model reviews is an OpenHands **agent profile** (Canvas
 `/api/agent-profiles`, each pinning its backend + model): REVIEW_PROFILE is
 the default, and a request label of the form "<L_REQUEST>:<profile>" (e.g.
@@ -37,7 +47,10 @@ have defaults for a typical `hands` host:
                     default review-this / hands-reviewing / hands-reviewed
   WATCH_MINUTES     review deadline, default 45
   REVIEW_RUNS_DIR   directory of review-runs-gitea.json, the in-flight runs a
-                    restart re-attaches to, default /opt/openhands/hooks
+                    restart re-attaches to, and of forge-status-gitea.json,
+                    default /opt/openhands/hooks
+  SWEEP_MINUTES     how often open PRs with a request label and no run are
+                    looked for, default 5; 0 turns the sweep off (webhooks only)
   PROMPT_FILE       conversation prompt template, default
                     /opt/openhands/hooks/review_prompt.txt
                     (placeholders: {repo} {num} {title!r} {marker} {profile}
@@ -53,7 +66,7 @@ import json
 import re
 from review_policy import requested_profiles
 from review_runner import recovered_head, next_page, patch_identity, retried
-from review_runner import Runner, RunStore
+from review_runner import ForgeStatus, Runner, RunStore, contact_error
 import os
 import threading
 import time
@@ -95,7 +108,11 @@ L_DONE = os.environ.get("LABEL_DONE", "hands-reviewed")
 WATCH_SECONDS = int(os.environ.get("WATCH_MINUTES", "45")) * 60
 MARKER = f"[{BOT_NAME} review]"
 PROMPT_FILE = os.environ.get("PROMPT_FILE", "/opt/openhands/hooks/review_prompt.txt")
-RUNS = RunStore(os.path.join(os.environ.get("REVIEW_RUNS_DIR", "/opt/openhands/hooks"), "review-runs-gitea.json"))
+RUNS_DIR = os.environ.get("REVIEW_RUNS_DIR", "/opt/openhands/hooks")
+RUNS = RunStore(os.path.join(RUNS_DIR, "review-runs-gitea.json"))
+SWEEP_SECONDS = float(os.environ.get("SWEEP_MINUTES", "5")) * 60
+# interval 0: without the sweep nothing contacts Gitea on a schedule, so a quiet file is no sign of a stop
+STATUS = ForgeStatus(RUNS_DIR, "gitea", SWEEP_SECONDS, log=print)
 
 in_flight = set()
 lock = threading.Lock()
@@ -349,6 +366,81 @@ def recover_stale(resumed=()):
         print(f"recover error: {e}", flush=True)
 
 
+def start_request(repo, num, title, swept=False):
+    """Start the review a request label asks for, from a webhook or, when SWEPT, from the sweep.
+    The payload or search result is a snapshot; Gitea redelivers webhooks, and a stale
+    redelivery once restarted a finished review. Trust only the live label state."""
+    requested = request_labels(labels_of(repo, num))
+    STATUS.ok()  # Gitea answered; with the sweep off, this is what ends a recorded failure
+    if not requested:
+        if not swept:
+            print(f"stale delivery ignored: {repo}#{num}", flush=True)
+        return
+    label, profile = requested[0]
+    key = (repo, num)
+    with lock:
+        if key in in_flight:
+            return
+        in_flight.add(key)
+    # A posted review held for the next start (#64 item 7) belongs to an older request: it goes
+    # before this request's labels change, so a restart in between cannot answer this request with it.
+    # The run state is never a reason to hold up a review: when it cannot be updated, say so and go on.
+    if not RUNS.clear(repo, num):
+        print(f"run state not updated for the new request: {repo}#{num} a held review may label it done after a restart", flush=True)
+    print(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}", flush=True)
+    # The label changes of this start, and of its report if it fails, are counted: their
+    # webhooks are the receiver's own and never carry a new request (#64 items 22 and 23).
+    # A run's own relabelling happens in its thread, where nothing is counted.
+    counting.on = True
+    try:
+        consumed = False  # how far the start got: the request labels are off
+        try:
+            # The new state label goes on before the old ones come off, so the PR is never seen
+            # with no hands label at all: a client reading in between took that for a lost
+            # request and asked again, and the same head was reviewed twice.
+            set_label(repo, num, L_WORKING, True)
+            for l, _ in requested:
+                set_label(repo, num, l, False)
+            consumed = True
+            set_label(repo, num, L_DONE, False)
+            threading.Thread(target=run_review,
+                             args=(repo, num, title, label, profile),
+                             daemon=True).start()
+        except Exception as e:
+            # No run started: release the PR, or every later request on it is ignored
+            # until a restart (#64 item 16). First take hands-reviewing off again: a write
+            # whose answer was lost may still have set it, and with no run behind it the
+            # next start would fail the PR as "restarted mid-run" (#64 item 17).
+            print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
+            # Say so on the PR (#64 item 18): fail_review takes hands-reviewing off and asks for
+            # the label again. Gitea sends a label webhook once, and only the sweep (when on) would
+            # retry this request: the note is posted whether or not the request label came off (#64
+            # item 21), and says when it is still there. A start from the sweep is the exception (below). When a stale hands-reviewing was on the PR, its
+            # removal sends one more label webhook that still lists the request label: own_change
+            # skips it, so the note is not posted twice (#64 item 22). The live labels decide, as
+            # far as they can be read: a removal whose answer was lost took it off all the same.
+            try:
+                consumed = not request_labels(labels_of(repo, num))
+            except Exception:
+                pass  # unreadable: how far the start got decides
+            reason = "the review could not start " + f"({type(e).__name__} {getattr(e, 'code', '')}".rstrip() + ")"
+            if not consumed:
+                reason += "; its request label is still on the pull request: remove it before adding it again"
+            try:
+                if swept and not consumed:
+                    # The sweep found the request and will find it again: like GitHub's poll, it
+                    # only cleans up, so a start that keeps failing never comments on every sweep.
+                    set_label(repo, num, L_WORKING, False)
+                else:
+                    fail_review(repo, num, reason)
+            except Exception as e:
+                print(f"failed start not cleaned up: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
+            with lock:
+                in_flight.discard(key)
+    finally:
+        counting.on = False
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -368,6 +460,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_event(json.loads(body))
         except Exception as e:
             print("hook error:", e, flush=True)
+            if isinstance(e, OSError):  # a forge error (urllib's errors are OSErrors): this webhook is lost
+                STATUS.failed(e)
 
     def handle_event(self, p):
         pr = p.get("pull_request")
@@ -381,72 +475,48 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not request_labels(l["name"] for l in pr.get("labels", [])):
             return
-        # The payload is a snapshot; Gitea redelivers webhooks, and a stale
-        # redelivery once restarted a finished review. Trust only the live
-        # label state.
-        requested = request_labels(labels_of(repo, num))
-        if not requested:
-            print(f"stale delivery ignored: {repo}#{num}", flush=True)
-            return
-        label, profile = requested[0]
-        key = (repo, num)
-        with lock:
-            if key in in_flight:
-                return
-            in_flight.add(key)
-        # A posted review held for the next start (#64 item 7) belongs to an older request: it goes
-        # before this request's labels change, so a restart in between cannot answer this request with it.
-        # The run state is never a reason to hold up a review: when it cannot be updated, say so and go on.
-        if not RUNS.clear(repo, num):
-            print(f"run state not updated for the new request: {repo}#{num} a held review may label it done after a restart", flush=True)
-        print(f"review trigger: {repo}#{num} via {label} -> profile {profile or 'primary'}", flush=True)
-        # The label changes of this start, and of its report if it fails, are counted: their
-        # webhooks are the receiver's own and never carry a new request (#64 items 22 and 23).
-        # A run's own relabelling happens in its thread, where nothing is counted.
-        counting.on = True
+        start_request(repo, num, pr.get("title", ""))
+
+
+def sweep():
+    """Start every open PR of the org that carries a request label and has no run: its webhook
+    was lost (it came during an outage, or while the receiver was stopped) or its start failed
+    with the label still on. The search is the sweep's contact with Gitea, and its outcome is
+    the status the Auto Reviews page shows."""
+    try:
+        found = api("/repos/issues/search?owner=" + ORG + "&type=pulls&state=open")
+    except Exception as e:
+        print(f"sweep error: {contact_error(e)}", flush=True)
+        STATUS.failed(e)
+        return
+    STATUS.ok()
+    for issue in found or []:
         try:
-            consumed = False  # how far the start got: the request labels are off
-            try:
-                # The new state label goes on before the old ones come off, so the PR is never seen
-                # with no hands label at all: a client reading in between took that for a lost
-                # request and asked again, and the same head was reviewed twice.
-                set_label(repo, num, L_WORKING, True)
-                for l, _ in requested:
-                    set_label(repo, num, l, False)
-                consumed = True
-                set_label(repo, num, L_DONE, False)
-                threading.Thread(target=run_review,
-                                 args=(repo, num, pr.get('title', ''), label, profile),
-                                 daemon=True).start()
-            except Exception as e:
-                # No run started: release the PR, or every later request on it is ignored
-                # until a restart (#64 item 16). First take hands-reviewing off again: a write
-                # whose answer was lost may still have set it, and with no run behind it the
-                # next start would fail the PR as "restarted mid-run" (#64 item 17).
-                print(f"review start failed: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
-                # Say so on the PR (#64 item 18): fail_review takes hands-reviewing off and asks for
-                # the label again. Gitea sends a label webhook once, so nothing retries this request
-                # on its own: the note is posted whether or not the request label came off (#64 item
-                # 21), and says when it is still there. When a stale hands-reviewing was on the PR, its
-                # removal sends one more label webhook that still lists the request label: own_change
-                # skips it, so the note is not posted twice (#64 item 22). The live labels decide, as
-                # far as they can be read: a removal whose answer was lost took it off all the same.
-                try:
-                    consumed = not request_labels(labels_of(repo, num))
-                except Exception:
-                    pass  # unreadable: how far the start got decides
-                reason = "the review could not start " + f"({type(e).__name__} {getattr(e, 'code', '')}".rstrip() + ")"
-                if not consumed:
-                    reason += "; its request label is still on the pull request: remove it before adding it again"
-                try:
-                    fail_review(repo, num, reason)
-                except Exception as e:
-                    print(f"failed start not cleaned up: {repo}#{num}: {type(e).__name__} {getattr(e, 'code', '')}".rstrip(), flush=True)
-                with lock:
-                    in_flight.discard(key)
-        finally:
-            counting.on = False
+            if not request_labels(l["name"] for l in issue.get("labels", [])):
+                continue
+        except ValueError:
+            continue  # two explicit reviewer labels: a person has to choose one; the other PRs go on
+        repo, num = issue["repository"]["full_name"], issue["number"]
+        with lock:
+            if (repo, num) in in_flight:
+                continue  # running, or being started by its webhook
+        print(f"request found by the sweep: {repo}#{num}", flush=True)
+        try:
+            start_request(repo, num, issue.get("title", ""), swept=True)
+        except Exception as e:  # its labels could not be read: the next sweep tries again
+            print(f"sweep start error: {repo}#{num}: {contact_error(e)}", flush=True)
+
+
+def sweep_forever():
+    while True:
+        try:
+            sweep()
+        except Exception as e:  # never let one bad answer end the sweeps
+            print(f"sweep error: {type(e).__name__}", flush=True)
+        time.sleep(SWEEP_SECONDS)
 
 
 recover_stale(resume_runs())
+if SWEEP_SECONDS > 0:
+    threading.Thread(target=sweep_forever, daemon=True).start()
 LocalHTTPServer(("127.0.0.1", int(os.environ.get("HOOK_PORT", "8081"))), Handler).serve_forever()

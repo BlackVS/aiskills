@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import review_policy
 from review_control import Handler
+from review_runner import ForgeStatus, contact_error
 from review_runner import Runner, RunStore, limit_error, limit_finish, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
 
 HEAD = 'a' * 40
@@ -440,6 +441,87 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught: urllib.request.urlopen(request)
             self.assertEqual(caught.exception.code, 409)
         finally: server.shutdown(); server.server_close(); thread.join()
+
+
+class ForgeStatusTests(unittest.TestCase):
+    """A receiver's last contact with its forge (ForgeStatus), and how the control API shows it."""
+
+    def test_contact_errors_are_short_fixed_text(self):
+        import socket, ssl
+        cases = [
+            (urllib.error.HTTPError('https://forge.example/x', 503, 'Service Unavailable', {}, None), 'HTTP 503'),
+            (urllib.error.URLError(socket.gaierror(-3, 'Temporary failure in name resolution')), 'Temporary failure in name resolution'),
+            (urllib.error.URLError(ConnectionRefusedError(111, 'Connection refused')), 'Connection refused'),
+            (urllib.error.URLError(TimeoutError('timed out')), 'TimeoutError'),
+            (urllib.error.URLError(ssl.SSLCertVerificationError(1, "hostname 'forge.example' mismatch")), 'SSLCertVerificationError'),
+            (urllib.error.URLError('unknown url type: forge.example'), 'URLError'),
+            (TimeoutError(), 'TimeoutError'),
+            (ValueError('https://forge.example/secret-path'), 'ValueError'),
+        ]
+        for error, text in cases:
+            self.assertEqual(contact_error(error), text, repr(error))
+
+    def test_an_outage_keeps_its_start_and_ends_with_a_log_line(self):
+        with tempfile.TemporaryDirectory() as temp:
+            now, lines = [1000.0], []
+            status = ForgeStatus(temp, 'gitea', 300, log=lines.append, clock=lambda: now[0])
+            read = lambda: json.loads((Path(temp) / 'forge-status-gitea.json').read_text())
+            status.ok()
+            self.assertEqual(read(), {'forge': 'gitea', 'ok': True, 'checked': 1000, 'since': None, 'error': None, 'interval': 300})
+            now[0] = 1300.0
+            status.failed(urllib.error.URLError(OSError(-3, 'Temporary failure in name resolution')))
+            now[0] = 1600.0
+            status.failed(urllib.error.HTTPError('https://forge.example', 502, 'Bad Gateway', {}, None))
+            self.assertEqual(read(), {'forge': 'gitea', 'ok': False, 'checked': 1600, 'since': 1300, 'error': 'HTTP 502', 'interval': 300})
+            self.assertEqual(lines, [])
+            now[0] = 1900.0
+            status.ok()
+            self.assertEqual(read(), {'forge': 'gitea', 'ok': True, 'checked': 1900, 'since': None, 'error': None, 'interval': 300})
+            self.assertEqual(lines, ['gitea reachable again (unreachable since 1970-01-01T00:21:40Z)'])
+            self.assertEqual(sorted(p.name for p in Path(temp).iterdir()), ['forge-status-gitea.json'])
+
+    def test_a_status_that_cannot_be_written_is_logged_once_and_never_raises(self):
+        with tempfile.TemporaryDirectory() as temp:
+            lines = []
+            status = ForgeStatus(Path(temp) / 'missing', 'github', 120, log=lines.append)
+            status.failed(OSError('down')); status.failed(OSError('down')); status.ok()
+            self.assertEqual(lines[0], 'forge status not saved: forge-status-github.json: FileNotFoundError')
+            self.assertEqual(len(lines), 2); self.assertTrue(lines[1].startswith('github reachable again'), lines)  # the journal still has it
+
+    def test_the_control_api_lists_each_forge_and_flags_a_quiet_receiver(self):
+        import review_control
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            write = lambda name, data: (root / f'forge-status-{name}.json').write_text(json.dumps(data))
+            write('github', {'forge': 'github', 'ok': False, 'checked': 9900, 'since': 9000, 'error': 'Temporary failure in name resolution', 'interval': 120})
+            write('gitea', {'forge': 'gitea', 'ok': True, 'checked': 8000, 'since': None, 'error': None, 'interval': 300})
+            write('webhooks', {'forge': 'webhooks', 'ok': True, 'checked': 1, 'since': None, 'error': None, 'interval': 0})
+            (root / 'forge-status-broken.json').write_text('{')
+            write('shape', {'ok': 'yes', 'checked': 1, 'interval': 0})
+            (root / 'review-runs-gitea.json').write_text('{}')  # not a status file
+            forges = {f['forge']: f for f in review_control.forge_status(root, now=10000)['forges']}
+            self.assertEqual(sorted(forges), ['broken', 'gitea', 'github', 'shape', 'webhooks'])
+            self.assertEqual((forges['github']['ok'], forges['github']['since'], forges['github']['stale']), (False, 9000, False))
+            self.assertTrue(forges['gitea']['stale'], 'no contact for more than three intervals and a minute')
+            later = {f['forge']: f for f in review_control.forge_status(root, now=8000 + 3 * 300 + 60)['forges']}
+            self.assertFalse(later['gitea']['stale'], 'three intervals and a minute is still in time')
+            self.assertFalse(forges['webhooks']['stale'], 'a receiver without a schedule is never stale')
+            for name in ('broken', 'shape'):
+                self.assertEqual((forges[name]['ok'], forges[name]['error']), (False, 'status file unreadable'))
+            with patch.dict(os.environ, {'REVIEW_RUNS_DIR': temp, 'LOCAL_BACKEND_API_KEY': 'test-key'}):
+                server = LocalHTTPServer(('127.0.0.1', 0), Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+                url = f'http://127.0.0.1:{server.server_port}/api/review-control/status'
+                try:
+                    with self.assertRaises(urllib.error.HTTPError) as caught: urllib.request.urlopen(url)
+                    self.assertEqual(caught.exception.code, 401)
+                    with urllib.request.urlopen(urllib.request.Request(url, headers={'X-Session-API-Key': 'test-key'})) as response:
+                        self.assertEqual(len(json.load(response)['forges']), 5)
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=b'{}',
+                            headers={'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}))
+                    self.assertEqual(caught.exception.code, 405)
+                finally: server.shutdown(); server.server_close(); thread.join()
 
 
 class RunnerTests(unittest.TestCase):

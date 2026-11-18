@@ -66,6 +66,35 @@ def log_unavailable(what, error):
     print(f'review-control: {what} unavailable: {failure_reason(error)}', file=sys.stderr, flush=True)
 
 
+def forge_status(directory=None, now=None):
+    """The receivers' last contact with their forges, from the forge-status-<forge>.json files
+    they write beside their run state (review_runner.ForgeStatus). A receiver that checks on a
+    schedule (`interval` > 0) and has not written for three intervals and a minute is `stale`:
+    it has stopped, or hangs. A file that cannot be read or has the wrong shape is listed as
+    unreadable rather than dropped, so a broken receiver never looks like a missing one."""
+    directory = Path(directory or os.environ.get('REVIEW_RUNS_DIR', '/opt/openhands/hooks'))
+    now = time.time() if now is None else now
+    forges = []
+    for path in sorted(directory.glob('forge-status-*.json')):
+        name = path.name[len('forge-status-'):-len('.json')]
+        try:
+            data = json.loads(path.read_text())
+            fields = {'ok': bool, 'checked': int, 'interval': int}
+            if not isinstance(data, dict) or any(type(data.get(k)) is not t for k, t in fields.items()):
+                raise ValueError('shape')
+            since, error = data.get('since'), data.get('error')
+            if not (since is None or type(since) is int) or not (error is None or isinstance(error, str)):
+                raise ValueError('shape')
+        except (OSError, ValueError):
+            forges.append({'forge': name, 'ok': False, 'checked': None, 'since': None,
+                           'error': 'status file unreadable', 'interval': 0, 'stale': False})
+            continue
+        stale = data['interval'] > 0 and now - data['checked'] > 3 * data['interval'] + 60
+        forges.append({'forge': name, 'ok': data['ok'], 'checked': data['checked'], 'since': since,
+                       'error': error[:200] if error else None, 'interval': data['interval'], 'stale': stale})
+    return {'forges': forges, 'now': int(now)}
+
+
 MAX_DRAIN = 64 << 10  # bytes of an unread request body read before the close
 DRAIN_SECONDS = 1.0   # at most this long: the server is single-threaded
 
@@ -164,10 +193,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlsplit(self.path)
-        if path.path not in ('/api/review-control/settings', '/api/review-control/providers', '/api/review-control/models'):
+        if path.path not in ('/api/review-control/settings', '/api/review-control/providers', '/api/review-control/models',
+                             '/api/review-control/status'):
             self.fail(404, 'Not found')
             return
         try:
+            if not write and path.path == '/api/review-control/status':
+                self.reply(200, forge_status())
+                return
             if not write and path.path == '/api/review-control/providers':
                 self.reply(200, discovery('inventory'))
                 return
