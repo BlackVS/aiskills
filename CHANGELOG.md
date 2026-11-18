@@ -9,6 +9,25 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+
+- hands: the Auto Reviews page shows how each account connection's login
+  stands, and a review that fails on it says so. An account login (Claude,
+  Codex) ends on its own, a Claude subscription login after about a
+  month, and until now the first sign was a failed review whose comment
+  said only that the conversation entered error state. The provider list
+  now has a line under each account connection: valid until when, ending
+  within a week (a warning), ended, missing, or stored but unreadable for
+  the server. The discovery helper reads it from the adapter's own login
+  file inside the Canvas container: whether the tokens are there and the
+  date the login ends, never a token's value. When a review's account
+  agent cannot authenticate, the failure comment names the profile and
+  the fix (log in to that account again on the hands host, then re-add
+  the label), and the journal logs `review account login failure`. The
+  runner recognizes it from the final run of error events, because the
+  terminal event of an ended login is a generic one. A hands site:
+  `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
+
 ### Changed
 
 - **The Windows one-liner is documented in its plain form, and a policy

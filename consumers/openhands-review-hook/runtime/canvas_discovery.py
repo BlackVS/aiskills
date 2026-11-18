@@ -5,6 +5,7 @@ import re
 import os
 import shutil
 import signal
+import time
 import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
@@ -281,6 +282,46 @@ def generated_origins():
     return origins
 
 
+def login_file(provider):
+    """Where an account adapter keeps its login, in this server's environment."""
+    if provider == 'claude-code':
+        return Path(os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')) / '.credentials.json'
+    return Path(os.environ.get('CODEX_HOME') or os.path.expanduser('~/.codex')) / 'auth.json'
+
+
+def account_login(provider, now=None):
+    """The state of an account adapter's login, as {'state', 'expires'}: `present`, `ended`
+    (cleared, or past its end), `missing` (no login stored) or `unreadable` (the file is
+    there and this server cannot read or parse it). `expires` is when the login ends, in
+    seconds since the epoch, or None where the file records no end (Codex records none).
+
+    A login ends on its own: a Claude subscription login lasts about a month, and reviews on
+    that account fail from then on. Only presence and dates are read. A token contributes one
+    fact, whether it is there; its value is never copied, returned or logged."""
+    try:
+        data = json.loads(login_file(provider).read_text())
+    except FileNotFoundError:
+        return {'state': 'missing', 'expires': None}
+    except (OSError, ValueError):
+        return {'state': 'unreadable', 'expires': None}
+    if not isinstance(data, dict):
+        return {'state': 'unreadable', 'expires': None}
+    expires = None
+    if provider == 'claude-code':
+        oauth = data.get('claudeAiOauth')
+        if not isinstance(oauth, dict):
+            return {'state': 'missing', 'expires': None}
+        present = bool(oauth.get('accessToken')) and bool(oauth.get('refreshToken'))
+        ends = oauth.get('refreshTokenExpiresAt')  # milliseconds
+        if isinstance(ends, (int, float)) and not isinstance(ends, bool) and ends > 0:
+            expires = ends / 1000
+        ended = not present or bool(oauth.get('loginEnded')) or (expires is not None and expires <= (time.time() if now is None else now))
+        return {'state': 'ended' if ended else 'present', 'expires': expires}
+    tokens = data.get('tokens')
+    present = isinstance(tokens, dict) and bool(tokens.get('refresh_token')) or bool(data.get('OPENAI_API_KEY'))
+    return {'state': 'present' if present else 'missing', 'expires': None}
+
+
 def inventory():
     """Provider rows for the app. The app treats `id` as opaque: a row it may edit says so with
     `editable` and carries the Canvas connection's own id in `connection_id`, so the id's
@@ -297,7 +338,7 @@ def inventory():
     for provider, binary, label in [('claude-code', 'claude-agent-acp', 'Claude'), ('codex', 'codex-acp', 'Codex')]:
         if shutil.which(binary):
             providers.append({'id': 'acp:' + provider, 'name': label,
-                'kind': 'subscription', 'editable': False})
+                'kind': 'subscription', 'editable': False, 'login': account_login(provider)})
     for row in providers:
         row['efforts'] = effort_options(row['id'])
         row['switchable'] = row['kind'] == 'api'  # switch_llm exists only for LLM-profile agents

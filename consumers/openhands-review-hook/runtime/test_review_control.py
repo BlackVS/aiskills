@@ -15,7 +15,7 @@ from unittest.mock import patch
 import review_policy
 from review_control import Handler
 from review_runner import ForgeStatus, contact_error
-from review_runner import Runner, RunStore, limit_error, limit_finish, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
+from review_runner import Runner, RunStore, limit_error, login_error, limit_finish, valid_review, config_error, recovered_head, switched, next_page, abbreviated_review, NOTE_SETTLE
 
 HEAD = 'a' * 40
 QUOTA = {'items': [{'kind': 'ConversationErrorEvent', 'code': 'ACPPromptError',
@@ -1628,6 +1628,40 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(config_error(by_time), 'LLMBadRequestError')
         starts, labels, failures = self.execute(quota=False, error_events=stale)
         self.assertEqual(len(starts), 1); self.assertIn('entered error state', failures[-1][2]); self.assertNotIn('rejected', failures[-1][2])
+
+    def test_an_account_login_failure_names_the_login_and_the_fix(self):
+        error = lambda code, detail, kind, stamp=None: dict({'kind': 'ConversationErrorEvent', 'code': code, 'detail': detail,
+                                                              'classification': {'kind': kind}}, **({'timestamp': stamp} if stamp else {}))
+        # an ended login, as agent-canvas 1.41.0 reports it: the cause, then a generic terminal error
+        ended = {'items': [error('RequestError', 'Internal error', 'transient', '2026-11-18T17:58:34'),
+                           error('ACPInitError', '[-32603] Internal error: Unable to validate model: OAuth refresh token is no longer valid; run /login to re-authenticate', 'config', '2026-11-18T17:58:33'),
+                           {'kind': 'ConversationStateUpdateEvent', 'timestamp': '2026-11-18T17:58:33'}, {'kind': 'MessageEvent', 'timestamp': '2026-11-18T17:58:30'}]}
+        # login files the server cannot read, and a session that expired during a prompt
+        unreadable = {'items': [error('ACPAuthRequired', '[-32000] Authentication required', 'auth')]}
+        expired = {'items': [error('ACPPromptError', 'ACP error: [-32603] Internal error: Failed to authenticate: OAuth session expired and could not be refreshed: {"errorKind": "authentication_failed"}', 'unknown')]}
+        for events in (ended, unreadable, expired):
+            self.assertTrue(login_error(events), events)
+            self.assertFalse(limit_error(events))
+        # not a login failure: an API provider's rejected key, a quota, another ACP error, and an ACP auth error the conversation got past
+        self.assertFalse(login_error({'items': [error('LLMAuthenticationError', 'OAuth authentication is not supported', 'auth')]}))
+        self.assertFalse(login_error(QUOTA))
+        self.assertFalse(login_error({'items': [error('ACPPromptError', 'the adapter stopped', 'unknown')]}))
+        self.assertFalse(login_error({'items': [error('ACPPromptError', 'MCP server "tracker" needs OAuth authorization', 'unknown')]}))
+        recovered = {'items': [error('OtherError', 'x', 'unknown', '2026-11-18T10:00:03'), {'kind': 'ActionEvent', 'timestamp': '2026-11-18T10:00:02'},
+                               error('ACPAuthRequired', '[-32000] Authentication required', 'auth', '2026-11-18T10:00:01')]}
+        self.assertFalse(login_error(recovered))
+        self.assertFalse(login_error({'items': []})); self.assertFalse(login_error({}))
+        for events in (ended, unreadable, expired):
+            starts, labels, failures = self.execute(quota=False, error_events=events)
+            self.assertEqual(len(starts), 1); self.assertFalse(labels)  # an account that cannot log in gets no quota fallback
+            said = failures[-1][2]
+            self.assertIn('the account agent of profile `codex-astra` could not authenticate', said)
+            self.assertIn('log in to that account again', said); self.assertIn('re-add the label', said); self.assertIn('no fallback applies', said)
+            # the agent's own text never reaches the PR, and it is not taken for a rejected configuration
+            for foreign in ('OAuth', 'Internal error', '32603', '32000', 'rejected the request', 'entered error state'):
+                self.assertNotIn(foreign, said)
+        starts, labels, failures = self.execute(quota=False, error_events=recovered)
+        self.assertIn('entered error state', failures[-1][2])
 
     def test_next_page_reads_the_link_header(self):
         github = ('<https://api.github.com/repositories/1/issues/2/comments?since=2015-01-01T00%3A00%3A00Z&page=2>; rel="next", '

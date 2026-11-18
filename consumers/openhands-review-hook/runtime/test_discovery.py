@@ -230,8 +230,11 @@ class DiscoveryTests(unittest.TestCase):
         profiles = SimpleNamespace(list_summaries=lambda: [{'name': 'legacy', 'api_key_set': True, 'base_url': 'https://legacy.example'}])
         with patch('canvas_discovery.stores', return_value=(object(), connections, profiles)), \
              patch('canvas_discovery.generated_origins', return_value={}), patch('canvas_discovery.selections', return_value={}), \
-             patch('canvas_discovery.shutil.which', side_effect=lambda binary: '/usr/bin/' + binary if binary == 'codex-acp' else None):
+             patch('canvas_discovery.shutil.which', side_effect=lambda binary: '/usr/bin/' + binary if binary == 'codex-acp' else None), \
+             patch('canvas_discovery.account_login', side_effect=lambda provider: {'state': 'present', 'expires': None, 'of': provider}):
             rows = {row['id']: row for row in inventory()['providers']}
+        self.assertEqual(rows['acp:codex']['login'], {'state': 'present', 'expires': None, 'of': 'codex'})  # an account row says how its login stands
+        self.assertFalse(any('login' in rows[other] for other in ('connection:c-1', 'profile:legacy')), 'an API provider has no login')
         self.assertEqual(set(rows), {'connection:c-1', 'profile:legacy', 'acp:codex'})
         self.assertEqual((rows['connection:c-1']['editable'], rows['connection:c-1']['connection_id']), (True, 'c-1'))
         for other in ('profile:legacy', 'acp:codex'):
@@ -239,6 +242,67 @@ class DiscoveryTests(unittest.TestCase):
             self.assertNotIn('connection_id', rows[other])
         self.assertFalse(any('configured' in row for row in rows.values()), 'the unread flag is gone')
         self.assertEqual(decrypted, [], 'listing providers decrypts no key')
+
+    def test_account_login_reads_presence_and_dates_and_never_a_token(self):
+        from types import SimpleNamespace
+        from canvas_discovery import account_login, inventory
+        ACCESS, REFRESH, CODEX = 'access-token-SENTINEL-a1', 'refresh-token-SENTINEL-b2', 'codex-token-SENTINEL-c3'
+        now, month = 1_800_000_000, 30 * 86400
+        with tempfile.TemporaryDirectory() as tmp:
+            claude, codex = Path(tmp, 'claude'), Path(tmp, 'codex')
+            claude.mkdir(); codex.mkdir()
+            def stored(oauth):
+                (claude / '.credentials.json').write_text(json.dumps({'claudeAiOauth': oauth}))
+            with patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(claude), 'CODEX_HOME': str(codex)}):
+                # no login stored
+                self.assertEqual(account_login('claude-code', now), {'state': 'missing', 'expires': None})
+                self.assertEqual(account_login('codex', now), {'state': 'missing', 'expires': None})
+                # present, with the end the file records (milliseconds there, seconds here)
+                stored({'accessToken': ACCESS, 'refreshToken': REFRESH, 'expiresAt': (now + 3600) * 1000,
+                        'refreshTokenExpiresAt': (now + month) * 1000, 'subscriptionType': 'max'})
+                self.assertEqual(account_login('claude-code', now), {'state': 'present', 'expires': now + month})
+                # near its end it is still present: the page warns from the date
+                self.assertEqual(account_login('claude-code', now + month - 86400), {'state': 'present', 'expires': now + month})
+                # past its end
+                self.assertEqual(account_login('claude-code', now + month), {'state': 'ended', 'expires': now + month})
+                # cleared by a refresh that failed: empty tokens and a mark, the date kept (observed 2026-11-18)
+                stored({'accessToken': '', 'refreshToken': '', 'expiresAt': 0, 'refreshTokenExpiresAt': (now - 86400) * 1000, 'loginEnded': 'time_limit'})
+                self.assertEqual(account_login('claude-code', now), {'state': 'ended', 'expires': now - 86400})
+                stored({'accessToken': ACCESS, 'refreshToken': '', 'refreshTokenExpiresAt': (now + month) * 1000})
+                self.assertEqual(account_login('claude-code', now)['state'], 'ended', 'a login without its refresh token cannot go on')
+                stored({'accessToken': ACCESS, 'refreshToken': REFRESH})
+                self.assertEqual(account_login('claude-code', now), {'state': 'present', 'expires': None}, 'no date recorded')
+                stored({'accessToken': ACCESS, 'refreshToken': REFRESH, 'refreshTokenExpiresAt': True})
+                self.assertEqual(account_login('claude-code', now), {'state': 'present', 'expires': None}, 'a date that is no number is no date')
+                # a file with no login in it, and files that cannot be read or parsed
+                (claude / '.credentials.json').write_text('{}')
+                self.assertEqual(account_login('claude-code', now), {'state': 'missing', 'expires': None})
+                for broken in ('not json', '[1]'):
+                    (claude / '.credentials.json').write_text(broken)
+                    self.assertEqual(account_login('claude-code', now), {'state': 'unreadable', 'expires': None})
+                (claude / '.credentials.json').unlink(); (claude / '.credentials.json').mkdir()  # reading it raises an OSError, as a file of another owner does
+                self.assertEqual(account_login('claude-code', now), {'state': 'unreadable', 'expires': None})
+                (claude / '.credentials.json').rmdir()
+                # Codex records no end: presence only
+                (codex / 'auth.json').write_text(json.dumps({'auth_mode': 'chatgpt', 'OPENAI_API_KEY': None,
+                    'tokens': {'id_token': CODEX, 'access_token': CODEX, 'refresh_token': CODEX, 'account_id': 'a'}, 'last_refresh': '2026-11-01T00:00:00Z'}))
+                self.assertEqual(account_login('codex', now), {'state': 'present', 'expires': None})
+                (codex / 'auth.json').write_text(json.dumps({'tokens': {'refresh_token': ''}}))
+                self.assertEqual(account_login('codex', now), {'state': 'missing', 'expires': None})
+                # what leaves the helper: the inventory document holds no token value
+                stored({'accessToken': ACCESS, 'refreshToken': REFRESH, 'refreshTokenExpiresAt': (now + month) * 1000})
+                (codex / 'auth.json').write_text(json.dumps({'tokens': {'access_token': CODEX, 'refresh_token': CODEX}}))
+                empty = SimpleNamespace(list=lambda cipher=None: [], list_summaries=lambda: [])
+                with patch('canvas_discovery.stores', return_value=(object(), empty, empty)), \
+                     patch('canvas_discovery.generated_origins', return_value={}), patch('canvas_discovery.selections', return_value={}), \
+                     patch('canvas_discovery.shutil.which', side_effect=lambda binary: '/usr/bin/' + binary), \
+                     patch('canvas_discovery.time.time', return_value=now):
+                    document = inventory()
+        logins = {row['id']: row['login'] for row in document['providers']}
+        self.assertEqual(logins, {'acp:claude-code': {'state': 'present', 'expires': now + month}, 'acp:codex': {'state': 'present', 'expires': None}})
+        printed = json.dumps(document)
+        for secret in (ACCESS, REFRESH, CODEX, 'SENTINEL'):
+            self.assertNotIn(secret, printed)
 
     @unittest.skipIf(os.name == 'nt', 'the stand-in ACP binary is a POSIX shell script')
     def test_acp_discovery_child_never_receives_the_cipher_key(self):
