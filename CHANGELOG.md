@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Windows one-liner is documented in its plain form, and a policy
+  it cannot lift names the ways out.** `README.md` and the header of
+  `boot.ps1` show `irm .../boot.ps1 | iex` first, for a PowerShell
+  window, and give the `powershell -ExecutionPolicy Bypass -Command`
+  wrapper for `cmd.exe` and scripts. Where the execution policy cannot be
+  lifted for the process, the error now also says when the scope is set
+  by Group Policy and names two ways out: a policy that runs local script
+  files (`RemoteSigned` is enough), or the bash one-liner in Git Bash,
+  which runs no PowerShell script.
+
 ## [1.44.1] - 2026-11-18
 
 Two fixes. The PowerShell one-liner installs on a Windows machine with

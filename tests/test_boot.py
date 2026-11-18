@@ -787,6 +787,10 @@ class PowerShellBootExecutionPolicy(BootContract, unittest.TestCase):
                 r = self.run_piped(shell, before=self.GROUP_POLICY)
                 self.assertIn("failure=[ERROR: the execution policy (Restricted, scope MachinePolicy) does not let PowerShell run the installer", r.stdout, r.stdout + r.stderr)
                 self.assertIn("nothing was installed", r.stdout)
+                # the message says who sets the policy and names both ways out
+                self.assertIn("set by Group Policy", r.stdout)
+                self.assertIn("RemoteSigned is enough", r.stdout)
+                self.assertIn("the bash one-liner in Git Bash", r.stdout)
                 self.assertFalse((self.home / ".claude").exists(), "something was installed")
                 self.assertIn("after: process=[Restricted]", r.stdout)
 
