@@ -9,6 +9,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.44.1] - 2026-11-18
+
+Two fixes. The PowerShell one-liner installs on a Windows machine with
+the default execution policy (#138), and `forge-gates`' `wait-review` no
+longer reports the external reviewer as failed because a review used the
+failure phrase (#139). Update to get the second; the first is in
+`boot.ps1`, which the one-liner always reads from `main`. A hands site
+has nothing to do.
+
 ### Fixed
 
 - **`irm .../boot.ps1 | iex` installs under the default execution
@@ -21,12 +30,11 @@ content fixes inside existing skills. The current version is in `VERSION`.
   process while the installer runs (through the process scope's
   environment variable, `PSExecutionPolicyPreference`), says so in one
   line, and puts the caller's setting back afterwards, also when the
-  installer fails. A
-  policy set by Group Policy cannot be lifted from a process: the script
-  then stops before the installer with a message that names the policy
-  and its scope, and installs nothing. The `powershell -ExecutionPolicy
-  Bypass -Command` wrapper keeps working and is no longer needed in a
-  PowerShell window.
+  installer fails. A policy set by Group Policy cannot be lifted from a
+  process: the script then stops before the installer with a message
+  that names the policy and its scope, and installs nothing. The
+  `powershell -ExecutionPolicy Bypass -Command` wrapper keeps working and
+  is no longer needed in a PowerShell window.
 - **`forge-gates`: `wait-review` no longer takes a review for the
   reviewer's failure.** It answered `reviewer_failed` when a trusted
   comment naming the head contained the failure phrase (`could not run`)
