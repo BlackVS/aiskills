@@ -110,6 +110,33 @@ def limit_error(events):
     return False
 
 
+# What an account agent's error says when its login ended, was cleared or cannot be read.
+LOGIN_TEXT = re.compile(r'authentication required|authentication_failed|failed to authenticate|re-authenticate|oauth (?:refresh )?token|oauth session', re.I)
+# Events that show the conversation got past an error: an error before one of them was recovered from.
+PROGRESS = frozenset({'MessageEvent', 'ActionEvent', 'ObservationEvent'})
+
+
+def login_error(events):
+    """The account agent could not authenticate: its login has ended or been cleared, or its
+    login files cannot be read. The server reports that under an ACP error code: as
+    ACPAuthRequired, as an error classified `auth`, or only in the error's text. The
+    terminal event may be a generic one that follows it (observed on agent-canvas 1.41.0:
+    ACPInitError naming the OAuth token, then RequestError "Internal error"), so every error
+    of the final run of errors counts, back to the newest event that shows progress. An API
+    provider's rejected key is not this: its codes are not ACP codes. Only server error
+    events are inspected, never model output or repository text."""
+    for event in newest_first(events):
+        kind = event.get('kind')
+        if kind in PROGRESS:
+            return False
+        if kind != 'ConversationErrorEvent' or not str(event.get('code') or '').startswith('ACP'):
+            continue
+        if (event.get('code') == 'ACPAuthRequired' or (event.get('classification') or {}).get('kind') == 'auth'
+                or LOGIN_TEXT.search(event.get('detail') or '')):
+            return True
+    return False
+
+
 # The runner's note that the fallback wrote a review, after `the review of <head> `.
 FALLBACK_NOTE = 'above ran on the fallback profile'
 
@@ -859,8 +886,13 @@ class Runner:
                         reading, initial_model = None, reading_model
                     self.log(f'review quota/rate-limit fallback: {repo}#{num} {profile} -> {choices[attempt + 1]}')
                     break
-                rejected = None if limited else config_error(events)
+                login = not limited and login_error(events)
+                if login:
+                    self.log(f'review account login failure: {repo}#{num} profile={start} conversation={conv_id}')
+                rejected = None if limited or login else config_error(events)
                 reason = ('quota or rate limit reached' if limited
+                          else f'the account agent of profile `{start}` could not authenticate: its login on the hands host '
+                               'has ended or cannot be read; log in to that account again there, then re-add the label' if login
                           else f'the model rejected the request as configured (code {rejected}); check the profile model and effort in Auto Reviews, effort support is model-specific' if rejected
                           else 'the review conversation entered error state')
                 suffix = '; the single fallback also failed' if attempt else '; no fallback applies'

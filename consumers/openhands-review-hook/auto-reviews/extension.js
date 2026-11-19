@@ -68,6 +68,8 @@ export function activate(host) {
       .auto-reviews [data-elapsed] {margin-left:auto;white-space:nowrap;font-size:13px}
       .auto-reviews [data-forges] {margin:12px 0;font-size:14px}
       .auto-reviews [data-forges]>li[data-problem] {font-weight:600}
+      .auto-reviews [data-login] {margin:4px 0;font-size:14px}
+      .auto-reviews [data-login][data-problem] {font-weight:600}
       @keyframes auto-reviews-spin {to {transform:rotate(360deg)}}
       @media (prefers-reduced-motion:reduce) {.auto-reviews[data-busy=true] [data-spinner] {animation:none}}
     </style><h1>Auto Reviews</h1>
@@ -337,6 +339,26 @@ export function activate(host) {
     };
     // One provider row. Each button carries an explicit action key; the handler dispatches on the
     // key, never on the caption, so a reworded caption cannot change what a button does.
+    // An account connection's login, as the server read it: its state and when it ends, never a
+    // token. A login ends on its own date and reviews on that account fail from then on, so the
+    // row warns a week ahead. A server that reports no login, or a state unknown here, shows no line.
+    const LOGIN_WARN_DAYS = 7;
+    function loginLine(login) {
+      const again = 'Log in to this account again on the hands host';
+      const left = login.expires == null ? null : Math.floor((login.expires - Date.now() / 1000) / 86400);
+      let text, problem = true;
+      if (login.state === 'missing') text = `No login found. ${again}; reviews on this account fail until then.`;
+      else if (login.state === 'unreadable') text = 'The login is stored, but the server cannot read it: check the owner and the mode of its file on the hands host. Reviews on this account fail until it can.';
+      else if (login.state === 'ended' || (login.state === 'present' && left != null && left < 0))
+        text = `Login ended${left != null && left < 0 ? ' on ' + when(login.expires) : ''}. ${again}; reviews on this account fail until then.`;  // a cleared login may still carry a later date
+      else if (login.state !== 'present') return null;
+      else if (left != null && left < LOGIN_WARN_DAYS) text = `Login ends in ${left ? left + (left === 1 ? ' day' : ' days') : 'less than a day'}, on ${when(login.expires)}. ${again} before then, or its reviews will fail.`;
+      else { problem = false; text = left == null ? 'Login present.' : `Login valid until ${when(login.expires)} (${left} days).`; }
+      const line = document.createElement('div');
+      line.dataset.login = login.state; line.textContent = text;
+      if (problem) { line.dataset.problem = ''; line.setAttribute('role', 'alert'); }
+      return line;
+    }
     function providerRow(p) {
       const item = document.createElement('li');
       const title = document.createElement('div');
@@ -350,7 +372,8 @@ export function activate(host) {
         button.onclick = () => rowAction(action, p, result);
         return button;
       });
-      item.append(title, ...buttons, result);
+      const login = p.login && typeof p.login === 'object' ? loginLine(p.login) : null;
+      item.append(title, ...(login ? [login] : []), ...buttons, result);
       return item;
     }
     async function rowAction(action, p, result) {

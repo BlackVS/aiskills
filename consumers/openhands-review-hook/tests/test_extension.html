@@ -231,6 +231,41 @@ try {
   forgeRows = [...forgeList().children];
   check(forgeRows.length === 1 && forgeRows[0].textContent === 'Gitea: status file unreadable.' && 'problem' in forgeRows[0].dataset, 'An unreadable status file is shown as such: ' + forgeRows[0].textContent);
   forgeStatus = null;
-  document.querySelector('#result').textContent='PASS: forge contact lines (failing, quiet, reachable, unreadable, none without the endpoint), restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  // an account connection's login: state and end time from the server, a warning a week ahead
+  const claude = providers.find(p => p.id === 'acp:claude-code'), codex = providers.find(p => p.id === 'acp:codex');
+  const loginOf = name => [...document.querySelectorAll('[data-providers]>li')].find(li => li.firstChild.textContent.startsWith(name + ' ')).querySelector('[data-login]');
+  const showLogin = async (login, codexLogin) => { if (login === undefined) delete claude.login; else claude.login = login; if (codexLogin === undefined) delete codex.login; else codex.login = codexLogin; document.querySelector('[data-reload]').click(); await settle(); return loginOf('Claude'); };
+  const inDays = days => Date.now() / 1000 + days * 86400 + 3600;
+  check(!document.querySelector('[data-login]'), 'A server that reports no login shows no login line');
+  let line = await showLogin({state:'present', expires: inDays(28)}, {state:'present', expires: null});
+  check(line.textContent.startsWith('Login valid until ') && line.textContent.endsWith('(28 days).') && !('problem' in line.dataset), 'A login with weeks left is a plain line: ' + line.textContent);
+  check(loginOf('Codex').textContent === 'Login present.' && !('problem' in loginOf('Codex').dataset), 'A login without an end date says only that it is there');
+  line = await showLogin({state:'present', expires: inDays(3)});
+  check(line.textContent.startsWith('Login ends in 3 days, on ') && line.textContent.includes('Log in to this account again on the hands host before then') && 'problem' in line.dataset && line.getAttribute('role') === 'alert', 'A login in its last week warns: ' + line.textContent);
+  check(!loginOf('Codex'), 'A row without a login has no line');
+  line = await showLogin({state:'present', expires: inDays(6)});
+  check(line.textContent.startsWith('Login ends in 6 days, on ') && 'problem' in line.dataset, 'Six days left warns: ' + line.textContent);
+  line = await showLogin({state:'present', expires: inDays(7)});
+  check(line.textContent.endsWith('(7 days).') && !('problem' in line.dataset), 'Seven days left does not warn yet: ' + line.textContent);
+  line = await showLogin({state:'present', expires: inDays(1)});
+  check(line.textContent.startsWith('Login ends in 1 day, on '), 'One day is singular: ' + line.textContent);
+  line = await showLogin({state:'ended', expires: inDays(-5)});
+  check(line.textContent.startsWith('Login ended on ') && line.textContent.includes('reviews on this account fail until then') && 'problem' in line.dataset, 'An ended login says so and what to do: ' + line.textContent);
+  line = await showLogin({state:'present', expires: inDays(0)});
+  check(line.textContent.startsWith('Login ends in less than a day, on ') && 'problem' in line.dataset, 'The last day: ' + line.textContent);
+  line = await showLogin({state:'ended', expires: inDays(20)});
+  check(line.textContent.startsWith('Login ended. Log in to this account again'), 'A cleared login does not name a date that has not come: ' + line.textContent);
+  line = await showLogin({state:'ended', expires: null});
+  check(line.textContent.startsWith('Login ended. Log in to this account again'), 'A cleared login without a date: ' + line.textContent);
+  line = await showLogin({state:'present', expires: inDays(-1)});
+  check(line.textContent.startsWith('Login ended on '), 'A date that passed since the server read it counts as ended: ' + line.textContent);
+  line = await showLogin({state:'missing', expires: null});
+  check(line.textContent.startsWith('No login found.') && 'problem' in line.dataset, 'A missing login warns: ' + line.textContent);
+  line = await showLogin({state:'unreadable', expires: null});
+  check(line.textContent.includes('cannot read it') && line.textContent.includes('owner') && 'problem' in line.dataset, 'An unreadable login names the file ownership: ' + line.textContent);
+  check(!(await showLogin({state:'<b>new</b>', expires: null})), 'A state this page does not know shows no line');
+  check(!(await showLogin('present')), 'A login that is not an object shows no line');
+  await showLogin(undefined);
+  document.querySelector('#result').textContent='PASS: account login lines (valid, ending soon, ended, cleared, missing, unreadable, none from an older server), forge contact lines (failing, quiet, reachable, unreadable, none without the endpoint), restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>

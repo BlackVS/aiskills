@@ -169,6 +169,29 @@ with a message giving the count and how many of those profiles Auto Reviews
 generated (`review-...`); delete the ones no longer selected in Canvas and save
 again. A selection that matches an existing profile still saves. Profiles created from shared connections reference those connections; variants of existing inline-key profiles stay in Canvas's LLM profile store.
 
+### Account logins
+
+An account connection (Claude, Codex) works on a login stored on the hands
+host, and such a login ends on its own: a Claude subscription login lasts
+about a month. From that moment every review on that account fails, so the
+page shows how each account connection's login stands, under its name in
+the provider list: valid until when, ending within a week (a warning),
+ended, missing, or stored but unreadable for the server (for example a
+login made as another user, whose files the Canvas user cannot read). The
+discovery helper reads this inside the Canvas container from the adapter's
+own login file (`.credentials.json` in the Claude configuration directory,
+`auth.json` in the Codex one). It reads whether the tokens are there and the
+date the login ends, and returns the state and that date only; no token
+value is copied, returned or logged. Codex records no end date, so its line
+says only whether a login is present.
+
+When a review fails because its account agent could not authenticate, the
+failure comment on the pull request says so and names the fix: log in to
+that account again on the hands host, then re-add the label. The journal
+logs `review account login failure` with the profile and the conversation.
+The agent's own error text is not quoted. No fallback starts for it: the
+fallback is for a quota or rate limit.
+
 ### Forge reachability
 
 A receiver that cannot reach its forge cannot say so on a pull request, so
@@ -387,7 +410,7 @@ Customize > Apps. Neither operation requires a Canvas container restart.
 The browser fixture in `tests/test_extension.html` exercises the actual
 extension module with fake APIs. Open it with a local static file server, or
 headless Chrome with file-module access enabled. A successful run displays
-`PASS` for the forge contact lines, selection restore, provider changes, save, provider creation
+`PASS` for the account login lines, the forge contact lines, selection restore, provider changes, save, provider creation
 (and the request that tests it), provider edits (the connection they update,
 and leaving edit mode), a token of spaces refused, credential clearing, HTML escaping, failure handling,
 reload, Test connection refreshing the model list, connection-test errors
