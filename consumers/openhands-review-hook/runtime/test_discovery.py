@@ -47,6 +47,30 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(session_models({'models': {'availableModels': [{'modelId': 'three', 'name': 'Three'}]}}),
             [{'id': 'three', 'label': 'Three'}])
         with self.assertRaises(ValueError): session_models({})
+        # an adapter that also lists each model at each of its efforts says which efforts a model takes
+        both = session_models({'configOptions': [{'id': 'model', 'options': [{'value': 'one', 'name': 'One'}, {'value': 'two', 'name': 'Two'}]},
+                                                 {'id': 'reasoning_effort', 'options': [{'value': 'low'}, {'value': 'ultra'}]}],
+                               'models': {'availableModels': [{'modelId': 'one[low]'}, {'modelId': 'one[ultra]'}, {'modelId': 'one[ultra]'},
+                                                              {'modelId': 'other[low]'}, {'modelId': 'two'}, {'modelId': 'two[1m]'}, {'modelId': 5}, {}, 'two[low]', None]}})
+        self.assertEqual(both, [{'id': 'one', 'label': 'One', 'efforts': ['low', 'ultra']}, {'id': 'two', 'label': 'Two'}])
+        for odd in (None, [], 'x', True, {'availableModels': None}, {'availableModels': True}, {'availableModels': {'modelId': 'one[low]'}}):  # a list that is not the expected shape changes nothing
+            self.assertEqual(session_models({'configOptions': [{'id': 'model', 'options': [{'value': 'one', 'name': 'One'}]}], 'models': odd}),
+                             [{'id': 'one', 'label': 'One'}])
+
+    def test_discovery_gives_each_account_model_the_efforts_the_app_can_save(self):
+        import canvas_discovery
+        async def advertised(binary):
+            return [{'id': 'wide', 'label': 'Wide', 'efforts': ['ultra', 'hyper', 'low', 'max']}, {'id': 'none', 'label': 'None', 'efforts': []},
+                    {'id': 'plain', 'label': 'Plain'}]
+        rows = {'providers': [{'id': 'acp:codex'}, {'id': 'acp:claude-code'}]}
+        with patch('canvas_discovery.inventory', return_value=rows), patch('canvas_discovery.shutil.which', return_value='/usr/bin/adapter'), \
+             patch('canvas_discovery.acp_models', side_effect=advertised):
+            codex = canvas_discovery.discover('acp:codex')['models']
+            claude = canvas_discovery.discover('acp:claude-code')['models']
+        # the app's own order, only what it can save; a model with no list stays without one
+        self.assertEqual(codex, [{'id': 'wide', 'label': 'Wide', 'efforts': ['low', 'max', 'ultra']}, {'id': 'none', 'label': 'None', 'efforts': []},
+                                 {'id': 'plain', 'label': 'Plain'}])
+        self.assertTrue(all('efforts' not in row for row in claude), 'a provider without an effort choice gets no per-model list')
 
     def test_provider_discovery_and_redirect_does_not_forward_key(self):
         received = []
@@ -186,6 +210,11 @@ class DiscoveryTests(unittest.TestCase):
                                          acp_command='claude-agent-acp'),
             'builtin.json': SimpleNamespace(name='builtin', agent_kind='acp', acp_server='codex', acp_model='gpt-6-astra/high',
                                             acp_command=None),
+            # a profile's own effort field, set in the Canvas profile editor: it wins over the id's suffix, as in the SDK
+            'own.json': SimpleNamespace(name='own', agent_kind='acp', acp_server='codex', acp_model='gpt-6-astra', acp_effort='ultra', acp_command=None),
+            'both.json': SimpleNamespace(name='both', agent_kind='acp', acp_server='codex', acp_model='gpt-6-astra/low', acp_effort='max', acp_command=None),
+            'odd.json': SimpleNamespace(name='odd', agent_kind='acp', acp_server='codex', acp_model='gpt-6-astra/low', acp_effort='turbo', acp_command=None),
+            'claude.json': SimpleNamespace(name='claude', agent_kind='acp', acp_server='claude-code', acp_model='fable', acp_effort='high', acp_command=None),
         }
         agents = SimpleNamespace(list=lambda: list(profiles), load=profiles.get)
         acp = ModuleType('openhands.sdk.settings.acp_providers')
@@ -200,6 +229,11 @@ class DiscoveryTests(unittest.TestCase):
         self.assertNotIn('problem', result['pinned'], 'a pinned profile still runs: a warning, never a problem')
         self.assertEqual(result['shim'], {'provider': 'acp:claude-code', 'model': 'fable', 'effort': None, 'switch': False})
         self.assertNotIn('warning', result['builtin'])
+        self.assertEqual(result['builtin']['effort'], 'high')
+        self.assertEqual((result['own']['model'], result['own']['effort']), ('gpt-6-astra', 'ultra'))
+        self.assertEqual((result['both']['model'], result['both']['effort']), ('gpt-6-astra', 'max'))
+        self.assertEqual(result['odd']['effort'], 'low', 'a value the app cannot save is not shown as the choice')
+        self.assertIsNone(result['claude']['effort'], 'the Claude account agent has no effort choice in the app')
 
     def test_the_app_shows_a_pin_warning_without_blocking_save(self):
         # The repository has no DOM harness for the app, so this holds its source to the contract:
@@ -423,6 +457,69 @@ class DiscoveryTests(unittest.TestCase):
                 name = canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'other'})['profile']
             self.assertEqual(saved, [name], 'an account agent needs no LLM profile, so a full LLM store does not block it')
 
+    def test_a_new_account_profile_does_not_inherit_the_copied_profiles_own_effort(self):
+        import sys, types
+        import canvas_discovery
+        written = []
+        class Agents:
+            def list(self): return ['mine.json']
+            def load(self, name, **kwargs):
+                if name != 'mine': raise FileNotFoundError(name)
+                return types.SimpleNamespace(model_dump=lambda mode=None: {'agent_kind': 'acp', 'acp_server': 'codex', 'id': 'i', 'revision': 3,
+                                                                         'name': 'mine', 'acp_model': 'astra', 'acp_effort': 'high', 'acp_prompt_timeout': 1800.0})
+            def lock(self): return threading.Lock()
+        sdk = {name: types.ModuleType(name) for name in ['openhands', 'openhands.sdk', 'openhands.sdk.profiles', 'openhands.sdk.llm']}
+        sdk['openhands.sdk.profiles'].validate_agent_profile = lambda payload: payload
+        sdk['openhands.sdk.profiles'].save_profile_preserving_identity = lambda store, profile, **kw: written.append(dict(profile))
+        sdk['openhands.sdk.llm'].LLM = lambda **kw: types.SimpleNamespace(**kw)
+        known = {'mine': {'provider': 'acp:codex', 'model': 'astra', 'effort': 'high', 'switch': False}}
+        empty = types.SimpleNamespace(list=lambda: [])
+        with patch.dict(sys.modules, sdk), patch('canvas_discovery.discover', return_value={'models': [{'id': 'astra', 'efforts': ['low', 'high']}]}), \
+             patch('canvas_discovery.selections', return_value=known), patch('canvas_discovery.stores', return_value=('cipher', None, empty)), \
+             patch('canvas_discovery.agent_store', return_value=Agents()):
+            self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'astra', 'effort': 'high'}), {'profile': 'mine'}, 'the same choice reuses it')
+            low = canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'astra', 'effort': 'low'})['profile']
+            default = canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'astra'})['profile']
+        self.assertEqual([(p['name'], p['acp_model'], p['acp_effort']) for p in written], [(low, 'astra/low', None), (default, 'astra', None)])
+        self.assertEqual(written[0]['acp_prompt_timeout'], 1800.0, 'the rest of the copied profile is kept')
+        self.assertNotIn('id', written[0]); self.assertNotIn('revision', written[0])
+        # an effort the chosen model does not list is refused before anything is saved; a model with no list takes any
+        written.clear()
+        listed = {'models': [{'id': 'narrow', 'efforts': ['low', 'max']}, {'id': 'open'}]}
+        with patch.dict(sys.modules, sdk), patch('canvas_discovery.discover', return_value=listed),              patch('canvas_discovery.selections', return_value={}), patch('canvas_discovery.stores', return_value=('cipher', None, empty)),              patch('canvas_discovery.agent_store', return_value=Agents()):
+            with self.assertRaisesRegex(ValueError, 'Reasoning effort is not available for this model'):
+                canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'narrow', 'effort': 'ultra'})
+            self.assertEqual(written, [])
+            self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'narrow', 'effort': 'max'}), {'profile': 'review-narrow-max'})
+            self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'narrow'}), {'profile': 'review-narrow'})
+            self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'open', 'effort': 'ultra'}), {'profile': 'review-open-ultra'})
+        self.assertEqual([p['acp_model'] for p in written], ['narrow/max', 'narrow', 'open/ultra'])
+        # every role of one save is checked before the first profile is written, against one model list per provider
+        written.clear()
+        events = []
+        sdk['openhands.sdk.profiles'].save_profile_preserving_identity = lambda store, profile, **kw: (written.append(dict(profile)), events.append('write'))
+        def listed_once(provider):  # a provider whose list loses `ultra` after its first answer
+            events.append('discover')
+            return {'models': [{'id': 'narrow', 'efforts': ['low', 'max'] if events.count('discover') > 1 else ['low', 'max', 'ultra']}]}
+        good, top = {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'max'}, {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'ultra'}
+        stale = {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'xhigh'}
+        with patch.dict(sys.modules, sdk), patch('canvas_discovery.discover', side_effect=listed_once), \
+             patch('canvas_discovery.selections', return_value={}), patch('canvas_discovery.stores', return_value=('cipher', None, empty)), \
+             patch('canvas_discovery.agent_store', return_value=Agents()), patch('canvas_discovery.server_environment', return_value={}):
+            with self.assertRaisesRegex(ValueError, 'Reasoning effort is not available for this model'):
+                canvas_discovery.prepare_all([{'selection': good, 'switch': False}, {'selection': stale, 'switch': False}])
+            self.assertEqual((written, events), ([], ['discover']), 'a refused later role: nothing is written, and the provider is asked once')
+            with self.assertRaisesRegex(ValueError, 'Reasoning profiles need an API provider'):
+                canvas_discovery.prepare_all([{'selection': good, 'switch': True}])
+            for odd in (None, {}, [None], ['x'], [{}], [{'selection': None}]):
+                with self.subTest(odd=odd), self.assertRaises((ValueError, TypeError)): canvas_discovery.prepare_all(odd)
+            self.assertEqual(written, [])
+            events.clear()
+            answer = canvas_discovery.main({'action': 'prepare_all', 'selections': [{'selection': good}, {'selection': top}]})
+        self.assertEqual(answer, {'profiles': ['review-narrow-max', 'review-narrow-ultra']})
+        self.assertEqual(events, ['discover', 'write', 'write'], 'no model list is fetched after the first write: a list that changes meanwhile refuses nothing')
+        self.assertEqual([p['acp_model'] for p in written], ['narrow/max', 'narrow/ultra'])
+
     def test_the_switch_tool_is_the_flag_of_sdk_1_49_or_an_entry_of_tools_from_sdk_1_51(self):
         import sys, types
         import canvas_discovery
@@ -463,13 +560,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(split_codex_model('gpt-6-astra/xhigh'), ('gpt-6-astra', 'xhigh'))
         self.assertEqual(split_codex_model('gpt-6-astra'), ('gpt-6-astra', None))
         self.assertEqual(split_codex_model('vendor/model'), ('vendor/model', None))  # unknown suffix is part of the id
-        self.assertEqual(effort_options('acp:codex'), ['low', 'medium', 'high', 'xhigh'])
+        self.assertEqual(split_codex_model('gpt-6.2-astra/ultra'), ('gpt-6.2-astra', 'ultra'))
+        self.assertEqual(split_codex_model('gpt-6.2-astra/max'), ('gpt-6.2-astra', 'max'))
+        self.assertEqual(effort_options('acp:codex'), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
         self.assertEqual(effort_options('acp:claude-code'), [])
         self.assertIn('max', effort_options('connection:x'))
         self.assertEqual(normalize_effort('connection:x', None), 'high')
         self.assertEqual(normalize_effort('acp:codex', None), None)
         self.assertEqual(normalize_effort('acp:codex', 'xhigh'), 'xhigh')
-        for provider, effort in [('acp:codex', 'ultra'), ('acp:claude-code', 'high'), ('connection:x', 'turbo'), ('connection:x', 5)]:
+        self.assertEqual(normalize_effort('acp:codex', 'max'), 'max')
+        self.assertEqual(normalize_effort('acp:codex', 'ultra'), 'ultra')
+        for provider, effort in [('acp:codex', 'none'), ('acp:codex', 'turbo'), ('acp:claude-code', 'high'), ('connection:x', 'ultra'), ('connection:x', 'turbo'), ('connection:x', 5)]:
             with self.subTest(provider=provider, effort=effort), self.assertRaises(ValueError): normalize_effort(provider, effort)
         text = block('fast', 'deep')
         self.assertIn('starts on LLM profile `fast`', text); self.assertIn('profile_name\n`deep`', text)

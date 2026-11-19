@@ -4,9 +4,9 @@
 <script type="module">
 import {activate} from '../auto-reviews/extension.js';
 const settings = {revision: 0, primary: 'astra', secondary: null, fallback: 'opus'};
-const providers = [{id:'acp:codex',name:'Codex',kind:'subscription',efforts:['low','medium','high','xhigh'],switchable:false}, {id:'acp:claude-code',name:'Claude',kind:'subscription',efforts:[],switchable:false}];
+const providers = [{id:'acp:codex',name:'Codex',kind:'subscription',efforts:['low','medium','high','xhigh','max','ultra'],switchable:false}, {id:'acp:claude-code',name:'Claude',kind:'subscription',efforts:[],switchable:false}];
 const selections = {astra:{provider:'acp:codex',model:'astra',effort:null,switch:false},opus:{provider:'acp:claude-code',model:'opus',effort:null,switch:false}};
-let probeFailure = null, lastSaved, lastProvider, lastUpdate, lastUpdatePath, lastProbe, probeModels = [{id:'qwen',label:'Qwen'}], conflict = false, probeOK = true, writes = 0, modelRequests = 0, probeRequests = 0, puts = 0, mountPage, failModels = false, legacy = false, problems = {}, forgeStatus = null;
+let probeFailure = null, lastSaved, lastProvider, lastUpdate, lastUpdatePath, lastProbe, probeModels = [{id:'qwen',label:'Qwen'}], conflict = false, probeOK = true, writes = 0, modelRequests = 0, probeRequests = 0, puts = 0, mountPage, failModels = false, legacy = false, problems = {}, forgeStatus = null, perModel = true;
 const host = {apiVersion:'1', registerPage(id, callback) { mountPage = () => callback({container:document.querySelector('main')}); return mountPage(); },
 agentServer:{async request({path,method,body}) {
   if(path === '/api/review-control/status') { if(!forgeStatus) { const error = Error('HTTP request failed (404)'); error.name = 'HttpError'; error.status = 404; throw error; } return forgeStatus; }  // null: a server without the endpoint
@@ -16,7 +16,7 @@ agentServer:{async request({path,method,body}) {
   if(method === 'PATCH') { lastUpdate = {...body}; lastUpdatePath = path; writes++; return {}; }
   if(path === '/api/llm/provider-connections') { writes++; lastProvider = {...body}; providers.push({id:'api-7f3c',editable:true,connection_id:'test',name:body.display_name,kind:'api',url:body.base_url + '/',efforts:['none','low','medium','high','xhigh','max'],switchable:true}); return {id:'test'}; }
   if(path.endsWith('/providers')) return {providers: legacy ? providers.map(({efforts, switchable, ...p}) => p) : providers, selections};
-  if(path.includes('/models?')) { modelRequests++; if(failModels && path.includes('codex')) throw Error('temporary discovery failure'); if(!providers.some(p => path.includes(encodeURIComponent(p.id)) || path.includes(p.id))) throw Error('Unknown provider'); return {models: path.includes('codex') ? [{id:'astra',label:'Astra'},{id:'sol',label:'Sol'}] : path.includes('claude') ? [{id:'opus',label:'Opus 5'},{id:'fable',label:'Fable 5.1'}] : [{id:'qwen',label:'Qwen'}]}; }
+  if(path.includes('/models?')) { modelRequests++; if(failModels && path.includes('codex')) throw Error('temporary discovery failure'); if(!providers.some(p => path.includes(encodeURIComponent(p.id)) || path.includes(p.id))) throw Error('Unknown provider'); return {models: path.includes('codex') ? [{id:'astra',label:'Astra',efforts:['low','medium','high','xhigh','max','ultra']},{id:'sol',label:'Sol',efforts:['low','medium','high','max','hyper']}].map(({efforts, ...row}) => perModel ? {...row, efforts} : row) : path.includes('claude') ? [{id:'opus',label:'Opus 5'},{id:'fable',label:'Fable 5.1'}] : [{id:'qwen',label:'Qwen'}]}; }
   if(method === 'PUT') { puts++; if(conflict && typeof conflict === 'object') { const error = Error('HTTP request failed (409)'); error.name = 'HttpError'; error.status = 409; error.response = conflict; throw error; } if(conflict) throw Error('409'); lastSaved = body; settings.revision++;
     for (const role of ['primary','secondary','fallback']) { if (body[role]) { selections['saved-'+role] = {...body[role], switch: role === 'secondary'}; settings[role] = 'saved-'+role; } else settings[role] = null; } }
   const shown = {...settings}; if (legacy) delete shown.secondary;
@@ -127,12 +127,51 @@ try {
   check(form.elements.primaryModel.value === 'astra' && document.querySelector('[data-unsaved]').textContent === '', 'Revert still restores the persisted selection');
   check(lastProbe.provider === 'api-7f3c' && !('api_key' in lastProbe), 'Edit checks existing credential');
   // reasoning effort and the secondary (reading) profile of combined mode
-  check(form.elements.primaryEffort.value === '' && form.elements.primaryEffort.options.length === 5 && form.elements.primaryEffort.options[0].text === 'Adapter default' && !form.elements.primaryEffort.disabled, 'Codex account: adapter default plus four selectable efforts');
+  check(form.elements.primaryEffort.value === '' && form.elements.primaryEffort.options.length === 7 && form.elements.primaryEffort.options[0].text === 'Adapter default' && !form.elements.primaryEffort.disabled, 'Codex account: adapter default plus the six efforts its model lists');
   check(form.elements.secondaryProvider.disabled && document.querySelector('[data-secondary-hint]').textContent.includes('API provider'), 'Account primary: secondary unavailable with a hint');
   form.elements.fallbackProvider.value='acp:claude-code'; form.elements.fallbackProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.fallbackEffort.disabled && form.elements.fallbackEffort.options.length === 1 && form.elements.fallbackEffort.options[0].text.includes('not selectable') && form.elements.fallbackEffort.value === '', 'Claude account: effort not selectable');
   form.elements.primaryEffort.value='xhigh'; form.elements.primaryEffort.dispatchEvent(new Event('change')); form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.primary.effort === 'xhigh' && lastSaved.primary.model === 'astra' && lastSaved.secondary === null, 'Effort saved with the selection');
+  // the efforts of the chosen model: a model that takes fewer narrows the list, and the choice is kept where the new model takes it
+  const offered = () => [...form.elements.primaryEffort.options].map(option => option.value).join(',');
+  const pickModel = async id => { form.elements.primaryModel.value = id; form.elements.primaryModel.dispatchEvent(new Event('change')); await settle(); };
+  document.querySelector('[data-reload]').click(); await settle();
+  check(form.elements.primaryModel.value === 'astra' && form.elements.primaryEffort.value === 'xhigh' && offered() === ',low,medium,high,xhigh,max,ultra', 'A restored selection shows its model efforts: ' + offered());
+  await pickModel('sol');
+  check(offered() === ',low,medium,high,max' && form.elements.primaryEffort.value === '' && !form.elements.primaryEffort.disabled, 'A model with fewer efforts narrows the list and drops a choice it does not take: ' + offered());
+  form.elements.primaryEffort.value = 'max'; form.elements.primaryEffort.dispatchEvent(new Event('change'));
+  await pickModel('astra');
+  check(offered() === ',low,medium,high,xhigh,max,ultra' && form.elements.primaryEffort.value === 'max', 'A choice the new model takes is kept: ' + form.elements.primaryEffort.value);
+  form.elements.primaryEffort.value = 'ultra'; form.elements.primaryEffort.dispatchEvent(new Event('change')); form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
+  check(lastSaved.primary.effort === 'ultra' && lastSaved.primary.model === 'astra', 'The highest effort is saved');
+  perModel = false; document.querySelector('[data-reload]').click(); await settle();  // a server that lists no efforts per model
+  await pickModel('sol');
+  check(offered() === ',low,medium,high,xhigh,max,ultra' && form.elements.primaryEffort.value === 'ultra', 'Without per-model efforts the provider list stands: ' + offered());
+  perModel = true; document.querySelector('[data-reload]').click(); await settle();
+  check(form.elements.primaryModel.value === 'astra' && form.elements.primaryEffort.value === 'ultra', 'Reload restores the saved choice');
+  // Revert restores the model's efforts with the model: the list of the provider left behind must not stand in
+  form.elements.primaryProvider.value='acp:claude-code'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
+  document.querySelector('[data-revert]').click(); await settle();
+  check(form.elements.primaryProvider.value === 'acp:codex' && form.elements.primaryModel.value === 'astra' && form.elements.primaryEffort.value === 'ultra', 'Revert restores the saved Codex choice');
+  await pickModel('sol');
+  check(offered() === ',low,medium,high,max', 'After a revert a model still narrows the list: ' + offered());
+  document.querySelector('[data-revert]').click(); await settle();
+  // a saved effort the model no longer takes is shown and must be replaced: it is never turned into the adapter default
+  const saveButton = form.querySelector('[type=submit]'), lost = () => form.elements.primaryEffort.selectedOptions[0];
+  selections['saved-primary'] = {...selections['saved-primary'], model:'sol', effort:'xhigh'}; document.querySelector('[data-reload]').click(); await settle();
+  check(form.elements.primaryEffort.value === 'xhigh' && lost().text.includes('not offered for this model') && saveButton.disabled && !form.elements.primaryEffort.disabled, 'A saved effort the model no longer takes stays visible: ' + lost().text);
+  form.elements.fallbackModel.value = [...form.elements.fallbackModel.options].find(option => option.value !== form.elements.fallbackModel.value).value; form.elements.fallbackModel.dispatchEvent(new Event('change')); await settle();
+  check(saveButton.disabled && form.elements.primaryEffort.value === 'xhigh', 'Another edit cannot save while that effort stands');
+  document.querySelector('[data-revert]').click(); await settle();
+  check(form.elements.primaryEffort.value === 'xhigh' && lost().text.includes('not offered for this model') && saveButton.disabled, 'Revert keeps the unavailable effort marked');
+  form.elements.primaryEffort.value = 'max'; form.elements.primaryEffort.dispatchEvent(new Event('change')); await settle();
+  check(!saveButton.disabled && offered() === ',low,medium,high,max', 'Replacing it enables Save and takes it off the list: ' + offered());
+  form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
+  check(lastSaved.primary.effort === 'max' && lastSaved.primary.model === 'sol', 'The replacement is saved');
+  form.elements.primaryEffort.value = 'low'; form.elements.primaryEffort.dispatchEvent(new Event('change')); await settle();
+  document.querySelector('[data-revert]').click(); await settle();
+  check(form.elements.primaryEffort.value === 'max' && offered() === ',low,medium,high,max' && !form.querySelector('option[data-unavailable]'), 'After the save a revert does not bring the replaced effort back: ' + offered());
   form.elements.primaryProvider.value='api-7f3c'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.primaryEffort.value === 'high' && !form.elements.secondaryProvider.disabled, 'API primary: default effort high, secondary available');
   check([...form.elements.secondaryProvider.options].every(option => !option.value.startsWith('acp:')), 'Secondary lists API providers only');
@@ -143,7 +182,7 @@ try {
   document.querySelector('[data-reload]').click(); await settle();
   check(form.elements.primaryEffort.value === 'high' && form.elements.secondaryProvider.value === 'api-7f3c' && form.elements.secondaryEffort.value === 'low' && document.querySelector('[data-secondary-hint]').textContent === '', 'Saved effort and secondary restored after reload; hint cleared');
   selections['saved-primary'].effort = 'turbo'; document.querySelector('[data-reload]').click(); await settle();
-  check(form.elements.primaryEffort.value === 'high', 'A saved effort the provider no longer offers falls back to the default');
+  check(form.elements.primaryEffort.value === 'turbo' && form.elements.primaryEffort.selectedOptions[0].text.includes('not offered') && form.querySelector('[type=submit]').disabled, 'A saved effort the provider no longer offers stays visible until replaced');
   form.elements.primaryProvider.value='acp:codex'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.secondaryProvider.value === '' && form.elements.secondaryProvider.disabled && form.elements.primaryModel.value === 'astra', 'Switching primary to an account agent clears and disables the secondary');
   check(document.querySelector('[data-unsaved]').textContent === 'Unsaved changes' && !form.querySelector('[type=submit]').disabled, 'Clearing the secondary is an unsaved change');
@@ -266,6 +305,6 @@ try {
   check(!(await showLogin({state:'<b>new</b>', expires: null})), 'A state this page does not know shows no line');
   check(!(await showLogin('present')), 'A login that is not an object shows no line');
   await showLogin(undefined);
-  document.querySelector('#result').textContent='PASS: account login lines (valid, ending soon, ended, cleared, missing, unreadable, none from an older server), forge contact lines (failing, quiet, reachable, unreadable, none without the endpoint), restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  document.querySelector('#result').textContent='PASS: efforts per model (narrowed to the chosen model, also after a revert; a kept choice; a saved effort no longer offered stays until replaced; the provider list from a server without them), account login lines (valid, ending soon, ended, cleared, missing, unreadable, none from an older server), forge contact lines (failing, quiet, reachable, unreadable, none without the endpoint), restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>

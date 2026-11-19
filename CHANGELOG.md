@@ -11,6 +11,25 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ### Added
 
+- hands: Auto Reviews offers every reasoning effort the Codex account
+  adapter names, per model. The list was fixed at `low` to `xhigh`, while
+  the adapter also offers `max` and `ultra`, and not every model takes
+  every effort. Model discovery now returns, for each Codex model, the
+  efforts the adapter lists for it; the page narrows the effort list to the
+  chosen model and keeps a choice the new model takes; saving an effort
+  the model does not list is refused. A profile whose own effort field
+  was set in the Canvas profile editor shows that effort instead of
+  "Adapter default", and a new profile built from such a profile no longer
+  inherits that field, which would have overridden the effort chosen in
+  Auto Reviews. A saved effort the model or provider no longer offers
+  stays visible, marked "not offered", and Save waits until it is
+  replaced; before, the page showed the default in its place and the next
+  save of any other field stored that. A save sends all its roles to the
+  helper in one call, which asks each provider for its models once and
+  checks every role before the first profile is written, so a refused
+  role leaves no new profile of another role behind. A Codex profile without
+  an effort runs at the adapter default, which can be `low`. A hands site:
+  `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
 - hands: the Auto Reviews page shows how each account connection's login
   stands, and a review that fails on it says so. An account login (Claude,
   Codex) ends on its own, a Claude subscription login after about a
