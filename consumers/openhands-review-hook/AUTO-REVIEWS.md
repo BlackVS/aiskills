@@ -40,7 +40,10 @@ may take `max` and not `ultra`), and saving an effort the chosen model does
 not list is refused. A save sends all its roles to the helper in one call:
 each provider is asked for its models once, and every role is checked against
 that list before the first profile is written, so a refused role leaves no
-new profile of another role behind. A saved effort
+new profile of another role behind. The page then says which role was
+refused and whether its model or its effort is no longer offered (a provider
+can drop either between the page's load and the save); reload and choose
+again. A saved effort
 the model or provider no longer offers stays in the list, marked "not
 offered", and Save waits until a person replaces it: it is never turned
 into the adapter default on its own. A Codex profile without an effort runs at the adapter's

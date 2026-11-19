@@ -350,6 +350,53 @@ class PolicyTests(unittest.TestCase):
             self.assertFalse(review_policy.settings_path().exists())
         finally: server.shutdown(); server.server_close(); thread.join()
 
+    def test_a_refused_selection_answers_409_naming_the_role_and_the_reason_and_saves_nothing(self):
+        import io
+        from types import SimpleNamespace
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}/api/review-control/settings'
+        headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
+        one = {'provider': 'acp:codex', 'model': 'm', 'effort': None}
+        body = json.dumps({'revision': 0, 'primary': one, 'secondary': None, 'fallback': dict(one, model='n')}).encode()
+        model, effort = 'this model is no longer offered by its provider', 'this reasoning effort is no longer offered for the model'
+        tail = '. Nothing was saved. Reload, then choose again.'
+        try:
+            for document, status, error in [
+                    ({'error': 'refused', 'reason': 'model', 'index': 0}, 409, 'Primary reviewer: ' + model + tail),
+                    ({'error': 'refused', 'reason': 'effort', 'index': 1}, 409, 'Fallback reviewer: ' + effort + tail),  # the second role asked, not the second role there is
+                    ({'error': 'refused', 'reason': 'model', 'index': 2}, 409, 'A selection: ' + model + tail),
+                    ({'error': 'refused', 'reason': 'model', 'index': True}, 409, 'A selection: ' + model + tail),
+                    ({'error': 'refused', 'reason': 'model', 'index': -1}, 409, 'A selection: ' + model + tail),
+                    ({'error': 'refused', 'reason': 'model'}, 409, 'A selection: ' + model + tail),
+                    ({'error': 'refused', 'reason': 'sk-secret', 'index': 0}, 503, None),
+                    ({'error': 'refused', 'reason': ['model'], 'index': 0}, 503, None),
+                    ({'error': 'refused'}, 503, None)]:
+                with self.subTest(document=document), patch('sys.stderr', new_callable=io.StringIO), \
+                     patch('review_control.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps(document))):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=body, headers=headers))
+                    self.assertEqual(caught.exception.code, status)
+                    answer = json.load(caught.exception)['error']
+                    if error: self.assertEqual(answer, error)
+                    else: self.assertNotIn('secret', answer); self.assertNotIn('no longer offered', answer, 'a malformed answer is a plain helper failure')
+            # an effort the provider kind never takes is refused before the helper is asked, with its role
+            with patch('review_control.subprocess.run') as run:
+                odd = json.dumps({'revision': 0, 'primary': one, 'secondary': None, 'fallback': dict(one, model='n', effort='turbo')}).encode()
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
+                self.assertEqual((caught.exception.code, json.load(caught.exception)['error']), (409, 'Fallback reviewer: ' + effort + tail))
+                # an effort that is no text, or one that comes without a model, is a malformed request, not a choice to make again
+                for primary in [dict(one, effort=['max']), {'provider': 'acp:codex', 'effort': 'turbo'}, dict(one, model='', effort='turbo'), dict(one, model=None, effort='turbo')]:
+                    odd = json.dumps({'revision': 0, 'primary': primary, 'secondary': None, 'fallback': None}).encode()
+                    with self.subTest(primary=primary), self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertNotIn('no longer offered', json.load(caught.exception)['error'])
+                run.assert_not_called()
+            self.assertFalse(review_policy.settings_path().exists(), 'nothing saved')
+        finally: server.shutdown(); server.server_close(); thread.join()
+
     def test_a_full_profile_store_answers_409_with_the_helper_counts_and_saves_nothing(self):
         import io
         from types import SimpleNamespace

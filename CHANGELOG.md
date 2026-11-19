@@ -9,6 +9,18 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+
+- hands: a save in Auto Reviews that the provider refuses says which role
+  was refused and why. A model or a reasoning effort can leave a
+  provider's list between the page's load and the save; the page then
+  showed its general "discovery or settings unavailable" text, as for an
+  outage. It now reads, for example, "Fallback reviewer: this model is no
+  longer offered by its provider. Nothing was saved. Reload, then choose
+  again." The helper names the reason as one of two fixed words and the
+  role by its place in the request, never text from a provider. A hands
+  site: `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
+
 ## [1.45.0] - 2026-11-19
 
 Two additions for hands sites and a change to the Windows one-liner. The

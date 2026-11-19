@@ -506,9 +506,24 @@ class DiscoveryTests(unittest.TestCase):
         with patch.dict(sys.modules, sdk), patch('canvas_discovery.discover', side_effect=listed_once), \
              patch('canvas_discovery.selections', return_value={}), patch('canvas_discovery.stores', return_value=('cipher', None, empty)), \
              patch('canvas_discovery.agent_store', return_value=Agents()), patch('canvas_discovery.server_environment', return_value={}):
-            with self.assertRaisesRegex(ValueError, 'Reasoning effort is not available for this model'):
+            with self.assertRaisesRegex(ValueError, 'Reasoning effort is not available for this model') as refused:
                 canvas_discovery.prepare_all([{'selection': good, 'switch': False}, {'selection': stale, 'switch': False}])
             self.assertEqual((written, events), ([], ['discover']), 'a refused later role: nothing is written, and the provider is asked once')
+            self.assertEqual((type(refused.exception), refused.exception.reason, refused.exception.index), (canvas_discovery.Refused, 'effort', 1))
+            # the helper's answer names the reason and the role's place, and nothing else
+            gone = dict(good, model='gone')
+            for request, document in [
+                    ({'action': 'prepare_all', 'selections': [{'selection': good}, {'selection': stale}]}, {'error': 'refused', 'reason': 'effort', 'index': 1}),
+                    ({'action': 'prepare_all', 'selections': [{'selection': gone}, {'selection': good}]}, {'error': 'refused', 'reason': 'model', 'index': 0}),
+                    ({'action': 'prepare_all', 'selections': [{'selection': dict(good, effort='turbo')}]}, {'error': 'refused', 'reason': 'effort', 'index': 0}),
+                    ({'action': 'prepare', 'selection': gone}, {'error': 'refused', 'reason': 'model', 'index': None})]:
+                with self.subTest(request=request):
+                    self.assertEqual(canvas_discovery.answer(request), (document, 0))
+            # a request that is no selection at all stays a plain failure, and so does an effort that is no text
+            self.assertEqual(canvas_discovery.answer({'action': 'prepare_all', 'selections': [{'selection': {'provider': 'acp:codex'}}]})[1], 1)
+            self.assertEqual(canvas_discovery.answer({'action': 'prepare_all', 'selections': [{'selection': dict(good, effort=['max'])}]})[1], 1)
+            self.assertEqual((written, events.count('write')), ([], 0))
+            events.clear()
             with self.assertRaisesRegex(ValueError, 'Reasoning profiles need an API provider'):
                 canvas_discovery.prepare_all([{'selection': good, 'switch': True}])
             for odd in (None, {}, [None], ['x'], [{}], [{'selection': None}]):

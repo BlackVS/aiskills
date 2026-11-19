@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 import socketserver
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from canvas_discovery import normalize_effort, probe_shape
+from canvas_discovery import Refused, normalize_effort, probe_shape
 from review_policy import PairMismatch, load_settings, profiles, save_settings
 
 REPLIED = object()  # json_body() already answered the request
@@ -27,6 +27,25 @@ class DiscoveryFailed(OSError):
 
 class ProfileLimitReached(Exception):
     """Canvas's profile store is full; the helper's message (counts only) is for the user."""
+
+
+REFUSALS = {  # what the person reads for each reason the helper names
+    'model': 'this model is no longer offered by its provider',
+    'effort': 'this reasoning effort is no longer offered for the model',
+}
+ROLE_NAMES = {'primary': 'Primary reviewer', 'secondary': 'Secondary reading profile', 'fallback': 'Fallback reviewer'}
+
+
+class SelectionRefused(Exception):
+    """A selection its provider does not offer now. `reason` is a key of REFUSALS; `role` is the
+    role it was chosen for, when known; `index` is its place in the helper's request."""
+    def __init__(self, reason, role=None, index=None):
+        super().__init__(reason)
+        self.reason, self.role, self.index = reason, role, index
+
+    def text(self):
+        where = ROLE_NAMES.get(self.role, 'A selection')
+        return f'{where}: {REFUSALS[self.reason]}. Nothing was saved. Reload, then choose again.'
 
 
 def discovery(action, **kwargs):
@@ -45,6 +64,8 @@ def discovery(action, **kwargs):
         raise DiscoveryFailed('helper output is not a JSON object')
     if data.get('error') == 'profile-limit' and isinstance(data.get('message'), str):
         raise ProfileLimitReached(data['message'])
+    if data.get('error') == 'refused' and isinstance(data.get('reason'), str) and data['reason'] in REFUSALS:
+        raise SelectionRefused(data['reason'], index=data.get('index'))
     if 'error' in data:
         raise DiscoveryFailed('helper reported an error')
     return data
@@ -228,7 +249,12 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('Invalid selections')
                     for key in roles:  # compare what prepare() will actually create
                         if isinstance(candidate[key], dict) and isinstance(candidate[key].get('provider'), str) and ':' in candidate[key]['provider']:
-                            candidate[key] = dict(candidate[key], effort=normalize_effort(candidate[key]['provider'], candidate[key].get('effort')))
+                            try:
+                                candidate[key] = dict(candidate[key], effort=normalize_effort(candidate[key]['provider'], candidate[key].get('effort')))
+                            except Refused as refused:
+                                if not isinstance(candidate[key].get('model'), str) or not candidate[key]['model']:
+                                    raise  # no model with it: a malformed request, not a choice to make again
+                                raise SelectionRefused(refused.reason, role=key) from None
                     if candidate['revision'] != load_settings()[0]['revision']:
                         raise FileExistsError('Settings changed')
                     chosen = [json.dumps(candidate[k], sort_keys=True) for k in roles if candidate[k] is not None]
@@ -239,8 +265,13 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('Reasoning profiles need API providers')
                     asked = [key for key in roles if isinstance(candidate[key], dict)]
                     if asked:  # one helper call for all roles: every role is checked before the first profile is written
-                        names = discovery('prepare_all', selections=[
-                            {'selection': candidate[key], 'switch': key == 'secondary'} for key in asked]).get('profiles')
+                        try:
+                            names = discovery('prepare_all', selections=[
+                                {'selection': candidate[key], 'switch': key == 'secondary'} for key in asked]).get('profiles')
+                        except SelectionRefused as refused:  # the helper names the role by its place in the request
+                            if type(refused.index) is int and 0 <= refused.index < len(asked):
+                                refused.role = asked[refused.index]
+                            raise
                         if not isinstance(names, list) or len(names) != len(asked) or not all(isinstance(name, str) and name for name in names):
                             raise DiscoveryFailed('helper answered without the profiles')
                         candidate.update(zip(asked, names))
@@ -252,6 +283,8 @@ class Handler(BaseHTTPRequestHandler):
             self.fail(409, 'Settings changed; reload before saving')
         except ProfileLimitReached as error:  # counts only: the person has to delete profiles in Canvas
             self.fail(409, str(error))
+        except SelectionRefused as error:  # fixed text: which role, and whether its model or its effort is gone
+            self.fail(409, error.text())
         except PairMismatch as error:  # names profile fields only: the caller needs them to repair the pair
             self.fail(400, str(error))
         except (ValueError, TypeError):
