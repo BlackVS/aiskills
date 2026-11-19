@@ -9,6 +9,16 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.45.1] - 2026-11-19
+
+Two changes to how the Auto Reviews settings service of a hands site
+answers a save it does not take. A save the provider refuses names the
+role and whether its model or its reasoning effort is no longer offered
+(#145), and a malformed save is answered as one before the helper is
+asked (#146). A hands site: see the 1.45.1 row in
+`consumers/openhands-review-hook/UPDATING.md`. The installed skills and
+prompts are the same as in 1.45.0.
+
 ### Changed
 
 - hands: a save in Auto Reviews that the provider refuses says which role
@@ -19,7 +29,7 @@ content fixes inside existing skills. The current version is in `VERSION`.
   longer offered by its provider. Nothing was saved. Reload, then choose
   again." The helper names the reason as one of two fixed words and the
   role by its place in the request, never text from a provider. A hands
-  site: `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
+  site: `consumers/openhands-review-hook/UPDATING.md`, row 1.45.1.
 
 ### Fixed
 
