@@ -21,6 +21,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
   role by its place in the request, never text from a provider. A hands
   site: `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
 
+### Fixed
+
+- hands: the Auto Reviews settings service answers a malformed save as a
+  malformed save. A role without a model, with a provider that is no
+  `kind:name`, or with a field the service does not know is answered 400
+  before the helper is asked; a role with only a provider used to reach
+  the helper and come back as the general "unavailable" failure (503).
+  The shape of a selection is now one definition, shared by the service
+  and the helper. A `refused` answer of the helper counts as a refused
+  selection only for a save: for a connection test, the provider list or
+  a model list it is that endpoint's general failure, where the
+  connection test would have lost its `{ok, message}` answer. The page
+  sends neither such a save nor meets such an answer; this hardens the
+  service. A hands site: the same row.
+
 ## [1.45.0] - 2026-11-19
 
 Two additions for hands sites and a change to the Windows one-liner. The

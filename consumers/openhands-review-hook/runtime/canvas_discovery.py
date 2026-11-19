@@ -526,15 +526,23 @@ def profile_name(model, effort, switch, taken):
     return name
 
 
+def selection_parts(selection):
+    """The provider and model of a selection that has the shape of one: {provider, model[, effort]}
+    with a `kind:name` provider and a model that is non-empty text. Anything else is a malformed
+    request, which no reload or new choice repairs. The settings service asks this first too."""
+    if not isinstance(selection, dict) or not {'provider', 'model'} <= set(selection) <= {'provider', 'model', 'effort'}:
+        raise ValueError('Expected provider, model and optional effort')
+    provider, model = selection['provider'], selection['model']
+    if not isinstance(provider, str) or not isinstance(model, str) or ':' not in provider or not model:
+        raise ValueError('Invalid selection')
+    return provider, model
+
+
 def validated(selection, switch=False, discovered=None):
     """A selection's provider, model and effort, checked against what its provider advertises
     now. Writes nothing. `discovered` keeps each provider's model list across the roles of one
     request."""
-    if not isinstance(selection, dict) or not {'provider', 'model'} <= set(selection) <= {'provider', 'model', 'effort'}:
-        raise ValueError('Expected provider, model and optional effort')
-    provider, model = selection['provider'], selection['model']
-    if not isinstance(provider, str) or not isinstance(model, str) or ':' not in provider:
-        raise ValueError('Invalid selection')
+    provider, model = selection_parts(selection)
     effort = normalize_effort(provider, selection.get('effort'))
     if switch and provider.startswith('acp:'):
         raise ValueError('Reasoning profiles need an API provider')

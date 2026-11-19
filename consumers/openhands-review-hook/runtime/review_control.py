@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 import socketserver
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from canvas_discovery import Refused, normalize_effort, probe_shape
+from canvas_discovery import Refused, normalize_effort, probe_shape, selection_parts
 from review_policy import PairMismatch, load_settings, profiles, save_settings
 
 REPLIED = object()  # json_body() already answered the request
@@ -64,7 +64,8 @@ def discovery(action, **kwargs):
         raise DiscoveryFailed('helper output is not a JSON object')
     if data.get('error') == 'profile-limit' and isinstance(data.get('message'), str):
         raise ProfileLimitReached(data['message'])
-    if data.get('error') == 'refused' and isinstance(data.get('reason'), str) and data['reason'] in REFUSALS:
+    # only a save asks for selections: the same answer to any other action is a helper failure
+    if action == 'prepare_all' and data.get('error') == 'refused' and isinstance(data.get('reason'), str) and data['reason'] in REFUSALS:
         raise SelectionRefused(data['reason'], index=data.get('index'))
     if 'error' in data:
         raise DiscoveryFailed('helper reported an error')
@@ -248,12 +249,11 @@ class Handler(BaseHTTPRequestHandler):
                     if type(candidate['revision']) is not int or not isinstance(candidate['primary'], dict) or not optional_ok:
                         raise ValueError('Invalid selections')
                     for key in roles:  # compare what prepare() will actually create
-                        if isinstance(candidate[key], dict) and isinstance(candidate[key].get('provider'), str) and ':' in candidate[key]['provider']:
+                        if isinstance(candidate[key], dict):
+                            provider, _ = selection_parts(candidate[key])  # a role that is no selection is a malformed request
                             try:
-                                candidate[key] = dict(candidate[key], effort=normalize_effort(candidate[key]['provider'], candidate[key].get('effort')))
+                                candidate[key] = dict(candidate[key], effort=normalize_effort(provider, candidate[key].get('effort')))
                             except Refused as refused:
-                                if not isinstance(candidate[key].get('model'), str) or not candidate[key]['model']:
-                                    raise  # no model with it: a malformed request, not a choice to make again
                                 raise SelectionRefused(refused.reason, role=key) from None
                     if candidate['revision'] != load_settings()[0]['revision']:
                         raise FileExistsError('Settings changed')

@@ -519,6 +519,14 @@ class DiscoveryTests(unittest.TestCase):
                     ({'action': 'prepare', 'selection': gone}, {'error': 'refused', 'reason': 'model', 'index': None})]:
                 with self.subTest(request=request):
                     self.assertEqual(canvas_discovery.answer(request), (document, 0))
+            # the shape of a selection is one definition, shared with the settings service
+            self.assertEqual(canvas_discovery.selection_parts(good), ('acp:codex', 'narrow'))
+            for odd in (None, [], {}, {'provider': 'acp:codex'}, {'model': 'narrow'}, dict(good, model=''), dict(good, model=7), dict(good, provider='codex'),
+                        dict(good, provider=None), dict(good, extra='x')):
+                with self.subTest(odd=odd), self.assertRaises(ValueError) as shape:
+                    canvas_discovery.selection_parts(odd)
+                self.assertNotIsInstance(shape.exception, canvas_discovery.Refused)
+            self.assertEqual(canvas_discovery.answer({'action': 'prepare_all', 'selections': [{'selection': dict(good, model='')}]})[1], 1)
             # a request that is no selection at all stays a plain failure, and so does an effort that is no text
             self.assertEqual(canvas_discovery.answer({'action': 'prepare_all', 'selections': [{'selection': {'provider': 'acp:codex'}}]})[1], 1)
             self.assertEqual(canvas_discovery.answer({'action': 'prepare_all', 'selections': [{'selection': dict(good, effort=['max'])}]})[1], 1)
