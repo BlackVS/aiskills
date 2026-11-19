@@ -538,26 +538,31 @@ def validated(selection, switch=False, discovered=None):
     return provider, model, effort
 
 
-def check(requests):
-    """Every role of one save, checked before the first profile is written: a role the
-    provider refuses must not leave another role's new profile behind."""
+def prepare_all(requests):
+    """The profiles of every role of one save, in the order asked. Each provider is asked for
+    its models once; every role is checked against that list before the first profile is
+    written, and the profiles are then made from the same list. A role the provider refuses
+    therefore leaves no other role's new profile behind, also when the provider's list
+    changes during the save."""
     if not isinstance(requests, list) or not all(isinstance(item, dict) for item in requests):
         raise ValueError('Expected a list of selections')
+    asked = [(item.get('selection'), bool(item.get('switch', False))) for item in requests]
     discovered = {}
-    for item in requests:
-        validated(item.get('selection'), bool(item.get('switch', False)), discovered)
-    return {'ok': True}
+    for selection, switch in asked:
+        validated(selection, switch, discovered)
+    return {'profiles': [prepare(selection, switch, discovered)['profile'] for selection, switch in asked]}
 
 
-def prepare(selection, switch=False):
+def prepare(selection, switch=False, discovered=None):
     """Reuse matching profiles; otherwise create a new immutable launch choice.
 
     `selection` is {provider, model[, effort]}. `switch` asks for the reading
     profile of combined mode: an OpenHands-kind agent with the switch_llm tool.
+    `discovered` is the model lists the roles of one save share (see `prepare_all`).
     """
     from openhands.sdk.profiles import validate_agent_profile, save_profile_preserving_identity
     from openhands.sdk.llm import LLM
-    provider, model, effort = validated(selection, switch)
+    provider, model, effort = validated(selection, switch, discovered)
     if kind_of(provider) == 'profile':  # several hand-made profiles with one endpoint and key are one source
         provider = 'profile:' + canonical_source(provider.split(':', 1)[1])
     wanted = {'provider': provider, 'model': model, 'effort': effort}
@@ -742,8 +747,8 @@ def main(request, proc_root='/proc'):
         return discover(request['provider'])
     if action == 'probe':
         return probe(request['request'])
-    if action == 'check':
-        return check(request['selections'])
+    if action == 'prepare_all':
+        return prepare_all(request['selections'])
     if action == 'prepare':
         return prepare(request['selection'], switch=bool(request.get('switch', False)))
     raise ValueError('Unknown action')

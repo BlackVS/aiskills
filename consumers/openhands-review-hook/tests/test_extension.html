@@ -166,9 +166,12 @@ try {
   document.querySelector('[data-revert]').click(); await settle();
   check(form.elements.primaryEffort.value === 'xhigh' && lost().text.includes('not offered for this model') && saveButton.disabled, 'Revert keeps the unavailable effort marked');
   form.elements.primaryEffort.value = 'max'; form.elements.primaryEffort.dispatchEvent(new Event('change')); await settle();
-  check(!saveButton.disabled, 'Replacing it enables Save');
+  check(!saveButton.disabled && offered() === ',low,medium,high,max', 'Replacing it enables Save and takes it off the list: ' + offered());
   form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
   check(lastSaved.primary.effort === 'max' && lastSaved.primary.model === 'sol', 'The replacement is saved');
+  form.elements.primaryEffort.value = 'low'; form.elements.primaryEffort.dispatchEvent(new Event('change')); await settle();
+  document.querySelector('[data-revert]').click(); await settle();
+  check(form.elements.primaryEffort.value === 'max' && offered() === ',low,medium,high,max' && !form.querySelector('option[data-unavailable]'), 'After the save a revert does not bring the replaced effort back: ' + offered());
   form.elements.primaryProvider.value='api-7f3c'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.primaryEffort.value === 'high' && !form.elements.secondaryProvider.disabled, 'API primary: default effort high, secondary available');
   check([...form.elements.secondaryProvider.options].every(option => !option.value.startsWith('acp:')), 'Secondary lists API providers only');

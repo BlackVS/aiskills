@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from review_control import LocalHTTPServer
 from pathlib import Path
-from unittest.mock import patch, call, Mock
+from unittest.mock import patch, Mock
 import review_control
 
 import review_policy
@@ -155,7 +155,7 @@ class PolicyTests(unittest.TestCase):
                 body = json.load(response)
             self.assertEqual((body['settings']['revision'], body['settings']['primary']), (0, None)); self.assertIn('settings', body['problems'])
             headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
-            with patch('review_control.discovery', return_value={'profile': 'claude-opus'}) as discovery:
+            with patch('review_control.discovery', return_value={'profiles': ['claude-opus']}) as discovery:
                 stale = json.dumps({'revision': 3, 'primary': {'provider': 'acp:claude-code', 'model': 'opus[1m]'}, 'fallback': None}).encode()
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=stale, headers=headers))
@@ -163,8 +163,8 @@ class PolicyTests(unittest.TestCase):
                 fresh = json.dumps({'revision': 0, 'primary': {'provider': 'acp:claude-code', 'model': 'opus[1m]'}, 'fallback': None}).encode()
                 with urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=fresh, headers=headers)) as response:
                     saved = json.load(response)
-                # one role needs no separate check: its own prepare validates before it writes
-                self.assertEqual([each.args[0] for each in discovery.call_args_list], ['prepare'])
+                discovery.assert_called_once_with('prepare_all', selections=[
+                    {'selection': {'provider': 'acp:claude-code', 'model': 'opus[1m]', 'effort': None}, 'switch': False}])
             self.assertEqual((saved['settings']['revision'], saved['settings']['primary'], saved['problems']), (1, 'claude-opus', {}))
         finally: server.shutdown(); server.server_close(); thread.join()
 
@@ -382,28 +382,24 @@ class PolicyTests(unittest.TestCase):
         headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
         deep = {'provider': 'connection:x', 'model': 'm', 'effort': 'high'}
         fast = {'provider': 'connection:x', 'model': 'm', 'effort': 'low'}
-        prepared = lambda action, **kw: {'profile': 'api-fast' if kw.get('switch') else 'api-deep'}
+        prepared = lambda action, **kw: {'profiles': ['api-fast' if item['switch'] else 'api-deep' for item in kw['selections']]}
         try:
             with patch('review_control.discovery', side_effect=prepared) as discovery:
                 body = json.dumps({'revision': 0, 'primary': deep, 'secondary': fast, 'fallback': None}).encode()
                 with urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=body, headers=headers)) as response:
                     saved = json.load(response)['settings']
                 self.assertEqual((saved['primary'], saved['secondary'], saved['fallback']), ('api-deep', 'api-fast', None))
-                discovery.assert_any_call('prepare', selection=deep, switch=False)
-                discovery.assert_any_call('prepare', selection=fast, switch=True)
-                # both roles are checked in one call before the first profile is prepared
-                self.assertEqual(discovery.call_args_list[0], call('check', selections=[
-                    {'selection': deep, 'switch': False}, {'selection': fast, 'switch': True}]))
-                self.assertEqual([each.args[0] for each in discovery.call_args_list], ['check', 'prepare', 'prepare'])
-            # a role the helper refuses stops the save before any profile is prepared
-            refused = Mock(side_effect=lambda action, **kw: (_ for _ in ()).throw(review_control.DiscoveryFailed('helper reported an error')) if action == 'check' else {'profile': 'api-deep'})
-            with patch('review_control.discovery', refused):
-                body = json.dumps({'revision': 1, 'primary': deep, 'secondary': fast, 'fallback': None}).encode()
-                with self.assertRaises(urllib.error.HTTPError) as caught:
-                    urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=body, headers=headers))
-                self.assertEqual(caught.exception.code, 503)
-                self.assertEqual([each.args[0] for each in refused.call_args_list], ['check'], 'no profile is prepared after a refused check')
-            self.assertEqual(json.loads(review_policy.settings_path().read_text())['revision'], 1, 'the settings are unchanged')
+                # every role goes to the helper in one call, which checks all of them before it writes the first profile
+                discovery.assert_called_once_with('prepare_all', selections=[{'selection': deep, 'switch': False}, {'selection': fast, 'switch': True}])
+            # a save the helper refuses, or answers in another shape, changes no settings
+            for answer in [review_control.DiscoveryFailed('helper reported an error'), {}, {'profiles': ['api-deep']}, {'profiles': ['api-deep', '']}, {'profiles': 'api-deep'}]:
+                refused = Mock(side_effect=answer) if isinstance(answer, Exception) else Mock(return_value=answer)
+                with self.subTest(answer=answer), patch('review_control.discovery', refused):
+                    body = json.dumps({'revision': 1, 'primary': deep, 'secondary': fast, 'fallback': None}).encode()
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=body, headers=headers))
+                    self.assertEqual(caught.exception.code, 503); refused.assert_called_once()
+                    self.assertEqual(json.loads(review_policy.settings_path().read_text())['revision'], 1, 'the settings are unchanged')
             for primary, secondary in [(dict(deep, provider='acp:codex'), fast), (deep, dict(fast, provider='acp:codex')), (deep, deep),
                                        (dict(deep, effort=None), dict(fast, effort='high'))]:  # null effort is the API default
                 with self.subTest(primary=primary), patch('review_control.discovery', side_effect=prepared) as discovery:

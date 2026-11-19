@@ -494,25 +494,31 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'narrow'}), {'profile': 'review-narrow'})
             self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'open', 'effort': 'ultra'}), {'profile': 'review-open-ultra'})
         self.assertEqual([p['acp_model'] for p in written], ['narrow/max', 'narrow', 'open/ultra'])
-        # every role of one save is checked before the first profile is written: a refused later role leaves nothing behind
+        # every role of one save is checked before the first profile is written, against one model list per provider
         written.clear()
-        asked = []
-        def listed_once(provider):
-            asked.append(provider)
-            return listed
-        good, stale = {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'max'}, {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'ultra'}
+        events = []
+        sdk['openhands.sdk.profiles'].save_profile_preserving_identity = lambda store, profile, **kw: (written.append(dict(profile)), events.append('write'))
+        def listed_once(provider):  # a provider whose list loses `ultra` after its first answer
+            events.append('discover')
+            return {'models': [{'id': 'narrow', 'efforts': ['low', 'max'] if events.count('discover') > 1 else ['low', 'max', 'ultra']}]}
+        good, top = {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'max'}, {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'ultra'}
+        stale = {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'xhigh'}
         with patch.dict(sys.modules, sdk), patch('canvas_discovery.discover', side_effect=listed_once), \
              patch('canvas_discovery.selections', return_value={}), patch('canvas_discovery.stores', return_value=('cipher', None, empty)), \
              patch('canvas_discovery.agent_store', return_value=Agents()), patch('canvas_discovery.server_environment', return_value={}):
             with self.assertRaisesRegex(ValueError, 'Reasoning effort is not available for this model'):
-                canvas_discovery.check([{'selection': good, 'switch': False}, {'selection': stale, 'switch': False}])
-            self.assertEqual((written, asked), ([], ['acp:codex']), 'nothing is written, and one provider is asked once')
+                canvas_discovery.prepare_all([{'selection': good, 'switch': False}, {'selection': stale, 'switch': False}])
+            self.assertEqual((written, events), ([], ['discover']), 'a refused later role: nothing is written, and the provider is asked once')
             with self.assertRaisesRegex(ValueError, 'Reasoning profiles need an API provider'):
-                canvas_discovery.check([{'selection': good, 'switch': True}])
+                canvas_discovery.prepare_all([{'selection': good, 'switch': True}])
             for odd in (None, {}, [None], ['x'], [{}], [{'selection': None}]):
-                with self.subTest(odd=odd), self.assertRaises((ValueError, TypeError)): canvas_discovery.check(odd)
-            self.assertEqual(canvas_discovery.main({'action': 'check', 'selections': [{'selection': good}, {'selection': dict(good, effort=None)}]}), {'ok': True})
-            self.assertEqual(written, [], 'a check writes nothing')
+                with self.subTest(odd=odd), self.assertRaises((ValueError, TypeError)): canvas_discovery.prepare_all(odd)
+            self.assertEqual(written, [])
+            events.clear()
+            answer = canvas_discovery.main({'action': 'prepare_all', 'selections': [{'selection': good}, {'selection': top}]})
+        self.assertEqual(answer, {'profiles': ['review-narrow-max', 'review-narrow-ultra']})
+        self.assertEqual(events, ['discover', 'write', 'write'], 'no model list is fetched after the first write: a list that changes meanwhile refuses nothing')
+        self.assertEqual([p['acp_model'] for p in written], ['narrow/max', 'narrow/ultra'])
 
     def test_the_switch_tool_is_the_flag_of_sdk_1_49_or_an_entry_of_tools_from_sdk_1_51(self):
         import sys, types

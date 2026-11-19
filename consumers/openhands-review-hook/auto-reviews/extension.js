@@ -341,7 +341,10 @@ export function activate(host) {
       select(role, 'Model').onchange = () => {  // the new model may take other efforts: keep the chosen one where it does
         efforts(role, select(role, 'Effort').value); syncSecondary(); updateSave();
       };
-      select(role, 'Effort').onchange = updateSave;
+      select(role, 'Effort').onchange = () => {  // a replaced unavailable effort leaves the list: it is no choice to return to
+        select(role, 'Effort').querySelector('option[data-unavailable]:not(:checked)')?.remove();
+        updateSave();
+      };
     }
     form.onsubmit = async event => {
       event.preventDefault(); if (busy || !hasChanges()) return;

@@ -238,10 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                             str(candidate[k].get('provider', '')).startswith('acp:') for k in ('primary', 'secondary')):
                         raise ValueError('Reasoning profiles need API providers')
                     asked = [key for key in roles if isinstance(candidate[key], dict)]
-                    if len(asked) > 1:  # every role is checked before the first profile is written: a refused role leaves none behind
-                        discovery('check', selections=[{'selection': candidate[key], 'switch': key == 'secondary'} for key in asked])
-                    for key in asked:
-                        candidate[key] = discovery('prepare', selection=candidate[key], switch=key == 'secondary')['profile']
+                    if asked:  # one helper call for all roles: every role is checked before the first profile is written
+                        names = discovery('prepare_all', selections=[
+                            {'selection': candidate[key], 'switch': key == 'secondary'} for key in asked]).get('profiles')
+                        if not isinstance(names, list) or len(names) != len(asked) or not all(isinstance(name, str) and name for name in names):
+                            raise DiscoveryFailed('helper answered without the profiles')
+                        candidate.update(zip(asked, names))
                 data, problems = save_settings(candidate), {}
             else:
                 data, problems = load_settings()

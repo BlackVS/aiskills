@@ -37,8 +37,10 @@ SDK default), the Codex account agent encodes it in the ACP model id
 signature then shows), and the Claude account agent keeps its adapter default.
 A Codex model is offered only the efforts the adapter lists for it (one model
 may take `max` and not `ultra`), and saving an effort the chosen model does
-not list is refused. A save with several roles checks every role first, so a
-refused role leaves no new profile of another role behind. A saved effort
+not list is refused. A save sends all its roles to the helper in one call:
+each provider is asked for its models once, and every role is checked against
+that list before the first profile is written, so a refused role leaves no
+new profile of another role behind. A saved effort
 the model or provider no longer offers stays in the list, marked "not
 offered", and Save waits until a person replaces it: it is never turned
 into the adapter default on its own. A Codex profile without an effort runs at the adapter's
