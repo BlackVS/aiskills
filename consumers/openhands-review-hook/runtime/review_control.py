@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 import socketserver
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from canvas_discovery import Refused, normalize_effort, probe_shape
+from canvas_discovery import Refused, normalize_effort, probe_shape, selection_parts
 from review_policy import PairMismatch, load_settings, profiles, save_settings
 
 REPLIED = object()  # json_body() already answered the request
@@ -64,7 +64,8 @@ def discovery(action, **kwargs):
         raise DiscoveryFailed('helper output is not a JSON object')
     if data.get('error') == 'profile-limit' and isinstance(data.get('message'), str):
         raise ProfileLimitReached(data['message'])
-    if data.get('error') == 'refused' and isinstance(data.get('reason'), str) and data['reason'] in REFUSALS:
+    # only a save asks for selections: the same answer to any other action is a helper failure
+    if action == 'prepare_all' and data.get('error') == 'refused' and isinstance(data.get('reason'), str) and data['reason'] in REFUSALS:
         raise SelectionRefused(data['reason'], index=data.get('index'))
     if 'error' in data:
         raise DiscoveryFailed('helper reported an error')
@@ -247,14 +248,15 @@ class Handler(BaseHTTPRequestHandler):
                     optional_ok = all(candidate[k] is None or isinstance(candidate[k], dict) for k in ('secondary', 'fallback'))
                     if type(candidate['revision']) is not int or not isinstance(candidate['primary'], dict) or not optional_ok:
                         raise ValueError('Invalid selections')
-                    for key in roles:  # compare what prepare() will actually create
-                        if isinstance(candidate[key], dict) and isinstance(candidate[key].get('provider'), str) and ':' in candidate[key]['provider']:
-                            try:
-                                candidate[key] = dict(candidate[key], effort=normalize_effort(candidate[key]['provider'], candidate[key].get('effort')))
-                            except Refused as refused:
-                                if not isinstance(candidate[key].get('model'), str) or not candidate[key]['model']:
-                                    raise  # no model with it: a malformed request, not a choice to make again
-                                raise SelectionRefused(refused.reason, role=key) from None
+                    chosen_roles = [key for key in roles if isinstance(candidate[key], dict)]
+                    for key in chosen_roles:  # every role first: one that is no selection makes the whole request malformed,
+                        selection_parts(candidate[key])  # whatever another role would be refused for
+                    for key in chosen_roles:  # compare what prepare() will actually create
+                        provider = candidate[key]['provider']
+                        try:
+                            candidate[key] = dict(candidate[key], effort=normalize_effort(provider, candidate[key].get('effort')))
+                        except Refused as refused:
+                            raise SelectionRefused(refused.reason, role=key) from None
                     if candidate['revision'] != load_settings()[0]['revision']:
                         raise FileExistsError('Settings changed')
                     chosen = [json.dumps(candidate[k], sort_keys=True) for k in roles if candidate[k] is not None]

@@ -386,14 +386,60 @@ class PolicyTests(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
                 self.assertEqual((caught.exception.code, json.load(caught.exception)['error']), (409, 'Fallback reviewer: ' + effort + tail))
-                # an effort that is no text, or one that comes without a model, is a malformed request, not a choice to make again
-                for primary in [dict(one, effort=['max']), {'provider': 'acp:codex', 'effort': 'turbo'}, dict(one, model='', effort='turbo'), dict(one, model=None, effort='turbo')]:
+                # a role that has not the shape of a selection is a malformed request, not a choice to make again:
+                # an effort that is no text, no model (with an effort the provider takes, with one it does not, with none),
+                # a provider that is no `kind:name`, a field the service does not know
+                for primary in [dict(one, effort=['max']), {'provider': 'acp:codex', 'effort': 'turbo'}, dict(one, model='', effort='turbo'), dict(one, model=None, effort='turbo'),
+                                {'provider': 'acp:codex'}, {'provider': 'acp:codex', 'effort': None}, {'provider': 'acp:codex', 'effort': 'high'}, dict(one, model=''), dict(one, model=7),
+                                dict(one, provider='codex'), dict(one, provider=None), {'model': 'm'}, dict(one, extra='x'),
+                                dict(one, provider=':codex'), dict(one, provider='acp:'), dict(one, provider=':')]:
                     odd = json.dumps({'revision': 0, 'primary': primary, 'secondary': None, 'fallback': None}).encode()
                     with self.subTest(primary=primary), self.assertRaises(urllib.error.HTTPError) as caught:
                         urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
                     self.assertEqual(caught.exception.code, 400)
                     self.assertNotIn('no longer offered', json.load(caught.exception)['error'])
                 run.assert_not_called()
+            # a fallback that is no selection: the same answer, and the helper is not asked. Every role's shape is
+            # checked before any role's effort, so a primary that would be refused for its effort does not hide it
+            with patch('review_control.subprocess.run') as run:
+                for primary, fallback in [(one, {'provider': 'acp:codex'}), (dict(one, effort='turbo'), {'provider': 'acp:codex'}),
+                                          (dict(one, effort='turbo'), dict(one, model='n', effort=['max'])), (dict(one, effort='turbo'), dict(one, model='n', provider=':codex'))]:
+                    odd = json.dumps({'revision': 0, 'primary': primary, 'secondary': None, 'fallback': fallback}).encode()
+                    with self.subTest(primary=primary, fallback=fallback), self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertNotIn('no longer offered', json.load(caught.exception)['error'])
+                run.assert_not_called()
+            self.assertFalse(review_policy.settings_path().exists(), 'nothing saved')
+        finally: server.shutdown(); server.server_close(); thread.join()
+
+    def test_a_refusal_answered_to_another_action_is_that_endpoints_general_failure(self):
+        import io
+        from types import SimpleNamespace
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        base = f'http://127.0.0.1:{server.server_port}/api/review-control'
+        headers = {'X-Session-API-Key': 'test-key', 'Content-Type': 'application/json'}
+        refused = SimpleNamespace(returncode=0, stdout=json.dumps({'error': 'refused', 'reason': 'model', 'index': 0}))
+        unavailable = 'Canvas discovery or settings unavailable. Check provider URL, credentials, and account login, then reload.'
+
+        def send(method, path, body=None):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(base + path, method=method, data=body, headers=headers)) as response:
+                    return response.status, json.load(response)
+            except urllib.error.HTTPError as error:
+                return error.code, json.load(error)
+        try:
+            with patch('sys.stderr', new_callable=io.StringIO) as log, patch('review_control.subprocess.run', return_value=refused):
+                self.assertEqual(send('GET', '/providers'), (503, {'error': unavailable}))
+                self.assertEqual(send('GET', '/models?provider=acp:codex'), (503, {'error': unavailable}))
+                probe = json.dumps({'base_url': 'https://example.com', 'api_key': 'test-only'}).encode()
+                self.assertEqual(send('POST', '/test-provider', probe), (200, {'ok': False, 'message': 'Connection test unavailable or timed out. Try again.'}))
+                self.assertEqual(log.getvalue().count('helper reported an error'), 3, 'each is logged as a helper failure')
+                # the save is the one action whose refusal is the person's to act on
+                body = json.dumps({'revision': 0, 'primary': {'provider': 'acp:codex', 'model': 'm', 'effort': None}, 'secondary': None, 'fallback': None}).encode()
+                status, answer = send('PUT', '/settings', body)
+                self.assertEqual((status, answer['error'].startswith('Primary reviewer: this model is no longer offered')), (409, True))
             self.assertFalse(review_policy.settings_path().exists(), 'nothing saved')
         finally: server.shutdown(); server.server_close(); thread.join()
 
