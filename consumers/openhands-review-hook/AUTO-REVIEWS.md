@@ -37,7 +37,11 @@ SDK default), the Codex account agent encodes it in the ACP model id
 signature then shows), and the Claude account agent keeps its adapter default.
 A Codex model is offered only the efforts the adapter lists for it (one model
 may take `max` and not `ultra`), and saving an effort the chosen model does
-not list is refused. A Codex profile without an effort runs at the adapter's
+not list is refused. A save with several roles checks every role first, so a
+refused role leaves no new profile of another role behind. A saved effort
+the model or provider no longer offers stays in the list, marked "not
+offered", and Save waits until a person replaces it: it is never turned
+into the adapter default on its own. A Codex profile without an effort runs at the adapter's
 default, which can be `low`: choose one for reviews. A profile whose own
 effort field was set in the Canvas profile editor shows that effort here. Effort support is model-specific on a shared endpoint (on one
 proxied endpoint `none` was accepted by one model and rejected by another,

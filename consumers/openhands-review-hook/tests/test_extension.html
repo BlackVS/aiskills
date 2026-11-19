@@ -150,6 +150,25 @@ try {
   check(offered() === ',low,medium,high,xhigh,max,ultra' && form.elements.primaryEffort.value === 'ultra', 'Without per-model efforts the provider list stands: ' + offered());
   perModel = true; document.querySelector('[data-reload]').click(); await settle();
   check(form.elements.primaryModel.value === 'astra' && form.elements.primaryEffort.value === 'ultra', 'Reload restores the saved choice');
+  // Revert restores the model's efforts with the model: the list of the provider left behind must not stand in
+  form.elements.primaryProvider.value='acp:claude-code'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
+  document.querySelector('[data-revert]').click(); await settle();
+  check(form.elements.primaryProvider.value === 'acp:codex' && form.elements.primaryModel.value === 'astra' && form.elements.primaryEffort.value === 'ultra', 'Revert restores the saved Codex choice');
+  await pickModel('sol');
+  check(offered() === ',low,medium,high,max', 'After a revert a model still narrows the list: ' + offered());
+  document.querySelector('[data-revert]').click(); await settle();
+  // a saved effort the model no longer takes is shown and must be replaced: it is never turned into the adapter default
+  const saveButton = form.querySelector('[type=submit]'), lost = () => form.elements.primaryEffort.selectedOptions[0];
+  selections['saved-primary'] = {...selections['saved-primary'], model:'sol', effort:'xhigh'}; document.querySelector('[data-reload]').click(); await settle();
+  check(form.elements.primaryEffort.value === 'xhigh' && lost().text.includes('not offered for this model') && saveButton.disabled && !form.elements.primaryEffort.disabled, 'A saved effort the model no longer takes stays visible: ' + lost().text);
+  form.elements.fallbackModel.value = [...form.elements.fallbackModel.options].find(option => option.value !== form.elements.fallbackModel.value).value; form.elements.fallbackModel.dispatchEvent(new Event('change')); await settle();
+  check(saveButton.disabled && form.elements.primaryEffort.value === 'xhigh', 'Another edit cannot save while that effort stands');
+  document.querySelector('[data-revert]').click(); await settle();
+  check(form.elements.primaryEffort.value === 'xhigh' && lost().text.includes('not offered for this model') && saveButton.disabled, 'Revert keeps the unavailable effort marked');
+  form.elements.primaryEffort.value = 'max'; form.elements.primaryEffort.dispatchEvent(new Event('change')); await settle();
+  check(!saveButton.disabled, 'Replacing it enables Save');
+  form.dispatchEvent(new Event('submit',{cancelable:true})); await settle();
+  check(lastSaved.primary.effort === 'max' && lastSaved.primary.model === 'sol', 'The replacement is saved');
   form.elements.primaryProvider.value='api-7f3c'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.primaryEffort.value === 'high' && !form.elements.secondaryProvider.disabled, 'API primary: default effort high, secondary available');
   check([...form.elements.secondaryProvider.options].every(option => !option.value.startsWith('acp:')), 'Secondary lists API providers only');
@@ -160,7 +179,7 @@ try {
   document.querySelector('[data-reload]').click(); await settle();
   check(form.elements.primaryEffort.value === 'high' && form.elements.secondaryProvider.value === 'api-7f3c' && form.elements.secondaryEffort.value === 'low' && document.querySelector('[data-secondary-hint]').textContent === '', 'Saved effort and secondary restored after reload; hint cleared');
   selections['saved-primary'].effort = 'turbo'; document.querySelector('[data-reload]').click(); await settle();
-  check(form.elements.primaryEffort.value === 'high', 'A saved effort the provider no longer offers falls back to the default');
+  check(form.elements.primaryEffort.value === 'turbo' && form.elements.primaryEffort.selectedOptions[0].text.includes('not offered') && form.querySelector('[type=submit]').disabled, 'A saved effort the provider no longer offers stays visible until replaced');
   form.elements.primaryProvider.value='acp:codex'; form.elements.primaryProvider.dispatchEvent(new Event('change')); await settle();
   check(form.elements.secondaryProvider.value === '' && form.elements.secondaryProvider.disabled && form.elements.primaryModel.value === 'astra', 'Switching primary to an account agent clears and disables the secondary');
   check(document.querySelector('[data-unsaved]').textContent === 'Unsaved changes' && !form.querySelector('[type=submit]').disabled, 'Clearing the secondary is an unsaved change');
@@ -283,6 +302,6 @@ try {
   check(!(await showLogin({state:'<b>new</b>', expires: null})), 'A state this page does not know shows no line');
   check(!(await showLogin('present')), 'A login that is not an object shows no line');
   await showLogin(undefined);
-  document.querySelector('#result').textContent='PASS: efforts per model (narrowed to the chosen model, a kept choice, the provider list from a server without them), account login lines (valid, ending soon, ended, cleared, missing, unreadable, none from an older server), forge contact lines (failing, quiet, reachable, unreadable, none without the endpoint), restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
+  document.querySelector('#result').textContent='PASS: efforts per model (narrowed to the chosen model, also after a revert; a kept choice; a saved effort no longer offered stays until replaced; the provider list from a server without them), account login lines (valid, ending soon, ended, cleared, missing, unreadable, none from an older server), forge contact lines (failing, quiet, reachable, unreadable, none without the endpoint), restore, provider change, save, add provider, credential clearing, HTML escaping, save failure (with the settings API text when it has one), reload, preflight prevents failed saves, independent model list (kept when the stored URL differs in form), connection-test errors shown the same whether the host resolves or throws (a thrown HttpError shows the server message), safe edit (PATCH path, leaves edit mode), row actions by key, a token of spaces refused in add and edit mode, add-path probe body, reopening reuses model cache, reload and test refresh (List models after Test connection reuses its result), failed discovery retries, deleted or broken saved profiles warn and wait for a person (the warning of a deleted secondary goes when an account primary clears it), effort per profile, secondary reading profile gated to API providers, combined-mode save, unsaved reviewer choices (and replacements of broken profiles) survive a provider edit';
 } catch(error) { document.querySelector('#result').textContent='FAIL: '+error.message; }
 </script></html>

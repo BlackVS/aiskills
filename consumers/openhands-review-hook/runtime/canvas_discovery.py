@@ -120,7 +120,8 @@ def session_models(result):
     if not found:
         raise ValueError('ACP did not advertise models')
     listed = result.get('models')
-    for row in (listed.get('availableModels') or []) if isinstance(listed, dict) else []:
+    listed = listed.get('availableModels') if isinstance(listed, dict) else None
+    for row in listed if isinstance(listed, list) else []:
         name = row.get('modelId') if isinstance(row, dict) else None
         entry = EFFORT_ENTRY.fullmatch(name) if isinstance(name, str) else None
         if entry and entry[1] in found and entry[2] not in found[entry[1]].setdefault('efforts', []):
@@ -514,14 +515,10 @@ def profile_name(model, effort, switch, taken):
     return name
 
 
-def prepare(selection, switch=False):
-    """Reuse matching profiles; otherwise create a new immutable launch choice.
-
-    `selection` is {provider, model[, effort]}. `switch` asks for the reading
-    profile of combined mode: an OpenHands-kind agent with the switch_llm tool.
-    """
-    from openhands.sdk.profiles import validate_agent_profile, save_profile_preserving_identity
-    from openhands.sdk.llm import LLM
+def validated(selection, switch=False, discovered=None):
+    """A selection's provider, model and effort, checked against what its provider advertises
+    now. Writes nothing. `discovered` keeps each provider's model list across the roles of one
+    request."""
     if not isinstance(selection, dict) or not {'provider', 'model'} <= set(selection) <= {'provider', 'model', 'effort'}:
         raise ValueError('Expected provider, model and optional effort')
     provider, model = selection['provider'], selection['model']
@@ -530,11 +527,37 @@ def prepare(selection, switch=False):
     effort = normalize_effort(provider, selection.get('effort'))
     if switch and provider.startswith('acp:'):
         raise ValueError('Reasoning profiles need an API provider')
-    advertised = {m['id']: m for m in discover(provider)['models']}
+    discovered = {} if discovered is None else discovered
+    if provider not in discovered:
+        discovered[provider] = discover(provider)['models']
+    advertised = {m['id']: m for m in discovered[provider]}
     if model not in advertised:
         raise ValueError('Model is not advertised by this provider')
     if effort is not None and effort not in advertised[model].get('efforts', [effort]):
         raise ValueError('Reasoning effort is not available for this model')
+    return provider, model, effort
+
+
+def check(requests):
+    """Every role of one save, checked before the first profile is written: a role the
+    provider refuses must not leave another role's new profile behind."""
+    if not isinstance(requests, list) or not all(isinstance(item, dict) for item in requests):
+        raise ValueError('Expected a list of selections')
+    discovered = {}
+    for item in requests:
+        validated(item.get('selection'), bool(item.get('switch', False)), discovered)
+    return {'ok': True}
+
+
+def prepare(selection, switch=False):
+    """Reuse matching profiles; otherwise create a new immutable launch choice.
+
+    `selection` is {provider, model[, effort]}. `switch` asks for the reading
+    profile of combined mode: an OpenHands-kind agent with the switch_llm tool.
+    """
+    from openhands.sdk.profiles import validate_agent_profile, save_profile_preserving_identity
+    from openhands.sdk.llm import LLM
+    provider, model, effort = validated(selection, switch)
     if kind_of(provider) == 'profile':  # several hand-made profiles with one endpoint and key are one source
         provider = 'profile:' + canonical_source(provider.split(':', 1)[1])
     wanted = {'provider': provider, 'model': model, 'effort': effort}
@@ -719,6 +742,8 @@ def main(request, proc_root='/proc'):
         return discover(request['provider'])
     if action == 'probe':
         return probe(request['request'])
+    if action == 'check':
+        return check(request['selections'])
     if action == 'prepare':
         return prepare(request['selection'], switch=bool(request.get('switch', False)))
     raise ValueError('Unknown action')

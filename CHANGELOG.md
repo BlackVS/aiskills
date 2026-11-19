@@ -21,8 +21,13 @@ content fixes inside existing skills. The current version is in `VERSION`.
   was set in the Canvas profile editor shows that effort instead of
   "Adapter default", and a new profile built from such a profile no longer
   inherits that field, which would have overridden the effort chosen in
-  Auto Reviews. A Codex profile without an effort runs at the adapter
-  default, which can be `low`. A hands site:
+  Auto Reviews. A saved effort the model or provider no longer offers
+  stays visible, marked "not offered", and Save waits until it is
+  replaced; before, the page showed the default in its place and the next
+  save of any other field stored that. A save with several roles checks
+  every role before the first profile is written, so a refused role
+  leaves no new profile of another role behind. A Codex profile without
+  an effort runs at the adapter default, which can be `low`. A hands site:
   `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
 - hands: the Auto Reviews page shows how each account connection's login
   stands, and a review that fails on it says so. An account login (Claude,

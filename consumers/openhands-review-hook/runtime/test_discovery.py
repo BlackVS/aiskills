@@ -53,7 +53,7 @@ class DiscoveryTests(unittest.TestCase):
                                'models': {'availableModels': [{'modelId': 'one[low]'}, {'modelId': 'one[ultra]'}, {'modelId': 'one[ultra]'},
                                                               {'modelId': 'other[low]'}, {'modelId': 'two'}, {'modelId': 'two[1m]'}, {'modelId': 5}, {}, 'two[low]', None]}})
         self.assertEqual(both, [{'id': 'one', 'label': 'One', 'efforts': ['low', 'ultra']}, {'id': 'two', 'label': 'Two'}])
-        for odd in (None, [], 'x', {'availableModels': None}):  # a list that is not the expected shape changes nothing
+        for odd in (None, [], 'x', True, {'availableModels': None}, {'availableModels': True}, {'availableModels': {'modelId': 'one[low]'}}):  # a list that is not the expected shape changes nothing
             self.assertEqual(session_models({'configOptions': [{'id': 'model', 'options': [{'value': 'one', 'name': 'One'}]}], 'models': odd}),
                              [{'id': 'one', 'label': 'One'}])
 
@@ -494,6 +494,25 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'narrow'}), {'profile': 'review-narrow'})
             self.assertEqual(canvas_discovery.prepare({'provider': 'acp:codex', 'model': 'open', 'effort': 'ultra'}), {'profile': 'review-open-ultra'})
         self.assertEqual([p['acp_model'] for p in written], ['narrow/max', 'narrow', 'open/ultra'])
+        # every role of one save is checked before the first profile is written: a refused later role leaves nothing behind
+        written.clear()
+        asked = []
+        def listed_once(provider):
+            asked.append(provider)
+            return listed
+        good, stale = {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'max'}, {'provider': 'acp:codex', 'model': 'narrow', 'effort': 'ultra'}
+        with patch.dict(sys.modules, sdk), patch('canvas_discovery.discover', side_effect=listed_once), \
+             patch('canvas_discovery.selections', return_value={}), patch('canvas_discovery.stores', return_value=('cipher', None, empty)), \
+             patch('canvas_discovery.agent_store', return_value=Agents()), patch('canvas_discovery.server_environment', return_value={}):
+            with self.assertRaisesRegex(ValueError, 'Reasoning effort is not available for this model'):
+                canvas_discovery.check([{'selection': good, 'switch': False}, {'selection': stale, 'switch': False}])
+            self.assertEqual((written, asked), ([], ['acp:codex']), 'nothing is written, and one provider is asked once')
+            with self.assertRaisesRegex(ValueError, 'Reasoning profiles need an API provider'):
+                canvas_discovery.check([{'selection': good, 'switch': True}])
+            for odd in (None, {}, [None], ['x'], [{}], [{'selection': None}]):
+                with self.subTest(odd=odd), self.assertRaises((ValueError, TypeError)): canvas_discovery.check(odd)
+            self.assertEqual(canvas_discovery.main({'action': 'check', 'selections': [{'selection': good}, {'selection': dict(good, effort=None)}]}), {'ok': True})
+            self.assertEqual(written, [], 'a check writes nothing')
 
     def test_the_switch_tool_is_the_flag_of_sdk_1_49_or_an_entry_of_tools_from_sdk_1_51(self):
         import sys, types

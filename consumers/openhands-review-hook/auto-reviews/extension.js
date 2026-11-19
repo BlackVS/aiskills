@@ -116,14 +116,16 @@ export function activate(host) {
     const providerOf = id => providers.find(item => item.id === id);
     // The inventory row says whether an agent can be a reading profile; older servers omit the field.
     const switchable = id => { const p = providerOf(id); return !!p && (p.switchable ?? p.kind === 'api'); };
-    // The efforts a role can choose: the provider's, narrowed to the chosen model's where the server lists them per model.
-    const modelRows = {};
+    // The efforts a role can choose: the provider's, narrowed to the chosen model's where the server lists them per
+    // model. The model's list travels on its option, so it is restored with the option and cannot go stale.
     const effortsOf = role => {
       const all = providerOf(select(role, 'Provider').value)?.efforts || [];
-      const row = (modelRows[role] || []).find(item => item.id === select(role, 'Model').value);
-      return Array.isArray(row?.efforts) ? all.filter(effort => row.efforts.includes(effort)) : all;
+      const listed = select(role, 'Model').selectedOptions[0]?.dataset.efforts;
+      return listed === undefined ? all : all.filter(effort => listed.split(',').includes(effort));
     };
-    const effortSelectable = role => effortsOf(role).length > 0;
+    // A saved effort the chosen model no longer takes stays visible until a person replaces it.
+    const lostEffort = role => select(role, 'Effort').selectedOptions[0]?.dataset.unavailable !== undefined;
+    const effortSelectable = role => effortsOf(role).length > 0 || !!select(role, 'Effort').querySelector('option[data-unavailable]');
     function currentSelection() {
       const choice = role => select(role, 'Provider').value ? {provider: select(role, 'Provider').value, model: select(role, 'Model').value, effort: select(role, 'Effort').value || null} : null;
       return {primary: choice('primary'), secondary: choice('secondary'), fallback: choice('fallback')};
@@ -135,7 +137,7 @@ export function activate(host) {
       const flagged = [...roles, 'settings'].some(slot => root.querySelector(`[data-warning="${slot}"]`)?.textContent);
       return !flagged && known(primary) && known(secondary) && known(fallback)
         && !!primary?.model && (!secondary || !!secondary.model) && (!fallback || !!fallback.model)
-        && new Set(chosen).size === chosen.length
+        && new Set(chosen).size === chosen.length && !roles.some(lostEffort)
         && (!secondary || (switchable(primary.provider) && switchable(secondary.provider)));
     }
     function syncSecondary() {
@@ -157,7 +159,7 @@ export function activate(host) {
       savedSelection = JSON.stringify(currentSelection());
       savedControls = [...form.querySelectorAll('select')].map(control => ({
         name: control.name, value: control.value,
-        options: [...control.options].map(option => ({text: option.text, value: option.value}))
+        options: [...control.options].map(option => ({text: option.text, value: option.value, data: {...option.dataset}}))
       }));
     }
     function updateSave() {
@@ -193,7 +195,8 @@ export function activate(host) {
       }
       updateSave();
     }
-    function efforts(role, current) {
+    // `saved`: `current` is a stored choice, not one a person is making now.
+    function efforts(role, current, saved) {
       const picker = select(role, 'Effort'), provider = providerOf(select(role, 'Provider').value);
       picker.replaceChildren();
       if (!provider) return;
@@ -201,11 +204,15 @@ export function activate(host) {
       if (provider.kind !== 'api') picker.add(new Option(options.length ? 'Adapter default' : 'Adapter default (not selectable)', ''));
       for (const effort of options) picker.add(new Option(effort, effort));
       picker.value = current && options.includes(current) ? current : provider.kind === 'api' ? (options.includes('high') ? 'high' : options[0] || '') : '';
-      picker.disabled = busy || !options.length;
+      if (saved && current && !options.includes(current)) {  // never replaced silently: the adapter default may be far lower
+        const lost = new Option(current + ' (not offered for this model; choose an effort)', current, true, true);
+        lost.dataset.unavailable = ''; picker.add(lost);
+      }
+      picker.disabled = busy || !effortSelectable(role);
     }
     async function models(role, current, effort) {
       const provider = select(role, "Provider").value, model = select(role, "Model");
-      modelRows[role] = []; model.replaceChildren(); efforts(role, effort);
+      model.replaceChildren(); efforts(role, effort);
       if (!provider) return;
       const providerName = providers.find(item => item.id === provider)?.name || provider;
       message(`Fetching ${role} models from ${providerName}… Provider discovery can take a few seconds.`);
@@ -218,11 +225,15 @@ export function activate(host) {
       }
       if (disposed) return;
       model.replaceChildren();
-      for (const item of data.models) model.add(new Option(item.label, item.id));
+      for (const item of data.models) {
+        const option = new Option(item.label, item.id);
+        if (Array.isArray(item.efforts)) option.dataset.efforts = item.efforts.join(',');
+        model.add(option);
+      }
       if (current && data.models.some(m => m.id === current)) model.value = current;
       else if (current) { model.add(new Option(current + " (not advertised; choose a model)", "", true, true)); }
       if (!data.models.length) throw new Error("This provider returned no models.");
-      modelRows[role] = data.models; efforts(role, effort);  // now for the chosen model
+      efforts(role, effort, true);  // now for the chosen model
     }
     // The receivers' contact with their forges. An outage cannot be reported on a pull request,
     // so it shows here; a server without the status endpoint shows nothing.
@@ -483,7 +494,11 @@ export function activate(host) {
       if (busy || !savedControls) return;
       for (const saved of savedControls) {
         const control = form.elements[saved.name];
-        control.replaceChildren(...saved.options.map(option => new Option(option.text, option.value)));
+        control.replaceChildren(...saved.options.map(option => {
+          const restored = new Option(option.text, option.value);
+          Object.assign(restored.dataset, option.data || {});  // a model's efforts, an unavailable effort's mark
+          return restored;
+        }));
         control.value = saved.value;
       }
       lock(false);

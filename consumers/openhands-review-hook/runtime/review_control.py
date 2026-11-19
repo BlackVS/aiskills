@@ -237,9 +237,11 @@ class Handler(BaseHTTPRequestHandler):
                     if candidate['secondary'] is not None and any(
                             str(candidate[k].get('provider', '')).startswith('acp:') for k in ('primary', 'secondary')):
                         raise ValueError('Reasoning profiles need API providers')
-                    for key in roles:
-                        if isinstance(candidate[key], dict):
-                            candidate[key] = discovery('prepare', selection=candidate[key], switch=key == 'secondary')['profile']
+                    asked = [key for key in roles if isinstance(candidate[key], dict)]
+                    if len(asked) > 1:  # every role is checked before the first profile is written: a refused role leaves none behind
+                        discovery('check', selections=[{'selection': candidate[key], 'switch': key == 'secondary'} for key in asked])
+                    for key in asked:
+                        candidate[key] = discovery('prepare', selection=candidate[key], switch=key == 'secondary')['profile']
                 data, problems = save_settings(candidate), {}
             else:
                 data, problems = load_settings()
