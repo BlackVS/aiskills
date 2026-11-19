@@ -69,11 +69,22 @@ def split_codex_model(acp_model):
     return acp_model, None
 
 
+class Refused(ValueError):
+    """A selection its provider does not offer now. `reason` is one of a few fixed words
+    (`model`, `effort`), never text from a provider, so it may leave the helper and tell the
+    person what to choose again; `index` is the selection's place in a request of several."""
+    def __init__(self, reason, text, index=None):
+        super().__init__(text)
+        self.reason, self.index = reason, index
+
+
 def normalize_effort(provider, effort):
     """Validate an effort for a provider kind and apply the API default."""
     options = effort_options(provider)
-    if effort is not None and (not isinstance(effort, str) or effort not in options):
-        raise ValueError('Reasoning effort is not available for this provider')
+    if effort is not None and not isinstance(effort, str):
+        raise ValueError('Invalid reasoning effort')  # no choice a person made: a malformed request
+    if effort is not None and effort not in options:
+        raise Refused('effort', 'Reasoning effort is not available for this provider')
     if effort is None and provider.split(':', 1)[0] != 'acp':
         return API_DEFAULT_EFFORT
     return effort
@@ -532,9 +543,9 @@ def validated(selection, switch=False, discovered=None):
         discovered[provider] = discover(provider)['models']
     advertised = {m['id']: m for m in discovered[provider]}
     if model not in advertised:
-        raise ValueError('Model is not advertised by this provider')
+        raise Refused('model', 'Model is not advertised by this provider')
     if effort is not None and effort not in advertised[model].get('efforts', [effort]):
-        raise ValueError('Reasoning effort is not available for this model')
+        raise Refused('effort', 'Reasoning effort is not available for this model')
     return provider, model, effort
 
 
@@ -548,8 +559,12 @@ def prepare_all(requests):
         raise ValueError('Expected a list of selections')
     asked = [(item.get('selection'), bool(item.get('switch', False))) for item in requests]
     discovered = {}
-    for selection, switch in asked:
-        validated(selection, switch, discovered)
+    for index, (selection, switch) in enumerate(asked):
+        try:
+            validated(selection, switch, discovered)
+        except Refused as refused:  # the caller names the role by its place in the request
+            refused.index = index
+            raise
     return {'profiles': [prepare(selection, switch, discovered)['profile'] for selection, switch in asked]}
 
 
@@ -757,11 +772,14 @@ def main(request, proc_root='/proc'):
 def answer(request):
     """The document and exit status this helper prints for one request. On failure only fixed
     text leaves it (provider responses and SDK exceptions may contain credentials); a full
-    profile store is reported with its counts, as `profile-limit`, so the user can act on it."""
+    profile store is reported with its counts, as `profile-limit`, and a selection the provider
+    does not offer now as `refused` with its fixed reason, so the user can act on either."""
     try:
         return main(request), 0
     except ProfileLimit as error:
         return {'error': 'profile-limit', 'message': str(error)}, 0
+    except Refused as error:
+        return {'error': 'refused', 'reason': error.reason, 'index': error.index}, 0
     except Exception:
         return {'error': 'Discovery failed. Check provider credentials, URL, and account login in Canvas.'}, 1
 
