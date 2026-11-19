@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.45.0] - 2026-11-19
+
+Two additions for hands sites and a change to the Windows one-liner. The
+Auto Reviews page shows how each account connection's login stands, and
+a review that fails on the login says so on the pull request (#142). The
+Codex account connection offers every reasoning effort its adapter names,
+`max` and `ultra` included, each model only those it takes (#143). The
+Windows one-liner is documented in its plain form first, and an
+execution policy it cannot lift names the ways out (#141); that is in
+`README.md` and `boot.ps1`, which the one-liner always reads from `main`.
+A hands site: see the 1.45.0 row in
+`consumers/openhands-review-hook/UPDATING.md`. The installed skills and
+prompts are the same as in 1.44.1.
+
 ### Added
 
 - hands: Auto Reviews offers every reasoning effort the Codex account
