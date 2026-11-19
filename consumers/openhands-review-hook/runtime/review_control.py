@@ -248,13 +248,15 @@ class Handler(BaseHTTPRequestHandler):
                     optional_ok = all(candidate[k] is None or isinstance(candidate[k], dict) for k in ('secondary', 'fallback'))
                     if type(candidate['revision']) is not int or not isinstance(candidate['primary'], dict) or not optional_ok:
                         raise ValueError('Invalid selections')
-                    for key in roles:  # compare what prepare() will actually create
-                        if isinstance(candidate[key], dict):
-                            provider, _ = selection_parts(candidate[key])  # a role that is no selection is a malformed request
-                            try:
-                                candidate[key] = dict(candidate[key], effort=normalize_effort(provider, candidate[key].get('effort')))
-                            except Refused as refused:
-                                raise SelectionRefused(refused.reason, role=key) from None
+                    chosen_roles = [key for key in roles if isinstance(candidate[key], dict)]
+                    for key in chosen_roles:  # every role first: one that is no selection makes the whole request malformed,
+                        selection_parts(candidate[key])  # whatever another role would be refused for
+                    for key in chosen_roles:  # compare what prepare() will actually create
+                        provider = candidate[key]['provider']
+                        try:
+                            candidate[key] = dict(candidate[key], effort=normalize_effort(provider, candidate[key].get('effort')))
+                        except Refused as refused:
+                            raise SelectionRefused(refused.reason, role=key) from None
                     if candidate['revision'] != load_settings()[0]['revision']:
                         raise FileExistsError('Settings changed')
                     chosen = [json.dumps(candidate[k], sort_keys=True) for k in roles if candidate[k] is not None]

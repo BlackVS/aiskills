@@ -522,7 +522,8 @@ class DiscoveryTests(unittest.TestCase):
             # the shape of a selection is one definition, shared with the settings service
             self.assertEqual(canvas_discovery.selection_parts(good), ('acp:codex', 'narrow'))
             for odd in (None, [], {}, {'provider': 'acp:codex'}, {'model': 'narrow'}, dict(good, model=''), dict(good, model=7), dict(good, provider='codex'),
-                        dict(good, provider=None), dict(good, extra='x')):
+                        dict(good, provider=None), dict(good, extra='x'), dict(good, provider=':codex'), dict(good, provider='acp:'), dict(good, provider=':'),
+                        dict(good, effort=['max']), dict(good, effort=5)):
                 with self.subTest(odd=odd), self.assertRaises(ValueError) as shape:
                     canvas_discovery.selection_parts(odd)
                 self.assertNotIsInstance(shape.exception, canvas_discovery.Refused)

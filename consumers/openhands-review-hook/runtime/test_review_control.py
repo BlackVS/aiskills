@@ -391,19 +391,24 @@ class PolicyTests(unittest.TestCase):
                 # a provider that is no `kind:name`, a field the service does not know
                 for primary in [dict(one, effort=['max']), {'provider': 'acp:codex', 'effort': 'turbo'}, dict(one, model='', effort='turbo'), dict(one, model=None, effort='turbo'),
                                 {'provider': 'acp:codex'}, {'provider': 'acp:codex', 'effort': None}, {'provider': 'acp:codex', 'effort': 'high'}, dict(one, model=''), dict(one, model=7),
-                                dict(one, provider='codex'), dict(one, provider=None), {'model': 'm'}, dict(one, extra='x')]:
+                                dict(one, provider='codex'), dict(one, provider=None), {'model': 'm'}, dict(one, extra='x'),
+                                dict(one, provider=':codex'), dict(one, provider='acp:'), dict(one, provider=':')]:
                     odd = json.dumps({'revision': 0, 'primary': primary, 'secondary': None, 'fallback': None}).encode()
                     with self.subTest(primary=primary), self.assertRaises(urllib.error.HTTPError) as caught:
                         urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
                     self.assertEqual(caught.exception.code, 400)
                     self.assertNotIn('no longer offered', json.load(caught.exception)['error'])
                 run.assert_not_called()
-            # a fallback that is no selection, beside a valid primary: the same answer, and the helper is not asked
+            # a fallback that is no selection: the same answer, and the helper is not asked. Every role's shape is
+            # checked before any role's effort, so a primary that would be refused for its effort does not hide it
             with patch('review_control.subprocess.run') as run:
-                odd = json.dumps({'revision': 0, 'primary': one, 'secondary': None, 'fallback': {'provider': 'acp:codex'}}).encode()
-                with self.assertRaises(urllib.error.HTTPError) as caught:
-                    urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
-                self.assertEqual(caught.exception.code, 400)
+                for primary, fallback in [(one, {'provider': 'acp:codex'}), (dict(one, effort='turbo'), {'provider': 'acp:codex'}),
+                                          (dict(one, effort='turbo'), dict(one, model='n', effort=['max'])), (dict(one, effort='turbo'), dict(one, model='n', provider=':codex'))]:
+                    odd = json.dumps({'revision': 0, 'primary': primary, 'secondary': None, 'fallback': fallback}).encode()
+                    with self.subTest(primary=primary, fallback=fallback), self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertNotIn('no longer offered', json.load(caught.exception)['error'])
                 run.assert_not_called()
             self.assertFalse(review_policy.settings_path().exists(), 'nothing saved')
         finally: server.shutdown(); server.server_close(); thread.join()

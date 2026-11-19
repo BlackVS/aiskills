@@ -528,12 +528,16 @@ def profile_name(model, effort, switch, taken):
 
 def selection_parts(selection):
     """The provider and model of a selection that has the shape of one: {provider, model[, effort]}
-    with a `kind:name` provider and a model that is non-empty text. Anything else is a malformed
-    request, which no reload or new choice repairs. The settings service asks this first too."""
+    with a `kind:name` provider (both parts non-empty), a model that is non-empty text and an
+    effort that is text or absent. Anything else is a malformed request, which no reload or new
+    choice repairs. The settings service asks this first too."""
     if not isinstance(selection, dict) or not {'provider', 'model'} <= set(selection) <= {'provider', 'model', 'effort'}:
         raise ValueError('Expected provider, model and optional effort')
     provider, model = selection['provider'], selection['model']
-    if not isinstance(provider, str) or not isinstance(model, str) or ':' not in provider or not model:
+    if not isinstance(provider, str) or not isinstance(model, str) or not model:
+        raise ValueError('Invalid selection')
+    kind, _, name = provider.partition(':')
+    if not kind or not name or not isinstance(selection.get('effort'), (str, type(None))):
         raise ValueError('Invalid selection')
     return provider, model
 
