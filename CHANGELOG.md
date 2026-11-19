@@ -43,7 +43,7 @@ prompts are the same as in 1.44.1.
   checks every role before the first profile is written, so a refused
   role leaves no new profile of another role behind. A Codex profile without
   an effort runs at the adapter default, which can be `low`. A hands site:
-  `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
+  `consumers/openhands-review-hook/UPDATING.md`, row 1.45.0.
 - hands: the Auto Reviews page shows how each account connection's login
   stands, and a review that fails on it says so. An account login (Claude,
   Codex) ends on its own, a Claude subscription login after about a
@@ -59,7 +59,7 @@ prompts are the same as in 1.44.1.
   the label), and the journal logs `review account login failure`. The
   runner recognizes it from the final run of error events, because the
   terminal event of an ended login is a generic one. A hands site:
-  `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
+  `consumers/openhands-review-hook/UPDATING.md`, row 1.45.0.
 
 ### Changed
 
