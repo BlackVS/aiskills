@@ -50,7 +50,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 # carry it in the ACP model id ("model/effort", which the SDK splits into the
 # reasoning_effort config option); the Claude account adapter takes none.
 API_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
-CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh']
+CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']  # every effort the adapter names; a model may take fewer
 API_DEFAULT_EFFORT = 'high'  # the SDK default when a profile sets none
 
 
@@ -99,7 +99,12 @@ def api_models(base_url, key):
         and isinstance(row.get('id'), str) and 0 < len(row['id']) <= 256})]
 
 
+EFFORT_ENTRY = re.compile(r'(.+)\[([a-z]+)\]')  # `gpt-6-astra[xhigh]`: one model at one effort
+
+
 def session_models(result):
+    """The models a new ACP session advertises: {id, label}, and `efforts` for a model the
+    adapter also lists at each of its efforts (`<model>[<effort>]` beside the model option)."""
     rows = []
     for option in result.get('configOptions', []):
         if option.get('id') == 'model' or option.get('category') == 'model':
@@ -114,6 +119,12 @@ def session_models(result):
             found[model] = {'id': model, 'label': row.get('name', model)}
     if not found:
         raise ValueError('ACP did not advertise models')
+    listed = result.get('models')
+    for row in (listed.get('availableModels') or []) if isinstance(listed, dict) else []:
+        name = row.get('modelId') if isinstance(row, dict) else None
+        entry = EFFORT_ENTRY.fullmatch(name) if isinstance(name, str) else None
+        if entry and entry[1] in found and entry[2] not in found[entry[1]].setdefault('efforts', []):
+            found[entry[1]]['efforts'].append(entry[2])
     return list(found.values())
 
 
@@ -424,6 +435,9 @@ def selections():
                 warning = pin_warning(agent.acp_command, getattr(detected, 'binary_name', None))
             provider = 'acp:' + server
             model, effort = split_codex_model(agent.acp_model) if server == 'codex' else (agent.acp_model, None)
+            if server == 'codex':  # a profile's own effort field wins over the id's suffix, as in the SDK
+                own = getattr(agent, 'acp_effort', None)
+                effort = own if isinstance(own, str) and own in CODEX_EFFORTS else effort
             switch = False
         else:
             try:
@@ -516,8 +530,11 @@ def prepare(selection, switch=False):
     effort = normalize_effort(provider, selection.get('effort'))
     if switch and provider.startswith('acp:'):
         raise ValueError('Reasoning profiles need an API provider')
-    if model not in {m['id'] for m in discover(provider)['models']}:
+    advertised = {m['id']: m for m in discover(provider)['models']}
+    if model not in advertised:
         raise ValueError('Model is not advertised by this provider')
+    if effort is not None and effort not in advertised[model].get('efforts', [effort]):
+        raise ValueError('Reasoning effort is not available for this model')
     if kind_of(provider) == 'profile':  # several hand-made profiles with one endpoint and key are one source
         provider = 'profile:' + canonical_source(provider.split(':', 1)[1])
     wanted = {'provider': provider, 'model': model, 'effort': effort}
@@ -552,6 +569,8 @@ def prepare(selection, switch=False):
         payload = agents.load(template).model_dump(mode='json') if template else {
             'agent_kind': 'acp', 'acp_server': source}
         payload['acp_model'] = model + ('/' + effort if effort else '')
+        if 'acp_effort' in payload:  # copied from the template; the SDK lets it win over the id's suffix
+            payload['acp_effort'] = None
     else:
         if kind == 'profile':
             llm = llms.load(source, cipher=cipher, resolve_provider=False)
@@ -610,7 +629,12 @@ def discover(provider):
     kind, name = provider.split(':', 1)
     if kind == 'acp':
         binary = {'claude-code': 'claude-agent-acp', 'codex': 'codex-acp'}[name]
-        return {'models': asyncio.run(acp_models(shutil.which(binary)))}
+        models, options = asyncio.run(acp_models(shutil.which(binary))), effort_options(provider)
+        for model in models:  # a model's efforts: those the app can save, in its order; none where the provider has no choice
+            listed = model.pop('efforts', None)
+            if listed is not None and options:
+                model['efforts'] = [effort for effort in options if effort in listed]
+        return {'models': models}
     cipher, connections, profiles = stores()
     if kind == 'connection':
         connection = connections.get(name, cipher=cipher)

@@ -33,8 +33,13 @@ The configured fallback applies only when the selected profile is the primary.
 Each profile carries a reasoning effort: API providers set it on the generated
 LLM profile (`none`, `low`, `medium`, `high`, `xhigh`, `max`; `high` is the
 SDK default), the Codex account agent encodes it in the ACP model id
-(`model/effort`, `low`–`xhigh`; that combined id is what the review
-signature then shows), and the Claude account agent keeps its adapter default. Effort support is model-specific on a shared endpoint (on one
+(`model/effort`, `low`–`ultra`; that combined id is what the review
+signature then shows), and the Claude account agent keeps its adapter default.
+A Codex model is offered only the efforts the adapter lists for it (one model
+may take `max` and not `ultra`), and saving an effort the chosen model does
+not list is refused. A Codex profile without an effort runs at the adapter's
+default, which can be `low`: choose one for reviews. A profile whose own
+effort field was set in the Canvas profile editor shows that effort here. Effort support is model-specific on a shared endpoint (on one
 proxied endpoint `none` was accepted by one model and rejected by another,
 `minimal` by both); the app cannot know this at save time, so a review whose
 model rejects the configured effort fails with that reason and points back to
@@ -410,7 +415,7 @@ Customize > Apps. Neither operation requires a Canvas container restart.
 The browser fixture in `tests/test_extension.html` exercises the actual
 extension module with fake APIs. Open it with a local static file server, or
 headless Chrome with file-module access enabled. A successful run displays
-`PASS` for the account login lines, the forge contact lines, selection restore, provider changes, save, provider creation
+`PASS` for the efforts per model, the account login lines, the forge contact lines, selection restore, provider changes, save, provider creation
 (and the request that tests it), provider edits (the connection they update,
 and leaving edit mode), a token of spaces refused, credential clearing, HTML escaping, failure handling,
 reload, Test connection refreshing the model list, connection-test errors

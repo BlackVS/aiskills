@@ -116,7 +116,14 @@ export function activate(host) {
     const providerOf = id => providers.find(item => item.id === id);
     // The inventory row says whether an agent can be a reading profile; older servers omit the field.
     const switchable = id => { const p = providerOf(id); return !!p && (p.switchable ?? p.kind === 'api'); };
-    const effortSelectable = role => (providerOf(select(role, 'Provider').value)?.efforts || []).length > 0;
+    // The efforts a role can choose: the provider's, narrowed to the chosen model's where the server lists them per model.
+    const modelRows = {};
+    const effortsOf = role => {
+      const all = providerOf(select(role, 'Provider').value)?.efforts || [];
+      const row = (modelRows[role] || []).find(item => item.id === select(role, 'Model').value);
+      return Array.isArray(row?.efforts) ? all.filter(effort => row.efforts.includes(effort)) : all;
+    };
+    const effortSelectable = role => effortsOf(role).length > 0;
     function currentSelection() {
       const choice = role => select(role, 'Provider').value ? {provider: select(role, 'Provider').value, model: select(role, 'Model').value, effort: select(role, 'Effort').value || null} : null;
       return {primary: choice('primary'), secondary: choice('secondary'), fallback: choice('fallback')};
@@ -190,7 +197,7 @@ export function activate(host) {
       const picker = select(role, 'Effort'), provider = providerOf(select(role, 'Provider').value);
       picker.replaceChildren();
       if (!provider) return;
-      const options = provider.efforts || [];
+      const options = effortsOf(role);
       if (provider.kind !== 'api') picker.add(new Option(options.length ? 'Adapter default' : 'Adapter default (not selectable)', ''));
       for (const effort of options) picker.add(new Option(effort, effort));
       picker.value = current && options.includes(current) ? current : provider.kind === 'api' ? (options.includes('high') ? 'high' : options[0] || '') : '';
@@ -198,7 +205,7 @@ export function activate(host) {
     }
     async function models(role, current, effort) {
       const provider = select(role, "Provider").value, model = select(role, "Model");
-      model.replaceChildren(); efforts(role, effort);
+      modelRows[role] = []; model.replaceChildren(); efforts(role, effort);
       if (!provider) return;
       const providerName = providers.find(item => item.id === provider)?.name || provider;
       message(`Fetching ${role} models from ${providerName}… Provider discovery can take a few seconds.`);
@@ -215,6 +222,7 @@ export function activate(host) {
       if (current && data.models.some(m => m.id === current)) model.value = current;
       else if (current) { model.add(new Option(current + " (not advertised; choose a model)", "", true, true)); }
       if (!data.models.length) throw new Error("This provider returned no models.");
+      modelRows[role] = data.models; efforts(role, effort);  // now for the chosen model
     }
     // The receivers' contact with their forges. An outage cannot be reported on a pull request,
     // so it shows here; a server without the status endpoint shows nothing.
@@ -319,7 +327,9 @@ export function activate(host) {
         catch { message('Could not discover models. Check the provider URL, credentials, or account login in Canvas.'); }
         finally { if (!disposed) lock(false); }
       };
-      select(role, 'Model').onchange = updateSave;
+      select(role, 'Model').onchange = () => {  // the new model may take other efforts: keep the chosen one where it does
+        efforts(role, select(role, 'Effort').value); syncSecondary(); updateSave();
+      };
       select(role, 'Effort').onchange = updateSave;
     }
     form.onsubmit = async event => {
