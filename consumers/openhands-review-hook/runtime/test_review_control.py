@@ -386,12 +386,13 @@ class PolicyTests(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
                 self.assertEqual((caught.exception.code, json.load(caught.exception)['error']), (409, 'Fallback reviewer: ' + effort + tail))
-                # an effort that is no text is a malformed request, not a choice to make again
-                odd = json.dumps({'revision': 0, 'primary': dict(one, effort=['max']), 'secondary': None, 'fallback': None}).encode()
-                with self.assertRaises(urllib.error.HTTPError) as caught:
-                    urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
-                self.assertEqual(caught.exception.code, 400)
-                self.assertNotIn('no longer offered', json.load(caught.exception)['error'])
+                # an effort that is no text, or one that comes without a model, is a malformed request, not a choice to make again
+                for primary in [dict(one, effort=['max']), {'provider': 'acp:codex', 'effort': 'turbo'}, dict(one, model='', effort='turbo'), dict(one, model=None, effort='turbo')]:
+                    odd = json.dumps({'revision': 0, 'primary': primary, 'secondary': None, 'fallback': None}).encode()
+                    with self.subTest(primary=primary), self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, method='PUT', data=odd, headers=headers))
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertNotIn('no longer offered', json.load(caught.exception)['error'])
                 run.assert_not_called()
             self.assertFalse(review_policy.settings_path().exists(), 'nothing saved')
         finally: server.shutdown(); server.server_close(); thread.join()

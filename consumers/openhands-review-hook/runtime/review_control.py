@@ -252,6 +252,8 @@ class Handler(BaseHTTPRequestHandler):
                             try:
                                 candidate[key] = dict(candidate[key], effort=normalize_effort(candidate[key]['provider'], candidate[key].get('effort')))
                             except Refused as refused:
+                                if not isinstance(candidate[key].get('model'), str) or not candidate[key]['model']:
+                                    raise  # no model with it: a malformed request, not a choice to make again
                                 raise SelectionRefused(refused.reason, role=key) from None
                     if candidate['revision'] != load_settings()[0]['revision']:
                         raise FileExistsError('Settings changed')
