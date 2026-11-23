@@ -55,6 +55,10 @@ requests; three of the projects came to the same rules on their own.
   change adds to a document or a script is run once for real before the
   first external request and before a run on a host. Host runs stopped on a
   script's own error, and commands handed to a person did not exist.
+  A command that changes something outside the working copy runs against a
+  disposable target (a scratch repository, a throwaway hub, a test remote)
+  and never against the real one; where no disposable target exists, the
+  command is parse-checked and the description says that it was not run.
 
 Rules:
 

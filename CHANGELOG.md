@@ -17,9 +17,11 @@ content fixes inside existing skills. The current version is in `VERSION`.
   and up; from the first external return, each finding gets the scope
   owner's disposition before any code is written for it; and every command
   and statement a change adds to a document or a script is run once for
-  real before the first external request and before a run on a host.
-  They come from a trial of the process in four projects. Reinstall with
-  `-a` (`--agents-md`) to update the block in an agent's instructions.
+  real before the first external request and before a run on a host,
+  against a disposable target when it changes something outside the
+  working copy (added in review). They come from a trial of the process in
+  four projects. Reinstall with `-a` (`--agents-md`) to update the block in
+  an agent's instructions.
 - **`oh-code-review`: a reviewer's own probes get a verdict, line by line.**
   The verification stage's new step 2 turns every line of a probe's output
   into a verdict against the acceptance criteria before the review is
