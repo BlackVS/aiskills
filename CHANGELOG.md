@@ -9,6 +9,24 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The review gates carry three rules for the way into a review**
+  (`agents/review-gates.md`, after "Granularity"): the threat model and the
+  bounds are written before the work on a sensitive surface or at size M
+  and up; from the first external return, each finding gets the scope
+  owner's disposition before any code is written for it; and every command
+  and statement a change adds to a document or a script is run once for
+  real before the first external request and before a run on a host,
+  against a disposable target when it changes something outside the
+  working copy (added in review). They come from a trial of the process in
+  four projects. Reinstall with `-a` (`--agents-md`) to update the block in
+  an agent's instructions.
+- **`oh-code-review`: a reviewer's own probes get a verdict, line by line.**
+  The verification stage's new step 2 turns every line of a probe's output
+  into a verdict against the acceptance criteria before the review is
+  written.
+
 ## [1.45.1] - 2026-11-19
 
 Two changes to how the Auto Reviews settings service of a hands site
