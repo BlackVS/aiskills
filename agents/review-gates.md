@@ -37,6 +37,25 @@ surface, not one task per finding. Large scope alone does not require a split:
 an L or XL task is split only where a reviewer could not read a part whole,
 into parts no finer than M.
 
+The way into a review. These three rules come from a trial of the process
+in four projects, where the external reviewer returned a pull request with a
+blocker after one or two local READY reviews on more than thirty pull
+requests; three of the projects came to the same rules on their own.
+
+- **The bounds before the work.** For a task on a sensitive surface, and
+  for a task of size M and up, the threat model and the bounds are written
+  in the task or the pull request's description before the work starts.
+  Where they were written after the second external return, the rounds
+  before had answered findings the bounds would have excluded.
+- **A disposition before the code.** From the first external return, each
+  finding gets the disposition of whoever owns the scope (the architect or
+  coordinator session, or the person) before any code is written for it.
+  Each round's blockers were in the code written for the round before.
+- **Run it before asking.** Every command line and every statement that the
+  change adds to a document or a script is run once for real before the
+  first external request and before a run on a host. Host runs stopped on a
+  script's own error, and commands handed to a person did not exist.
+
 Rules:
 
 - The reviewer may recommend `max` for a diff that spans 4+ files or 500+

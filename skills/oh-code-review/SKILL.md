@@ -103,9 +103,14 @@ against the workspace:
 
 1. Re-read the cited code (grounding rules below); confirm the file and line
    actually contain what the finding claims.
-2. Try to construct a concrete failure scenario: specific inputs or state that
+2. If you ran probes for this review (commands, tests, a reproducer, a
+   script), turn every line of their output into a verdict against the
+   acceptance criteria before you write the review: it supports a criterion,
+   it is a finding, or it is noise you can name. Output nobody read is not
+   evidence; two blockers have stood unread in a reviewer's own probe output.
+3. Try to construct a concrete failure scenario: specific inputs or state that
    lead to wrong output, a crash, or a maintenance trap.
-3. Label each surviving finding, distinguishing source-confirmed facts from
+4. Label each surviving finding, distinguishing source-confirmed facts from
    runtime assumptions:
    - **[CONFIRMED]** — re-verified in code, concrete scenario in hand, and the
      failure follows entirely from the reviewed source and concrete inputs
@@ -118,10 +123,10 @@ against the workspace:
      itself a stated acceptance-criteria failure;
    - **[REJECTED-RUNTIME]** — a focused reproducer disproved the required
      assumption (disposition REJECTED, record the observed contract).
-4. Drop only findings the re-check refuted. Do NOT drop unverified-but-credible
+5. Drop only findings the re-check refuted. Do NOT drop unverified-but-credible
    findings — breadth is the point of this skill; the label carries the
    confidence, so the reader can triage.
-5. Assign each surviving finding its disposition per `references/dispositions.md`.
+6. Assign each surviving finding its disposition per `references/dispositions.md`.
    Apply the four-part BLOCKER test explicitly; a finding with no concrete
    failure path, or outside the named acceptance criteria, is not a BLOCKER
    regardless of severity. Refuted findings that are worth recording become
