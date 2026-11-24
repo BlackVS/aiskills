@@ -2013,41 +2013,46 @@ class GitIdentity(unittest.TestCase):
         "extensions.partialClone": [("extensions.partialClone", "origin")],
     }
 
-    def test_before_git_2_44_any_partial_clone_setting_refuses(self):
-        # an older git ignores GIT_NO_LAZY_FETCH: whether git prints a matching key decides, whatever
-        # its value, so a full clone with promisor=false is refused there (to the safe side)
-        for version in (b"git version 2.43.7\n", b"git version 1.9.0\n", b"something else\n"):
-            for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items()):
-                with self.subTest(version=version, setting=name):
-                    clone = self.configured_clone(f"old-{len(version)}-{n}", entries)
-                    with mock.patch.object(vd, "git_version", return_value=vd.git_version(
-                            lambda *a: subprocess.CompletedProcess(a, 0, version, b""))):
-                        with self.assertRaisesRegex(ValueError, "partial-clone or promisor setting"):
-                            self.identity("T", "H", repo=clone)
+    OLD_GITS = (b"git version 2.45.9\n", b"git version 2.44.0\n", b"git version 2.44.0.windows.1\n",
+                b"git version 2.39.5 (Apple Git-154)\n", b"git version 1.9.0\n", b"something else\n")
+    NEW_GITS = (b"git version 2.46.0\n", b"git version 2.49.0.windows.1\n", b"git version 2.50.1 (Apple Git-155)\n")
 
-    def test_from_git_2_44_settings_alone_refuse_nothing(self):
+    def as_git(self, version):
+        """Run the helper as if git reported VERSION (the real parser reads it)."""
+        parsed = vd.git_version(lambda *a: subprocess.CompletedProcess(a, 0, version, b""))
+        return mock.patch.object(vd, "git_version", return_value=parsed)
+
+    def test_before_git_2_46_any_partial_clone_setting_refuses(self):
+        # an older git may ignore GIT_NO_LAZY_FETCH (2.44.0 and 2.45.0 do): whether git prints a matching
+        # key decides, whatever its value, so a full clone with promisor=false is refused there (to the
+        # safe side); so is a git whose version does not read
+        clones = {name: self.configured_clone(f"old-{n}", entries) for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items())}
+        for version in self.OLD_GITS:
+            for name, clone in clones.items():
+                with self.subTest(version=version, setting=name), self.as_git(version):
+                    with self.assertRaisesRegex(ValueError, "partial-clone or promisor setting"):
+                        self.identity("T", "H", repo=clone)
+
+    def test_from_git_2_46_settings_alone_refuse_nothing(self):
         # GIT_NO_LAZY_FETCH stops every lazy fetch, so a clone holding all the objects gives its
         # identity, whatever the settings say; the helper reads none of them
         clean = self.identity("T", "H")
-        for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items()):
-            with self.subTest(setting=name):
-                clone = self.configured_clone(f"new-{n}", entries)
-                with mock.patch.object(vd, "git_version", return_value=(2, 44)):
+        clones = {name: self.configured_clone(f"new-{n}", entries) for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items())}
+        for version in self.NEW_GITS:
+            for name, clone in clones.items():
+                with self.subTest(version=version, setting=name), self.as_git(version):
                     if name == "promisor unreadable":  # git itself fails on it: unknown, by git's exit status
                         with self.assertRaisesRegex(ValueError, "bad boolean"):
                             self.identity("T", "H", repo=clone)
                     else:
                         self.assertEqual(self.identity("T", "H", repo=clone), clean)
-        with mock.patch.object(vd, "git_version", return_value=(2, 43)):
-            with self.assertRaisesRegex(ValueError, "partial-clone or promisor setting"):
-                self.identity("T", "H", repo=self.tmp / "new-0")
 
     def test_a_real_partial_clone_fetches_nothing(self):
-        # a blob:none clone lacks the blobs of the change: with this git (2.44 or later) the diff
+        # a blob:none clone lacks the blobs of the change: with this git (2.46 or later) the diff
         # fails, the identity is unknown, and the blob is still missing afterwards
         version = vd.git_version(lambda *a: subprocess.run(["git", *a], capture_output=True, env=self.env))
         if version is None or version < vd.NO_LAZY_FETCH:
-            self.skipTest("needs git 2.44 or later")
+            self.skipTest("needs git 2.46 or later")
         self.git("config", "uploadpack.allowFilter", "true")
         clone = self.tmp / "partial"
         subprocess.run(["git", "clone", "-q", "--no-checkout", "--filter=blob:none", "--no-local",

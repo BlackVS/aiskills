@@ -129,11 +129,11 @@ the diff, `--repo` is not used and the source is `forge`. The clone's local
 state cannot change the answer: the caller's `GIT_*` environment, system and
 global configuration, replace refs, grafts and the commit-graph are not used,
 and every diff option the clone's own configuration could change is fixed,
-submodule changes included. Nothing is fetched. With git 2.44 or later lazy
+submodule changes included. Nothing is fetched. With git 2.46 or later lazy
 fetching is off, so a partial clone that lacks an object of the change gives
 `unknown`; an older git cannot be kept from fetching, so there a clone with
 any partial-clone or promisor setting gives `unknown`, whatever its value (a
-full clone with `promisor = false` included: use git 2.44 or later). A
+full clone with `promisor = false` included: use git 2.46 or later). A
 shallow clone gives `unknown` too (it has no real merge base), and so does a
 commit the clone lacks ("fetch it").
 

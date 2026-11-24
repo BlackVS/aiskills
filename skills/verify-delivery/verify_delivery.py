@@ -945,8 +945,8 @@ def patch_identity(diff):
 # - system and global configuration and attributes are not read; the clone's own configuration is,
 #   so every key that changes the diff's text is overridden by an option or a -c below;
 # - replace refs, grafts and the commit-graph (a cache that git trusts for parents) are not used;
-# - nothing is fetched: from git 2.44 GIT_NO_LAZY_FETCH stops every lazy fetch, so a partial clone
-#   that lacks an object fails; an older git ignores the variable, so there any partial-clone or
+# - nothing is fetched: from git 2.46 GIT_NO_LAZY_FETCH stops every lazy fetch, so a partial clone
+#   that lacks an object fails; an older git may ignore the variable, so there any partial-clone or
 #   promisor setting refuses, whatever its value. Git decides both by its own exit status: the
 #   helper never reads a setting's value.
 # - a shallow clone is refused: its merge base is not the real one.
@@ -969,7 +969,7 @@ def git_env():
     return {**{k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}, **GIT_ENV}
 
 
-NO_LAZY_FETCH = (2, 44)  # the first git that honours GIT_NO_LAZY_FETCH
+NO_LAZY_FETCH = (2, 46)  # from here every git honours GIT_NO_LAZY_FETCH; some older patch releases do too
 PARTIAL_CLONE_KEYS = r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$"
 
 
@@ -982,7 +982,7 @@ def git_version(run):
 def git_change_identity(repo, base, sha):
     """patch_identity of SHA's change against its merge base with BASE, as git computes it in the
     clone at REPO. Both are full SHAs the forge named. Nothing is fetched: a commit the clone lacks
-    is a ValueError that says so, and so is a shallow clone, or, on a git older than 2.44, a clone
+    is a ValueError that says so, and so is a shallow clone, or, on a git older than 2.46, a clone
     with a partial-clone or promisor setting."""
     for c in (base, sha):
         if not re.fullmatch(r"[0-9a-f]{40}", c or ""):
@@ -1011,8 +1011,8 @@ def git_change_identity(repo, base, sha):
         names = run("config", "-z", "--name-only", "--get-regexp", PARTIAL_CLONE_KEYS)
         if names.returncode not in (0, 1) or names.stdout:
             raise ValueError(f"the clone at {repo} has a partial-clone or promisor setting, and this git "
-                             f"(older than 2.44) cannot be kept from fetching: use a full clone without them, "
-                             f"or git 2.44 or later")
+                             f"(older than 2.46, or of a version it does not report) cannot be relied on not to "
+                             f"fetch: use a full clone without them, or git 2.46 or later")
     for c in (base, sha):
         if run("cat-file", "-e", f"{c}^{{commit}}").returncode != 0:
             raise ValueError(f"the commit {c} is not in the clone at {repo}: fetch it, then run again")

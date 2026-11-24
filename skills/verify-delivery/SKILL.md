@@ -138,11 +138,11 @@ All four must pass for the verdict `confirmed`:
    configuration could change is fixed, submodule changes included. Git's
    identity is never taken for the merged change itself. The entry says
    `identity_source: git`. Nothing is fetched: a commit the clone lacks
-   fails with "fetch it". With git 2.44 or later lazy fetching is off, so a
+   fails with "fetch it". With git 2.46 or later lazy fetching is off, so a
    partial clone that lacks an object of the change fails; an older git
    cannot be kept from fetching, so there a clone with any partial-clone or
    promisor setting fails, whatever its value (a full clone with
-   `promisor = false` included: use git 2.44 or later).
+   `promisor = false` included: use git 2.46 or later).
 
    On GitLab commits carry no tree id, so `tree_equality` holds when a
    straight compare of the head and the merged commit has no diffs
@@ -281,7 +281,7 @@ Options for the checks:
 | `--accept-short-head-sha` | off | Accept a review that names the final head by an abbreviated SHA (posted before 1.32.1), skipping GitLab's uniqueness check too; reported as `"short_head_sha": "accepted"`. |
 | `--allow-bot-merge` | off | Accept a merge by a bot or app. |
 | `--known-flaky NAME` (repeatable) | none | Report this check's failure as `failed: known flaky` (still not confirmed). |
-| `--repo DIR` | none | A full local clone in which git computes the patch identity of a review of an older head when the forge gives no diff (Gitea before 1.27). Never fetched; a shallow clone is refused, and on a git older than 2.44 a clone with a partial-clone or promisor setting; see check 3. |
+| `--repo DIR` | none | A full local clone in which git computes the patch identity of a review of an older head when the forge gives no diff (Gitea before 1.27). Never fetched; a shallow clone is refused, and on a git older than 2.46 a clone with a partial-clone or promisor setting; see check 3. |
 
 ## Reading the result
 
