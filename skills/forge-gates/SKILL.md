@@ -1,21 +1,22 @@
 ---
 name: forge-gates
-description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher, and post the local review only in the form the delivery check reads. wait-review waits for the external reviewer's answer for the pushed head; gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green); merge-check gives verify-delivery's verdict; post-review posts a review file as one new comment after checking its header, head, verdict layout and attribution; check-links and check-words find session links and private words before a push, never printing a word; install-hook adds a git pre-push hook that refuses a head without a clean review recorded by record-review, or a private word bound for a public remote. Read-only on the forge except post-review; JSON on stdout. Use to wait for the external review, post or record a review, check text before a push, or decide when to mark a PR ready.
+description: Read a pull request's review gates from the forge (GitHub, Gitea or GitLab) instead of writing a watcher. request-review adds the existing request label for a head once every refusal is decided, then waits; wait-review waits for the external reviewer's answer for the pushed head; gates says whether the current head is ready for a person to merge (open, not a draft, the required reviews READY at the head or carried over a base-only update, CI green); merge-check gives verify-delivery's verdict; post-review posts the local review as one new comment in the form the delivery check reads; check-links and check-words find session links and private words before a push; install-hook adds a git pre-push hook that refuses a head without a clean review recorded by record-review, or a private word for a public remote. Read-only on the forge except post-review and request-review; JSON on stdout. Use to request, wait for, post or record a review, check text before a push, or decide when to mark a PR ready.
 ---
 
 # Forge gates
 
-Use this skill for the two steps of the review gates that come before
-delivery: waiting for the external reviewer after a push, and deciding whether
-the current head is ready for a person to merge. Do not write your own watcher
+Use this skill for the steps of the review gates that come before
+delivery: requesting the external review after a push and waiting for it, and
+deciding whether the current head is ready for a person to merge. Do not write your own watcher
 for either: the rules here are the ones `verify-delivery` applies at the end,
 from the same code.
 
-The helper is read-only except `post-review`. Every other request is an HTTP
-`GET`; `post-review` makes at most one `POST`, which creates one comment, and
-never edits or deletes one. Nothing here labels, pushes or merges. Request the
-review (the `review-this` label), mark the pull request ready and merge as the
-gates describe.
+The helper is read-only except `post-review` and `request-review`. Every
+other request is an HTTP `GET`. `post-review` makes at most one `POST`, which
+creates one comment, and never edits or deletes one. `request-review` makes at
+most one write, which adds one label that already exists, and never removes
+one. Nothing here pushes or merges. Mark the pull request ready and merge as
+the gates describe.
 
 It needs the `verify-delivery` skill next to it, in the same skills directory:
 `scripts/forge_gates.py` imports its module. The installers add it whenever
@@ -24,7 +25,8 @@ names the skill to install.
 
 ## Commands
 
-    python3 scripts/forge_gates.py wait-review --pr PR --head SHA [--wait-for NAME] [--timeout S] [--interval S]
+    python3 scripts/forge_gates.py request-review --pr PR --head SHA [--variant PROFILE] [--dry-run] [wait-review's options]
+    python3 scripts/forge_gates.py wait-review --pr PR --head SHA [--wait-for NAME] [--timeout S] [--interval S] [--review-after TIME]
     python3 scripts/forge_gates.py gates --pr PR
     python3 scripts/forge_gates.py merge-check --pr PR
     python3 scripts/forge_gates.py post-review --pr PR --body-file FILE [--deny-file FILE] [--dry-run]
@@ -46,11 +48,92 @@ association).
 Each command prints one JSON document on stdout and one summary line on
 stderr.
 
+### request-review
+
+Requests the external review of `--head` (the full 40-digit SHA you pushed)
+and then waits for it exactly as `wait-review` does, with the same options,
+outcomes and exit codes. Run it in the background after the push and the
+local review. It adds the request label (`--request-label`, default
+`review-this`), or with `--variant PROFILE` the variant `review-this:PROFILE`,
+and never falls back from a missing variant to the plain label.
+
+Nothing is written until every refusal below was decided on the forge's own
+answers. A read that fails refuses the whole request and names the read: a
+404, or an answer of another shape than expected (a value of the wrong type,
+a page of the comments or labels that is not a list of objects, a name that
+is not a string). Every listing this check reads is read strictly, the
+comments included, which `wait-review` reads as before. Each comment's fields
+that reach a decision (its body, author and creation time; on GitHub the
+author association, on GitLab the system flag) must have the type the forge
+documents before any filter or trust rule sees the comment: a comment that
+fails refuses the request and is never dropped. An outage gives the
+error document with exit 4 and a usage error exit 2, as for every command,
+and nothing is written then either. The checks:
+
+- `state`: the pull request is open (on GitLab `opened`; a `locked` one is
+  being merged and refused).
+- `head`: its head is `--head`.
+- `request_label`: neither the plain request label nor any
+  `review-this:<profile>` variant is on it.
+- `in_progress_label`: the reviewer's working label (`--in-progress-label`,
+  default `hands-reviewing`) is not on it: a review is running.
+- `head_review`: no review of the head exists, unless a failure comment of
+  the reviewer for that head is newer than it. Then the review is requested
+  again, and the old review is not taken as the answer of the wait.
+- `label`: the label to add exists on the forge. On GitHub it is read by
+  name; on Gitea among the repository's labels and its organisation's, and
+  written by id; on GitLab among the project's labels and its groups'. GitLab's
+  write would create a missing label, so this read is what keeps the command
+  from creating one, on every forge.
+
+The time between the last read and the write is not closed: a second
+requester in that window adds the same label, which the forge holds once.
+
+When the reviewer's label of an earlier review (`--reviewed-label`, default
+`hands-reviewed`) is on the pull request, `reviewed_label.on` is true and the
+summary says to remove it by hand, as the label protocol asks; the command
+removes nothing. `reviews` reports how many of the gate row's reviews are
+READY, as `gates` counts them (`--review`, `--required-reviews`): "k of n
+READY". It is information only and never a reason to refuse.
+
+The one write, never retried:
+
+| Forge | Request | The token needs |
+| --- | --- | --- |
+| GitHub | `POST /repos/{owner}/{repo}/issues/{n}/labels` with the name | write access to issues or pull requests (fine-grained: Issues or Pull requests write; classic: `public_repo` or `repo`), on an account with triage access or more |
+| Gitea | `POST /repos/{owner}/{repo}/issues/{n}/labels` with the label's id | `write:issue`, on an account that may write the repository's issues |
+| GitLab | `PUT /projects/{id}/merge_requests/{iid}` with `add_labels` | the `api` scope (`read_api` cannot write), on an account with the Developer role or more |
+
+The Gitea and GitLab requests follow those forges' API documentation and are
+tested against recorded answers only; no live run has exercised them. A
+request the forge does not accept gives `write_failed` and no label.
+
+| `outcome` | When | Exit |
+| --- | --- | --- |
+| `refused` | a check failed (`checks`), or a read failed (`reason`); nothing was written | 3 |
+| `dry_run` | `--dry-run`: every check passed; `request` names the write it would make | 0 |
+| `write_failed` | the forge refused the write (`request.added` false, `request.detail`) | 2 (the token may not label) or 4 |
+| `write_unknown` | no answer to the write: the label may or may not be on (`request.added` is `unknown`); read the labels before requesting again | 4 |
+| `error` | the label is on and the wait could not run (`error`, mapped as `wait-review`'s errors) | 2 (usage), 3 (not found or unexpected), or 4 |
+| `wait-review`'s | the label is on (`request.added` true, `request.added_at`), then the wait ended | as `wait-review` |
+
+Once the label is on, the document carries `request` whatever ends the wait.
+After `timeout`, run the script with the arguments in `request.resume`, a
+list passed as it is (no shell string, so a reference with `&` or spaces
+keeps its boundaries), adding the other options the request was run with
+(`--api-base`, `--review-author` and the like); a second `request-review` is
+refused while the label is on. When the request followed
+a newer failure comment, it carries `--review-after` with that comment's
+creation time as the forge gave it, so the review the failure superseded is
+not taken as the answer. After `reviewer_failed`, run `request-review`
+again. `--anonymous` works only with `--dry-run`.
+
 ### wait-review
 
 Waits for the answer of one configured review (`--wait-for`, default
 `external`) for `--head`, which must be the full 40-digit SHA you pushed.
-Run it in the background right after adding the request label.
+Run it in the background right after adding the request label by hand;
+`request-review` adds it and runs this wait itself.
 
 - A review comment answers for the head when the SHA it names is a prefix of
   the head, 7 to 40 hexadecimal digits, in any case. No length is assumed.
@@ -66,6 +149,10 @@ Run it in the background right after adding the request label.
   included) was added, read from the label events. Where those cannot be
   read, the start of the wait is used, and the result says
   `"correlation": "wait_start"`.
+- `--review-after TIME` counts only a review created after TIME, a timestamp
+  with its offset as the forge gave it (request-review's `request.resume`
+  names it). A value that is not such a time is a usage error. Without the
+  option every review of the head counts, as before.
 - `--timeout` defaults to 2700 seconds (the reviewer's own watch window),
   `--interval` to 60 and never below 30. A forge that does not answer does
   not end the wait; the last error is reported with the timeout.
@@ -80,8 +167,8 @@ Run it in the background right after adding the request label.
 
 `review_found` says the reviewer answered, not that the head is ready: read the
 verdict, act on the findings, and use `gates` for readiness. On
-`reviewer_failed`, re-add the request label (never while `hands-reviewing` is
-on) and wait again.
+`reviewer_failed`, request again with `request-review` (or re-add the request
+label by hand, never while `hands-reviewing` is on) and wait again.
 
 ### gates
 
@@ -364,6 +451,7 @@ What the check does not do:
 | Command | 0 | 3 | 4 | 2 |
 | --- | --- | --- | --- | --- |
 | `wait-review` | review found | failed, moved, closed, merged | timeout | usage error |
+| `request-review` | the label added and a review found, or would add (`--dry-run`) | refused; or the label added and the wait failed, moved, closed, merged | the write failed or its answer was lost; or the label added and the wait timed out | usage error, or the token may not label |
 | `gates` | ready | not ready | pending | usage error |
 | `merge-check` | confirmed, or confirmed after repair (`--ci-repaired-by`) | not confirmed | pending | usage error |
 | `post-review` | posted, or would post (`--dry-run`) | refused | the forge refused or did not answer | usage error, or the token may not comment |

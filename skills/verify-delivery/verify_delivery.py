@@ -289,10 +289,16 @@ class GitLabForge(Forge):
         m = re.fullmatch(r"/issues/(\d+)/comments", path)
         if m:
             url = self.mr.get("web_url") or ""
+            notes = super().pages(f"/merge_requests/{m.group(1)}/notes?sort=asc&order_by=created_at", strict=strict)
+            if strict:  # every note is checked before the system-note filter can drop one
+                for n in notes:
+                    author = n.get("author")
+                    strict_comment({"body": n.get("body"), "created_at": n.get("created_at"), "system": n.get("system"),
+                                    "author": author.get("username") if isinstance(author, dict) else None}, "gitlab")
             return [{"body": n.get("body"), "created_at": n.get("created_at"), "updated_at": n.get("updated_at"),
-                     "html_url": f"{url}#note_{n.get('id')}", "user": {"login": (n.get("author") or {}).get("username")}}
-                    for n in super().pages(f"/merge_requests/{m.group(1)}/notes?sort=asc&order_by=created_at")
-                    if not n.get("system")]
+                     "html_url": f"{url}#note_{n.get('id')}", "user": {"login": (n.get("author") or {}).get("username")},
+                     "system": n.get("system")}
+                    for n in notes if not n.get("system")]
         if re.fullmatch(r"/pulls/\d+/reviews", path):
             return []  # approvals carry no text: nothing to read
         return super().pages(path, key, strict)
@@ -929,13 +935,36 @@ def verify(args, forge, kind, number):
     return checks, pr_url, head_url, merge_url, runs, repaired_evidence
 
 
-def comment_items(forge, number, formal=True):
+def strict_comment(item, kind):
+    """ITEM when every field of a comment that reaches a decision of the review read has the type
+    the forge documents, else Refused naming the fields: the body (a string, empty allowed), the
+    author (text), the creation time (a timestamp with its offset), on GitHub the author association
+    (text) and on GitLab the system flag (a boolean). Every filter and trust rule of a strict read
+    sees a comment only after this check, so a malformed comment refuses instead of being dropped."""
+    created = item.get("created_at")
+    fields = [("body", isinstance(item.get("body"), str)), ("author", text(item.get("author")) is not None),
+              ("created_at", isinstance(created, str) and getattr(when(created), "tzinfo", None) is not None)]
+    if kind == "github":
+        fields.append(("author_association", text(item.get("association")) is not None))
+    if kind == "gitlab":
+        fields.append(("system", isinstance(item.get("system"), bool)))
+    bad = [name for name, ok in fields if not ok]
+    if bad:
+        raise Refused(f"a comment's {', '.join(bad)} is not of the type the forge documents")
+    return item
+
+
+def comment_items(forge, number, formal=True, strict=False):
     """The pull request's comments in the shape check_reviews reads, and (FORMAL) its formal
-    reviews, which are read only to say why they do not count (see FORMAL_REVIEW)."""
+    reviews, which are read only to say why they do not count (see FORMAL_REVIEW). STRICT: a page
+    that is not a list of objects, or a comment that fails strict_comment, refuses (Refused)
+    instead of counting as empty or being dropped."""
     items = [{"body": c.get("body"), "created_at": c.get("created_at"), "updated_at": c.get("updated_at"),
               "url": c.get("html_url"), "author": (c.get("user") or {}).get("login"),
-              "association": c.get("author_association")}
-             for c in forge.pages(f"/issues/{number}/comments")]
+              "association": c.get("author_association"), "system": c.get("system")}
+             for c in forge.pages(f"/issues/{number}/comments", strict=strict)]
+    if strict:
+        items = [strict_comment(c, forge.kind) for c in items]
     if formal:
         items += [{"body": r.get("body"), "created_at": r.get("submitted_at"), "url": r.get("html_url"),
                    "author": (r.get("user") or {}).get("login"), "association": r.get("author_association"),

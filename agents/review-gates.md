@@ -180,11 +180,14 @@ Pull request lifecycle:
 External reviewer labels (hands / OpenHands, where deployed — org-wide on the
 Gitea orgs a hands site covers, and on GitHub repos hands polls):
 
-- To REQUEST an external review of a PR, add the **`review-this`** label.
-  hands drives the rest: it swaps to **`hands-reviewing`** when it picks the
+- To REQUEST an external review of a PR, add the **`review-this`** label;
+  where the `forge-gates` skill is installed, its `request-review --head
+  <full SHA>` adds it after checking every rule below, then waits for the
+  result. hands drives the rest: it swaps to **`hands-reviewing`** when it picks the
   PR up and lands **`hands-reviewed`** when its review comment is posted;
   a failed run shows a `⚠️ … could not run` comment and, where defined,
-  **`hands-review-failed`** — re-add `review-this` to retry.
+  **`hands-review-failed`** — re-add `review-this` (or run `request-review`
+  again) to retry.
 - Some sites let you pick the reviewer model per PR with a variant label
   **`review-this:<profile>`** (e.g. `review-this:codex-sol`); older ones have
   one fixed reviewer and know only `review-this`. **Resolve it from the
@@ -222,7 +225,8 @@ Gitea orgs a hands site covers, and on GitHub repos hands polls):
 - Adding the label means watching for the result: start a background watch,
   and act on the findings when the comment lands — do not leave a triggered
   review for the user to discover. Where the `forge-gates` skill is
-  installed, the watch is its `wait-review --head <full SHA>` and the
+  installed, the watch is its `request-review`, or its `wait-review --head
+  <full SHA>` after a label added by hand, and the
   readiness check before marking the PR ready is its `gates`; do not write a
   private watcher.
 

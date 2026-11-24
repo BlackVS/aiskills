@@ -21,7 +21,7 @@ works in Claude Code, OpenHands and any other agent that reads `SKILL.md`.
 | `oh-qa-changes` | extensions (`qa-changes`) | QA a PR by RUNNING the software: env setup, exercise changed behavior as a user, PASS/FAIL report with before/after evidence. Not tests (CI's job), not reading code (review's job). |
 | `oh-learn-from-code-review` | extensions (`learn-from-code-review`) | Distill merged-PR review feedback into repo skills and the `custom-codereview-guide` the reviewer reads; Gitea+GitHub; AI-reviewer comments included as signal. |
 | `verify-delivery` | written here | Confirm from the forge (GitHub, Gitea or GitLab) that a PR was delivered: reviews READY at the final head, merged by a person, merged tree equal to the reviewed one, CI green on the merge commit. Read-only helper, JSON verdict and evidence. |
-| `forge-gates` | written here | The review gates before the merge, read from the forge: wait for the external reviewer's answer for a head (`wait-review`), whether the current head is ready for a person to merge (`gates`), `verify-delivery`'s verdict (`merge-check`), and the local review posted only in the form the delivery check reads (`post-review`). Read-only except `post-review`, which creates one comment; needs `verify-delivery` next to it, which the installers add. |
+| `forge-gates` | written here | The review gates before the merge, read from the forge: wait for the external reviewer's answer for a head (`wait-review`), whether the current head is ready for a person to merge (`gates`), `verify-delivery`'s verdict (`merge-check`), the local review posted only in the form the delivery check reads (`post-review`), and the external review requested for a head (`request-review`). Read-only except `post-review`, which creates one comment, and `request-review`, which adds one existing label; needs `verify-delivery` next to it, which the installers add. |
 | `aiforge-export` | written here | On a connected machine, write the one directory a closed network installs aimem, aicrew and aiskills from: each release's files and `SHA256SUMS`, checked as they download, the chosen platforms' binaries, `MANIFEST` and a `README.txt` with the install commands. The format is `docs/aiforge-export.md`. |
 
 `prompts/` holds ready-to-fill prompts for each skill. The command stubs the
@@ -602,12 +602,13 @@ options; `SKILL.md` documents them and how to read the result. The helper is
 tested offline against recorded API responses for all three forges
 (`tests/test_verify_delivery.py`).
 
-`forge-gates` covers the two steps before delivery from the same code. Its
+`forge-gates` covers the steps before delivery from the same code. Its
 helper, `skills/forge-gates/scripts/forge_gates.py`, imports
 `verify_delivery.py` from the sibling skill (the installers install
 `verify-delivery` whenever `forge-gates` is selected):
 
 ```bash
+python3 skills/forge-gates/scripts/forge_gates.py request-review --pr https://github.com/OWNER/REPO/pull/123 --head <full SHA>
 python3 skills/forge-gates/scripts/forge_gates.py wait-review --pr https://github.com/OWNER/REPO/pull/123 --head <full SHA>
 python3 skills/forge-gates/scripts/forge_gates.py gates --pr https://github.com/OWNER/REPO/pull/123
 python3 skills/forge-gates/scripts/forge_gates.py post-review --pr https://github.com/OWNER/REPO/pull/123 --body-file review.md --dry-run
@@ -615,6 +616,10 @@ python3 skills/forge-gates/scripts/forge_gates.py install-hook
 python3 skills/forge-gates/scripts/forge_gates.py record-review --head <full SHA> --level medium --verdict clean
 ```
 
+`request-review` adds the existing request label for the pushed head, only
+when the pull request is open at that head, no request or working label is on,
+no review of the head exists and the label is defined on the forge (it never
+creates one), and then waits as `wait-review` does.
 `wait-review` waits for the external reviewer's comment for the pushed head
 (any abbreviation of 7 to 40 digits, trusted authors only; a failure comment
 correlated with the latest request label ends it too). `gates` says whether
