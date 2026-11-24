@@ -342,8 +342,13 @@ def names_head(body, head):
 
 def trusted_comments(args, forge, kind, number, strict=False):
     """The pull request's comments by an author the awaited review trusts, oldest first. STRICT (the
-    request's preflight): a page that is not a list of objects refuses instead of counting as empty."""
-    items = sorted(vd.comment_items(forge, number, formal=False, strict=strict),
+    request's preflight): a page that is not a list of objects, or a comment without a text body, an
+    author and a creation time with its offset, refuses instead of reading as no review."""
+    items = vd.comment_items(forge, number, formal=False, strict=strict)
+    if strict and not all(isinstance(c["body"], str) and vd.text(c["author"]) and isinstance(c["created_at"], str)
+                          and getattr(vd.when(c["created_at"]), "tzinfo", None) for c in items):
+        raise vd.Refused("a comment has no text body, author or creation time")
+    items = sorted(items,
                    key=lambda c: vd.when(c["created_at"]) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc))
     name = args.wait_pattern[0]
     return [c for c in items if not vd.author_verdict(c, name, kind, args.review_authors, args.trust_any_author)]

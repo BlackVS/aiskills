@@ -849,6 +849,23 @@ class RequestRoundTwo:
                 self.assertIn("while reading the comments", doc["reason"])
                 self.assertEqual(self.writes(), [])
 
+    def test_a_comment_of_another_shape_refuses_and_writes_nothing(self):
+        body, author, created = ("body", "author", "created_at")
+        for field, value in ((body, None), (body, 42), (author, None), (created, None), (created, "yesterday"),
+                             (created, "2026-09-27T12:00:00"), (created, 1732445194)):
+            with self.subTest(field=field, value=value):
+                self.fake.requests.clear()
+                c = dict(self.comments[0])
+                if field == author:
+                    c["author" if self.forge == "gitlab" else "user"] = value
+                else:
+                    c[field] = value
+                self.fake.set(self.comments_route(), [c] + self.comments[1:])
+                code, doc = self.request()
+                self.assertEqual((code, doc["outcome"]), (3, "refused"), json.dumps(doc, indent=1))
+                self.assertIn("while reading the comments", doc["reason"])
+                self.assertEqual(self.writes(), [])
+
     def test_wait_review_still_reads_the_comments_as_before(self):
         self.fake.set(self.comments_route(), {})
         self.clock.steps = []
