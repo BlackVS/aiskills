@@ -53,6 +53,48 @@ def git_env(tmp, helper=True, **extra):
     return env
 
 
+def real_repo(tmp):
+    """A clone with real commits for the patch identity git computes: B0 the base, O the change
+    reviewed on it, T the base moved on (another file), H the same change on T (a base-only update
+    of O), S a different change on T, M a squash merge of H onto T (H's tree, parent T). Returns
+    (path, {name: SHA})."""
+    repo = tmp / "clone"
+    repo.mkdir()
+    env = git_env(tmp, helper=False)
+
+    def git(*args):
+        r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=repo, env=env,
+                           capture_output=True, text=True, check=True)
+        return r.stdout.strip()
+
+    def commit(message):
+        git("add", "-A")
+        git("commit", "-q", "-m", message)
+        return git("rev-parse", "HEAD")
+
+    def write(name, text):
+        (repo / name).write_bytes(text.encode())
+
+    git("init", "-q", "-b", "main")
+    write("app.py", "def name(label):\n    label = label.strip()\n    return label\n")
+    write("notes.txt", "one\n")
+    shas = {"B0": commit("base")}
+    git("checkout", "-q", "-b", "topic")
+    write("app.py", "def name(label):\n    label = label.strip()\n    label = label.lower()\n    return label\n")
+    shas["O"] = commit("the change")
+    git("checkout", "-q", "main")
+    write("notes.txt", "one\ntwo\n")
+    shas["T"] = commit("the base moves on")
+    git("checkout", "-q", "-b", "updated")
+    git("cherry-pick", shas["O"])
+    shas["H"] = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-b", "other", shas["T"])
+    write("app.py", "def name(label):\n    label = label.strip()\n    label = label.upper()\n    return label\n")
+    shas["S"] = commit("a different change")
+    shas["M"] = git("commit-tree", f"{shas['H']}^{{tree}}", "-p", shas["T"], "-m", "the squash merge")
+    return repo, shas
+
+
 def git_queries(tmp):
     """The queries the fake helper read, oldest first."""
     log = tmp / "queries"
@@ -1028,6 +1070,72 @@ class GitHub(Verify, unittest.TestCase):
 class Gitea(Verify, unittest.TestCase):
     forge = "gitea"
 
+    # ---- a Gitea before 1.27 gives no compare diff; with --repo, git computes the identity
+    def on_real_commits(self, reviewed="O"):
+        """The fixtures moved onto real_repo's commits: final head H, merge commit M on T, and only
+        an external review of the older head REVIEWED, READY. The compare API answers JSON, as a
+        Gitea before 1.27 does."""
+        self.clone, shas = real_repo(self.tmp)
+        names = {HEAD: shas["H"], OLD: shas[reviewed], PARENT: shas["T"], MERGE: shas["M"]}
+        data = json.dumps(self.fake.data)
+        for fake, real in names.items():
+            data = data.replace(fake, real)
+        self.fake.data = json.loads(data)
+        patcher = mock.patch.multiple(sys.modules[__name__], HEAD=shas["H"], OLD=shas[reviewed], PARENT=shas["T"],
+                                      MERGE=shas["M"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.reviewed_only_at_older_head()
+        json_answer = lambda req: Response(200, b'{"total_commits":1,"commits":[]}')
+        self.fake.overrides = {f"/repos/acme/widgets/compare/{shas['T']}...{sha}": json_answer
+                               for sha in (shas[reviewed], shas["M"])}
+        return shas
+
+    def test_an_older_gitea_carries_a_review_over_on_gits_identity_with_repo(self):
+        shas = self.on_real_commits()
+        code, doc = self.run_vd("--repo", str(self.clone))
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"), json.dumps(doc, indent=1))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["rule"]), ("passed", "patch_identity"))
+        old = next(r for r in same["reviewed"] if r["reviewed_head"] == shas["O"])
+        self.assertEqual((old["status"], old["identity_source"], old["base_parent_sha"]), ("passed", "git", shas["T"]))
+        self.assertEqual(old["patch_identity"]["reviewed_change"], old["patch_identity"]["final_head_change"])
+        self.assertNotIn("merge_change", old["patch_identity"], "git's identity is never taken for the merged change")
+
+    def test_without_repo_an_older_gitea_still_asks_for_a_re_review(self):
+        self.on_real_commits()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        self.assertIn("needs Gitea 1.27 or later", self.check(doc, "tree_equality")["detail"])
+
+    def test_gits_identity_does_not_carry_a_different_change(self):
+        shas = self.on_real_commits(reviewed="S")
+        code, doc = self.run_vd("--repo", str(self.clone))
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual((same["status"], same["reviewed_head"], same["identity_source"]), ("failed", shas["S"], "git"))
+        self.assertIn("is not the reviewed change", same["detail"])
+
+    def test_gits_identity_needs_the_forges_equal_trees(self):
+        self.on_real_commits()
+        self.fake.data["git_commit_merge"]["commit"]["tree"]["sha"] = "f" * 40
+        code, doc = self.run_vd("--repo", str(self.clone))
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        same = self.check(doc, "tree_equality")
+        self.assertEqual(same["status"], "failed")
+        self.assertIn("equal trees", same["detail"])
+
+    def test_a_clone_without_the_commits_is_not_enough(self):
+        self.on_real_commits()
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        subprocess.run(["git", "init", "-q", str(empty)], env=git_env(self.tmp, helper=False), check=True)
+        code, doc = self.run_vd("--repo", str(empty))
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        detail = self.check(doc, "tree_equality")["detail"]
+        self.assertIn("is not in the clone", detail)
+        self.assertIn("fetch it", detail)
+
     def test_review_at_an_older_head_carries_over_a_base_only_update(self):
         # Gitea 1.27+ serves the compare diff with ?output=diff (observed on gitea.com, 1.27.0+dev,
         # 2026-10-02: its patch identity equals that of git's own three-dot diff)
@@ -1786,6 +1894,191 @@ class References(unittest.TestCase):
         r = subprocess.run([sys.executable, str(script), "--pr", "acme/widgets#1"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 2)  # no token file, nothing stored: usage error, before any request
         self.assertEqual(json.loads(r.stdout)["verdict"], "not_confirmed")
+
+
+class GitIdentity(unittest.TestCase):
+    """git_change_identity on real commits. The same change on a moved base keeps its identity and
+    another change does not; the clone's local state (configuration, the caller's environment,
+    replace refs, grafts, submodule settings) cannot change what it computes, and a clone that would
+    fetch or has no real merge base is refused."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="git-identity-"))
+        self.repo, self.shas = real_repo(self.tmp)
+        self.env = git_env(self.tmp, helper=False)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def git(self, *args, repo=None):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                              cwd=repo or self.repo, env=self.env, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def identity(self, base, sha, repo=None):
+        return vd.git_change_identity(repo or self.repo, self.shas.get(base, base), self.shas.get(sha, sha))
+
+    def test_a_base_only_update_keeps_the_identity(self):
+        self.assertEqual(self.identity("B0", "O"), self.identity("T", "H"))
+        self.assertNotEqual(self.identity("T", "H"), self.identity("T", "S"))
+
+    def test_the_clones_configuration_does_not_change_the_identity(self):
+        # B0..H changes two files, so an order file that reverses git's own order would show
+        clean = self.identity("B0", "H")
+        order = self.tmp / "order"
+        order.write_bytes(b"notes.txt\napp.py\n")
+        attributes = self.tmp / "attributes"
+        attributes.write_bytes(b"*.py binary\n")
+        for key, value in [("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"), ("diff.context", "1"),
+                           ("diff.interHunkContext", "5"), ("diff.algorithm", "histogram"), ("diff.renames", "false"),
+                           ("diff.orderFile", order.as_posix()), ("diff.suppressBlankEmpty", "true"),
+                           ("diff.relative", "true"), ("core.quotePath", "false"), ("diff.external", "false"),
+                           ("core.attributesFile", attributes.as_posix()), ("diff.ignoreSubmodules", "all")]:
+            self.git("config", "--local", key, value)
+        self.assertEqual(self.identity("B0", "H"), clean)
+
+    def test_a_diff_driver_from_the_clones_attributes_does_not_change_the_identity(self):
+        # info/attributes (and a tracked .gitattributes) cannot be switched off by an option: a diff
+        # driver's command, textconv and algorithm are overridden, its funcname is only hunk-header text
+        clean = self.identity("B0", "H")
+        info = self.repo / ".git" / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_bytes(b"*.py diff=py\n*.txt diff=py\n")
+        for key, value in [("diff.py.command", "false"), ("diff.py.textconv", "false"),
+                           ("diff.py.algorithm", "patience"), ("diff.py.xfuncname", "^(.*)$")]:
+            self.git("config", "--local", key, value)
+        self.assertEqual(self.identity("B0", "H"), clean)
+
+    def test_the_callers_git_environment_is_not_used(self):
+        clean = self.identity("T", "H")
+        other = self.tmp / "other"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q", str(other)], env=self.env, check=True)
+        noisy = {"GIT_DIR": str(other / ".git"), "GIT_CONFIG_PARAMETERS": "'diff.noprefix'='true'",
+                 "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "diff.context", "GIT_CONFIG_VALUE_0": "0",
+                 "GIT_OBJECT_DIRECTORY": str(other / ".git" / "objects"), "GIT_NO_REPLACE_OBJECTS": ""}
+        with mock.patch.dict(os.environ, noisy):
+            self.assertEqual(self.identity("T", "H"), clean)
+
+    def test_a_changed_submodule_is_part_of_the_change(self):
+        # the final head makes the reviewed edit and also moves a submodule pointer: not the same change
+        self.git("checkout", "-q", "--detach", self.shas["H"])
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{self.shas['B0']},vendor")
+        self.git("commit", "-q", "-m", "and a submodule")
+        with_gitlink = self.git("rev-parse", "HEAD")
+        self.git("config", "--local", "diff.ignoreSubmodules", "all")
+        (self.repo / ".gitmodules").write_bytes(b'[submodule "vendor"]\n\tpath = vendor\n\turl = ./vendor\n\tignore = all\n')
+        self.assertNotEqual(self.identity("T", with_gitlink), self.identity("T", "H"))
+
+    def test_replace_refs_do_not_substitute_a_commit(self):
+        different = self.identity("T", "S")
+        self.git("replace", self.shas["S"], self.shas["H"])
+        self.assertEqual(self.git("rev-parse", f"{self.shas['S']}^{{tree}}"), self.git("rev-parse", f"{self.shas['H']}^{{tree}}"),
+                         "the replace ref is in force for plain git")
+        self.assertEqual(self.identity("T", "S"), different)
+        self.assertNotEqual(self.identity("T", "S"), self.identity("T", "H"))
+
+    def test_grafts_do_not_move_the_merge_base(self):
+        clean = self.identity("T", "H")
+        grafts = self.repo / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_bytes(f"{self.shas['H']} {self.shas['B0']}\n".encode())
+        self.assertEqual(self.identity("T", "H"), clean)
+
+    def test_a_shallow_clone_is_refused(self):
+        # depth 2 holds both H and its parent T, so only the refusal can stop it
+        clone = self.tmp / "depth-2"
+        subprocess.run(["git", "clone", "-q", "--depth", "2", "--no-local", "--branch", "updated",
+                        self.repo.resolve().as_uri(), str(clone)], env=self.env, check=True, capture_output=True)
+        with self.assertRaisesRegex(ValueError, "is shallow, so its merge base is not the real one"):
+            self.identity("T", "H", repo=clone)
+
+    def configured_clone(self, name, entries):
+        """A full clone of the repository with ENTRIES ((key, value), ...) added to its configuration."""
+        clone = self.tmp / name
+        subprocess.run(["git", "clone", "-q", "--no-local", self.repo.resolve().as_uri(), str(clone)],
+                       env=self.env, check=True, capture_output=True)
+        for key, value in entries:
+            self.git("config", "--local", "--add", key, value, repo=clone)
+        return clone
+
+    PARTIAL_SETTINGS = {
+        "promisor true": [("remote.origin.promisor", "true")],
+        "promisor true then false": [("remote.origin.promisor", "true"), ("remote.origin.promisor", "false")],
+        "promisor false": [("remote.origin.promisor", "false")],
+        "promisor unreadable": [("remote.origin.promisor", "maybe")],
+        "a remote named with U+00A0, promisor false": [("remote.team\u00a0backup.promisor", "false")],
+        "partialclonefilter": [("remote.origin.partialclonefilter", "blob:none")],
+        "extensions.partialClone": [("extensions.partialClone", "origin")],
+    }
+
+    OLD_GITS = (b"git version 2.45.9\n", b"git version 2.44.0\n", b"git version 2.44.0.windows.1\n",
+                b"git version 2.39.5 (Apple Git-154)\n", b"git version 1.9.0\n", b"something else\n")
+    NEW_GITS = (b"git version 2.46.0\n", b"git version 2.49.0.windows.1\n", b"git version 2.50.1 (Apple Git-155)\n")
+
+    def as_git(self, version):
+        """Run the helper as if git reported VERSION (the real parser reads it)."""
+        parsed = vd.git_version(lambda *a: subprocess.CompletedProcess(a, 0, version, b""))
+        return mock.patch.object(vd, "git_version", return_value=parsed)
+
+    def test_before_git_2_46_any_partial_clone_setting_refuses(self):
+        # an older git may ignore GIT_NO_LAZY_FETCH (2.44.0 and 2.45.0 do): whether git prints a matching
+        # key decides, whatever its value, so a full clone with promisor=false is refused there (to the
+        # safe side); so is a git whose version does not read
+        clones = {name: self.configured_clone(f"old-{n}", entries) for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items())}
+        for version in self.OLD_GITS:
+            for name, clone in clones.items():
+                with self.subTest(version=version, setting=name), self.as_git(version):
+                    with self.assertRaisesRegex(ValueError, "partial-clone or promisor setting"):
+                        self.identity("T", "H", repo=clone)
+
+    def test_from_git_2_46_settings_alone_refuse_nothing(self):
+        # GIT_NO_LAZY_FETCH stops every lazy fetch, so a clone holding all the objects gives its
+        # identity, whatever the settings say; the helper reads none of them
+        clean = self.identity("T", "H")
+        clones = {name: self.configured_clone(f"new-{n}", entries) for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items())}
+        for version in self.NEW_GITS:
+            for name, clone in clones.items():
+                with self.subTest(version=version, setting=name), self.as_git(version):
+                    if name == "promisor unreadable":  # git itself fails on it: unknown, by git's exit status
+                        with self.assertRaisesRegex(ValueError, "bad boolean"):
+                            self.identity("T", "H", repo=clone)
+                    else:
+                        self.assertEqual(self.identity("T", "H", repo=clone), clean)
+
+    def test_a_real_partial_clone_fetches_nothing(self):
+        # a blob:none clone lacks the blobs of the change: with this git (2.46 or later) the diff
+        # fails, the identity is unknown, and the blob is still missing afterwards
+        version = vd.git_version(lambda *a: subprocess.run(["git", *a], capture_output=True, env=self.env))
+        if version is None or version < vd.NO_LAZY_FETCH:
+            self.skipTest("needs git 2.46 or later")
+        self.git("config", "uploadpack.allowFilter", "true")
+        clone = self.tmp / "partial"
+        subprocess.run(["git", "clone", "-q", "--no-checkout", "--filter=blob:none", "--no-local",
+                        self.repo.resolve().as_uri(), str(clone)], env=self.env, check=True, capture_output=True)
+        blob = self.git("rev-parse", f"{self.shas['H']}:app.py")
+        missing = lambda: subprocess.run(["git", "cat-file", "-e", blob], cwd=clone, capture_output=True,
+                                         env={**self.env, "GIT_NO_LAZY_FETCH": "1"}).returncode != 0
+        self.assertTrue(missing(), "the clone lacks the blob")
+        with self.assertRaisesRegex(ValueError, "git diff failed"):
+            self.identity("T", "H", repo=clone)
+        self.assertTrue(missing(), "nothing was fetched")
+
+    def test_only_full_shas_and_commits_in_the_clone(self):
+        with self.assertRaisesRegex(ValueError, "full 40-digit SHA"):
+            vd.git_change_identity(self.repo, self.shas["T"], self.shas["H"][:12])
+        with self.assertRaisesRegex(ValueError, "not in the clone"):
+            vd.git_change_identity(self.repo, self.shas["T"], "e" * 40)
+
+    def test_git_missing_or_slow_is_not_reported_as_a_missing_commit(self):
+        for error, text in [(FileNotFoundError(), "git is not installed"),
+                            (subprocess.TimeoutExpired("git", 60), "did not answer")]:
+            with self.subTest(text), mock.patch.object(vd.subprocess, "run", side_effect=error):
+                with self.assertRaises(ValueError) as caught:
+                    self.identity("T", "H")
+                self.assertIn(text, str(caught.exception))
+                self.assertNotIn("fetch it", str(caught.exception))
 
 
 if __name__ == "__main__":

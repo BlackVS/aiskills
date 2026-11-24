@@ -41,7 +41,8 @@ All four must pass for the verdict `confirmed`:
    it valid; any other later change does not). On Gitea the link is read
    from the compare API with `?output=diff`, which Gitea serves from 1.27; an
    older Gitea answers JSON (or, before 1.22, has no compare endpoint), and
-   there a review of an older head fails: re-review at the final head. `reviewed_heads` lists the heads the READY reviews name.
+   there a review of an older head fails: re-review at the final head, or
+   name a local clone with `--repo DIR` (check 3 says how it is used). `reviewed_heads` lists the heads the READY reviews name.
    A review counts for the final head when it names it by its full SHA. An
    abbreviation the head starts with counts only on GitLab, where the
    versions show the head as the one commit sharing it. Elsewhere a commit
@@ -122,6 +123,26 @@ All four must pass for the verdict `confirmed`:
      on Gitea from `pulls/{index}.diff` and `git/commits/{merge}.diff` for the
      final head, and from the same two compares with `?output=diff` for an
      older head (Gitea 1.27 or later).
+
+   Where the forge gives no diff for an older head and `--repo DIR` names a
+   local clone, the review carries over on git's identity, under three
+   conditions: the forge's own trees show the merged content is the final
+   head's; the clone holds the reviewed head, the final head and the merge
+   commit's first parent, and is not shallow (a shallow clone has no real
+   merge base); and git
+   gives the reviewed head's change and the final head's change, each
+   against its merge base with that parent, the same patch identity. The
+   clone's local state cannot change that answer: the caller's `GIT_*`
+   environment, system and global configuration, replace refs, grafts and
+   the commit-graph are not used, and every diff option the clone's own
+   configuration could change is fixed, submodule changes included. Git's
+   identity is never taken for the merged change itself. The entry says
+   `identity_source: git`. Nothing is fetched: a commit the clone lacks
+   fails with "fetch it". With git 2.46 or later lazy fetching is off, so a
+   partial clone that lacks an object of the change fails; an older git
+   cannot be kept from fetching, so there a clone with any partial-clone or
+   promisor setting fails, whatever its value (a full clone with
+   `promisor = false` included: use git 2.46 or later).
 
    On GitLab commits carry no tree id, so `tree_equality` holds when a
    straight compare of the head and the merged commit has no diffs
@@ -260,6 +281,7 @@ Options for the checks:
 | `--accept-short-head-sha` | off | Accept a review that names the final head by an abbreviated SHA (posted before 1.32.1), skipping GitLab's uniqueness check too; reported as `"short_head_sha": "accepted"`. |
 | `--allow-bot-merge` | off | Accept a merge by a bot or app. |
 | `--known-flaky NAME` (repeatable) | none | Report this check's failure as `failed: known flaky` (still not confirmed). |
+| `--repo DIR` | none | A full local clone in which git computes the patch identity of a review of an older head when the forge gives no diff (Gitea before 1.27). Never fetched; a shallow clone is refused, and on a git older than 2.46 a clone with a partial-clone or promisor setting; see check 3. |
 
 ## Reading the result
 

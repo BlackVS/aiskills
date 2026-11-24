@@ -159,15 +159,19 @@ def base_tip(forge, kind, branch):
     return sha
 
 
+class NoForgeDiff(ValueError):
+    """The forge gives no diff to compute a change identity from: with --repo, git computes it."""
+
+
 def change_identity(forge, kind, tip, sha):
     """verify-delivery's patch_identity of SHA's change against its merge base with TIP."""
     path = f"/compare/{tip}...{sha}" + ("?output=diff" if kind == "gitea" else "")
     try:
         text = forge.diff(path)
     except vd.NotFound:
-        raise ValueError("the forge has no compare diff for it" + (" (Gitea before 1.22)" if kind == "gitea" else ""))
+        raise NoForgeDiff("the forge has no compare diff for it" + (" (Gitea before 1.22)" if kind == "gitea" else ""))
     if kind == "gitea" and text.lstrip().startswith(b"{"):
-        raise ValueError("this Gitea returns no diff from its compare API (?output=diff needs Gitea 1.27 or later)")
+        raise NoForgeDiff("this Gitea returns no diff from its compare API (?output=diff needs Gitea 1.27 or later)")
     return vd.patch_identity(text)[0]
 
 
@@ -180,18 +184,31 @@ def review_gate(args, forge, kind, number, pr):
     _, reviews, ignored = vd.check_reviews(items, head, None, args.reviews, args.verdict, kind,
                                            args.review_authors, args.trust_any_author, short_at_head)
     identities, tips = {}, []
+    # Both identities of a comparison come from one source: the forge, or, where the forge gives no
+    # diff and --repo names a clone, git in that clone. The source only ever moves from the forge
+    # to git, and every identity is read again from git once it has.
+    source = ["forge"]
 
     def identity(sha):
-        if sha not in identities:
+        key = (source[0], sha)
+        if key not in identities:
             try:
                 if not tips:
                     tips.append(base_tip(forge, kind, pr["base"]))
-                identities[sha] = (change_identity(forge, kind, tips[0], sha), None)
+                if source[0] == "git":
+                    identities[key] = (vd.git_change_identity(args.repo, tips[0], sha), None)
+                else:
+                    identities[key] = (change_identity(forge, kind, tips[0], sha), None)
+            except NoForgeDiff as e:
+                if args.repo:
+                    source[0] = "git"
+                    return identity(sha)
+                identities[key] = (None, f"{e}; with a local clone, --repo DIR computes it with git")
             except (vd.Unavailable, ValueError) as e:
-                identities[sha] = (None, str(e))
+                identities[key] = (None, str(e))
             except vd.NotFound:
-                identities[sha] = (None, f"the base branch {pr['base']} was not found")
-        return identities[sha]
+                identities[key] = (None, f"the base branch {pr['base']} was not found")
+        return identities[key]
 
     for r in reviews:
         if r["status"] != "ready" or r["at_final_head"]:
@@ -201,7 +218,9 @@ def review_gate(args, forge, kind, number, pr):
             r.update(status="not_ready", detail=f"names an older head by the abbreviated SHA {sha}, which cannot be "
                                                 "expanded safely: re-review at the current head, naming its full SHA")
             continue
+        identity(sha), identity(head)  # the second read may move the source to git
         (reviewed, why), (current, why_current) = identity(sha), identity(head)
+        r["identity_source"] = source[0]
         if why or why_current:
             r.update(status="unknown", detail=f"names the older head {sha}, and the change identity could not be read "
                                               f"({why or why_current}): retry, or re-review at the current head")

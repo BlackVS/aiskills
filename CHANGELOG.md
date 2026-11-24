@@ -9,6 +9,28 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+
+- **`forge-gates` and `verify-delivery` take `--repo DIR`, a local clone
+  for a Gitea before 1.27.** Such a Gitea answers its compare API with
+  JSON instead of a diff, so a review of an older head could not be
+  carried over a base-only update and the gates asked for a re-review.
+  Where the forge gives no diff, git now computes the change identity in
+  the named clone, and the result says `identity_source: git`. The
+  clone's local state cannot change the answer: the caller's `GIT_*`
+  environment, system and global configuration, replace refs, grafts and
+  the commit-graph are not used, and every diff option the clone's own
+  configuration could change is fixed, submodule changes included.
+  `gates` uses git for both identities it compares; the delivery check
+  uses it only when the forge's trees show the merged content is the
+  final head's, and never for the merged change itself. Nothing is
+  fetched: with git 2.46 or later lazy fetching is off, so a partial
+  clone that lacks an object fails; an older git cannot be kept from
+  fetching, so there a clone with any partial-clone or promisor setting
+  is refused, whatever its value. A shallow clone is refused, and a
+  commit the clone lacks is reported with "fetch it". Where the forge
+  gives the diff, nothing changes.
+
 ### Changed
 
 - **The review gates carry three rules for the way into a review**
