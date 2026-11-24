@@ -62,7 +62,11 @@ answers. A read that fails refuses the whole request and names the read: a
 404, or an answer of another shape than expected (a value of the wrong type,
 a page of the comments or labels that is not a list of objects, a name that
 is not a string). Every listing this check reads is read strictly, the
-comments included, which `wait-review` reads as before. An outage gives the
+comments included, which `wait-review` reads as before. Each comment's fields
+that reach a decision (its body, author and creation time; on GitHub the
+author association, on GitLab the system flag) must have the type the forge
+documents before any filter or trust rule sees the comment: a comment that
+fails refuses the request and is never dropped. An outage gives the
 error document with exit 4 and a usage error exit 2, as for every command,
 and nothing is written then either. The checks:
 
@@ -114,9 +118,11 @@ request the forge does not accept gives `write_failed` and no label.
 | `wait-review`'s | the label is on (`request.added` true, `request.added_at`), then the wait ended | as `wait-review` |
 
 Once the label is on, the document carries `request` whatever ends the wait.
-After `timeout`, run the command in `request.resume`, with the other options
-the request was run with (`--api-base`, `--review-author` and the like); a
-second `request-review` is refused while the label is on. When the request followed
+After `timeout`, run the script with the arguments in `request.resume`, a
+list passed as it is (no shell string, so a reference with `&` or spaces
+keeps its boundaries), adding the other options the request was run with
+(`--api-base`, `--review-author` and the like); a second `request-review` is
+refused while the label is on. When the request followed
 a newer failure comment, it carries `--review-after` with that comment's
 creation time as the forge gave it, so the review the failure superseded is
 not taken as the answer. After `reviewer_failed`, run `request-review`

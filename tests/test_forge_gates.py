@@ -236,13 +236,13 @@ class Gates:
         return self.comments[2]
 
     # ---- running the script
-    def run_fg(self, command, *extra, env=None, args=None):
+    def run_fg(self, command, *extra, env=None, args=None, pr=None):
         out, err = io.StringIO(), io.StringIO()
         env = dict({self.ENV[self.forge]: str(self.token_file)} if env is None else env)
         if command == "post-review":  # never this machine's own word and host files
             env.setdefault(fg.WORDS_VAR, str(self.tmp / "no-private-words"))
             env.setdefault(fg.HOSTS_VAR, str(self.tmp / "no-private-hosts"))
-        argv = [command, "--pr", self.PR[self.forge], *(self.ARGS[self.forge] if args is None else args), *extra]
+        argv = [command, "--pr", pr or self.PR[self.forge], *(self.ARGS[self.forge] if args is None else args), *extra]
         code = fg.main(argv, env=env, stdout=out, stderr=err, opener=self.fake, sleep=self.clock.sleep,
                        clock=self.clock, run=self.gh)
         text = self.output = out.getvalue() + err.getvalue()
@@ -849,21 +849,28 @@ class RequestRoundTwo:
                 self.assertIn("while reading the comments", doc["reason"])
                 self.assertEqual(self.writes(), [])
 
-    def test_a_comment_of_another_shape_refuses_and_writes_nothing(self):
-        body, author, created = ("body", "author", "created_at")
-        for field, value in ((body, None), (body, 42), (author, None), (created, None), (created, "yesterday"),
-                             (created, "2026-09-27T12:00:00"), (created, 1732445194)):
-            with self.subTest(field=field, value=value):
+    def test_each_decision_field_of_a_comment_of_another_type_refuses_and_writes_nothing(self):
+        """Every field of a comment that reaches a decision, wrong in turn: the comment refuses the
+        request before any filter or trust rule, and is never dropped."""
+        cases = [("body", "body", None), ("body", "body", 42),
+                 ("author", "author" if self.forge == "gitlab" else "user", None),
+                 ("author", "author" if self.forge == "gitlab" else "user", {"username": 42, "login": 42}),
+                 ("created_at", "created_at", None), ("created_at", "created_at", "yesterday"),
+                 ("created_at", "created_at", "2026-09-27T12:00:00"), ("created_at", "created_at", 1732445194)]
+        if self.forge == "github":
+            cases += [("author_association", "author_association", None), ("author_association", "author_association", 7)]
+        if self.forge == "gitlab":
+            cases += [("system", "system", "false"), ("system", "system", None), ("system", "system", 0)]
+        for name, key, value in cases:
+            with self.subTest(field=key, value=value):
                 self.fake.requests.clear()
-                c = dict(self.comments[0])
-                if field == author:
-                    c["author" if self.forge == "gitlab" else "user"] = value
-                else:
-                    c[field] = value
-                self.fake.set(self.comments_route(), [c] + self.comments[1:])
+                c = dict(self.comments[1])  # the local review: a comment every rule reads
+                c[key] = value
+                self.fake.set(self.comments_route(), [self.comments[0], c] + self.comments[2:])
                 code, doc = self.request()
                 self.assertEqual((code, doc["outcome"]), (3, "refused"), json.dumps(doc, indent=1))
-                self.assertIn("while reading the comments", doc["reason"])
+                self.assertIn(f"a comment's {name} is not of the type the forge documents while reading the comments",
+                              doc["reason"])
                 self.assertEqual(self.writes(), [])
 
     def test_wait_review_still_reads_the_comments_as_before(self):
@@ -899,18 +906,19 @@ class RequestRoundTwo:
     def test_a_resumed_wait_keeps_the_cutoff_the_forge_gave(self):
         old, failure = self.re_request()
         self.clock.steps = []
-        code, doc = self.request("--timeout", "120")
+        url = self.PR[self.forge] + "?a=1&b=two words"  # a reference a shell string would split
+        code, doc = self.run_fg("request-review", "--head", HEAD, "--interval", "60", "--timeout", "120", pr=url)
         self.assertEqual((code, doc["outcome"]), (4, "timeout"), json.dumps(doc, indent=1))
-        resume = doc["request"]["resume"].split()
-        self.assertEqual(resume[:5], ["wait-review", "--pr", self.PR[self.forge], "--head", HEAD])
-        self.assertEqual(resume[5:], ["--review-after", failure["created_at"]], "the failure's time, as the forge gave it")
-        # the second invocation: the resume as the document gives it
+        resume = doc["request"]["resume"]
+        self.assertEqual(resume, ["wait-review", "--pr", url, "--head", HEAD, "--review-after", failure["created_at"]],
+                         "an argument list: the reference, the head and the failure's time as the forge gave it")
+        # the second invocation: the arguments as the document gives them
         self.fake.requests.clear()
-        code, doc = self.run_fg(*resume[:1], *resume[3:], "--interval", "60", "--timeout", "120")
+        code, doc = self.run_fg(resume[0], *resume[3:], "--interval", "60", "--timeout", "120", pr=resume[2])
         self.assertEqual((code, doc["outcome"]), (4, "timeout"), "the superseded review is no answer")
         self.clock.steps = [lambda: self.comment(review("example-bot", HEAD), minutes=30)]
         self.fake.requests.clear()
-        code, doc = self.run_fg(*resume[:1], *resume[3:], "--interval", "60", "--timeout", "120")
+        code, doc = self.run_fg(resume[0], *resume[3:], "--interval", "60", "--timeout", "120", pr=resume[2])
         self.assertEqual((code, doc["outcome"]), (0, "review_found"))
         self.assertNotEqual(doc["review"]["url"], self.PR[self.forge] + self.anchor(old))
 
