@@ -53,6 +53,7 @@ GITEA_PENDING = {"pending"}
 # in the merge commit's message is enough), unlike one skipped GitHub check. A manual one waits for
 # a person, so it is pending; failed, canceled and skipped fail.
 GITLAB_PASS = {"success"}
+PIPELINE = "pipeline"  # the name a GitLab pipeline without one is shown under
 GITLAB_PENDING = {"created", "waiting_for_resource", "preparing", "pending", "running", "scheduled",
                   "manual", "waiting_for_callback", "canceling"}
 
@@ -177,16 +178,18 @@ class Forge:
         its abbreviation could then stand alone in them: there an abbreviated SHA is never expanded."""
         return None
 
-    def pages(self, path, key=None):
+    def pages(self, path, key=None, strict=False):
         """A listing across pages. Follows Link rel="next" only on the API's own host,
         so the token is never sent anywhere else. A next page that cannot be followed
-        is an error: a partial listing could hide a later review or a failed check."""
+        is an error: a partial listing could hide a later review or a failed check.
+        STRICT (the repair's read only): a page that is not a list of objects, under KEY
+        when given, refuses instead of counting as empty."""
         sep = "&" if "?" in path else "?"
         url = self.api + self.repo_path + path + sep + ("limit=50" if self.kind == "gitea" else "per_page=100")
         items = []
         for _ in range(MAX_PAGES):
             data, headers = self._fetch(url)
-            items.extend(data.get(key, []) if key else data)
+            items.extend(listed(data, key, path) if strict else data.get(key, []) if key else data)
             nxt = next_link(headers.get("link", ""))
             if not nxt:
                 return items
@@ -195,6 +198,14 @@ class Forge:
                                  "cannot be read in full; give the API base the forge itself uses")
             url = nxt
         raise Unavailable(f"more than {MAX_PAGES} pages of {path}")
+
+
+def listed(data, key, path):
+    """The page's list (under KEY when given), or Refused when it is not a list of objects."""
+    page = (data.get(key) if isinstance(data, dict) else None) if key else data
+    if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+        raise Refused(f"a page of {path.split('?')[0]} is not a list of objects")
+    return page
 
 
 def next_link(header):
@@ -274,7 +285,7 @@ class GitLabForge(Forge):
         except NotFound:
             return {}
 
-    def pages(self, path, key=None):
+    def pages(self, path, key=None, strict=False):
         m = re.fullmatch(r"/issues/(\d+)/comments", path)
         if m:
             url = self.mr.get("web_url") or ""
@@ -284,7 +295,7 @@ class GitLabForge(Forge):
                     if not n.get("system")]
         if re.fullmatch(r"/pulls/\d+/reviews", path):
             return []  # approvals carry no text: nothing to read
-        return super().pages(path, key)
+        return super().pages(path, key, strict)
 
     def pull_heads(self, number):
         """(heads, all): the head of every version the merge request had (a version is kept for
@@ -332,10 +343,10 @@ class GitLabForge(Forge):
         """GitLab's merge requests of commit SHA, as it lists them."""
         return super().pages(f"/repository/commits/{sha}/merge_requests")
 
-    def pipelines(self, sha):
+    def pipelines(self, sha, strict=False):
         target = urllib.parse.quote(self.mr.get("target_branch") or "", safe="")
         # newest first: the latest pipeline is the one that counts, as GitHub's filter=latest does for checks
-        return super().pages(f"/pipelines?sha={sha}&ref={target}&source=push&order_by=id&sort=desc")
+        return super().pages(f"/pipelines?sha={sha}&ref={target}&source=push&order_by=id&sort=desc", strict=strict)
 
 
 def git_path(prefix, path):
@@ -575,7 +586,7 @@ def ci_results(kind, merge_sha, forge, flaky):
     elif kind == "gitlab":
         for p in forge.pipelines(merge_sha)[:1]:
             state = p.get("status")
-            runs.append({"name": p.get("name") or "pipeline", "id": p.get("id"), "url": p.get("web_url") or "",
+            runs.append({"name": p.get("name") or PIPELINE, "id": p.get("id"), "url": p.get("web_url") or "",
                          "state": state, "conclusion": state,
                          "result": "passed" if state in GITLAB_PASS else "pending" if state in GITLAB_PENDING else "failed"})
     else:
@@ -693,12 +704,45 @@ def merged_pulls(forge, kind, sha):
     return found
 
 
+def repair_runs(kind, sha, forge):
+    """The later commit's CI for --ci-repaired-by: check 4's own selection, but each page and each
+    run's fields taken as the forge gave them, before any default; anything else refuses. On GitLab
+    the one result is the latest push pipeline for the target branch, matched by that role, so its
+    name is not read."""
+    runs = []
+    if kind == "github":
+        for r in forge.pages(f"/commits/{sha}/check-runs?filter=latest", key="check_runs", strict=True):
+            name, url, state, conclusion = r.get("name"), r.get("html_url"), r.get("status"), r.get("conclusion")
+            if not (text(name) and text(url) and text(state)) or (state == "completed" and not text(conclusion)):
+                raise Refused("a check run on the commit lacks a name, URL, status or conclusion as strings")
+            done = state == "completed"
+            runs.append({"name": name, "id": r.get("id"), "url": url, "state": state, "conclusion": conclusion,
+                         "result": "passed" if done and conclusion in GITHUB_PASS else "pending" if not done else "failed"})
+    elif kind == "gitlab":
+        for p in forge.pipelines(sha, strict=True)[:1]:
+            state, url = p.get("status"), p.get("web_url")
+            if not (text(state) and text(url)):
+                raise Refused("the commit's pipeline lacks a status or URL as strings")
+            runs.append({"name": PIPELINE, "id": p.get("id"), "url": url, "state": state, "conclusion": state,
+                         "result": "passed" if state in GITLAB_PASS else "pending" if state in GITLAB_PENDING else "failed"})
+    else:
+        for st in forge.pages(f"/commits/{sha}/status", key="statuses", strict=True):
+            state = st["status"] if "status" in st else st.get("state")
+            name, url = st.get("context"), st.get("target_url")
+            if not (text(name) and text(state) and isinstance(url, str)):
+                raise Refused("a commit status on the commit lacks a context, state or URL as strings")
+            runs.append({"name": name, "id": st.get("id"), "url": url, "state": state, "conclusion": state,
+                         "result": "passed" if state in GITEA_PASS else "pending" if state in GITEA_PENDING else "failed"})
+    return runs
+
+
 def ci_repair(forge, kind, pr, number, merge_sha, runs, sha):
     """The --ci-repaired-by check: the merge commit's failed checks were made green by SHA, a later
     pull request's merge commit on the same base branch. Every condition is the forge's own answer,
     and only a present value of the expected type counts. Returns the repaired_by record, with status
     passed or failed and the reason."""
     rep = {"sha": sha}
+    step = "reading the merge commit's failed runs"
     try:
         failed = [r["name"] for r in runs if r["result"] in ("failed", "failed: known flaky")]
         if not all(text(n) for n in failed):
@@ -706,12 +750,15 @@ def ci_repair(forge, kind, pr, number, merge_sha, runs, sha):
         failed = rep["failed_on_merge_commit"] = sorted(set(failed))
         if sha == merge_sha:
             raise Refused("--ci-repaired-by names the merge commit itself")
+        step = "reading the commit"
         url = rep["url"] = text(answer(forge, f"/git/commits/{sha}", "the commit --ci-repaired-by names").get("html_url"))
         if url is None:
             raise Refused("the forge gives no URL for the commit")
+        step = "reading whether the commit descends from the merge commit"
         rep["descends_from_merge_commit"] = False
         rep["descends_basis"] = descends(forge, kind, merge_sha, sha)
         rep["descends_from_merge_commit"] = True
+        step = "reading the pull requests of the commit"
         base = text(pr["base"].get("ref") if isinstance(pr.get("base"), dict) else None)
         if base is None:
             raise Refused("the forge gives no base branch for the pull request")
@@ -722,25 +769,28 @@ def ci_repair(forge, kind, pr, number, merge_sha, runs, sha):
         if not pulls:
             raise Refused(f"the commit is not the merge commit of another merged pull request into {base}")
         rep["pull_request"] = {"number": pulls[0]["number"], "url": pulls[0]["url"]}
-        try:
-            later = rep["runs"] = ci_results(kind, sha, forge, set())
-        except (AttributeError, TypeError, KeyError):
-            raise Refused("the forge's CI answer for the commit is not in the expected shape")
+        step = "reading the commit's CI"
+        later = rep["runs"] = repair_runs(kind, sha, forge)
         if not later:
             raise Refused("the commit has no CI results")
-        if not all(text(r["name"]) and isinstance(r["url"], str) for r in later):
-            raise Refused("a CI run on the commit has no name or an invalid URL")
         not_green = sorted({r["name"] for r in later if r["result"] != "passed"})
         if not_green:
             raise Refused("the commit's CI is not green: " + ", ".join(not_green))
-        # a check that failed must have run again: on GitHub skipped and neutral pass, but did not run
-        rerun = [n for n in failed if not any(r["name"] == n for r in later)
-                 or not all(r["conclusion"] == "success" for r in later if r["name"] == n)]
+        # a check that failed must have run again: on GitHub skipped and neutral pass, but did not run.
+        # On GitLab the one check is the latest push pipeline, the same by its role, whatever its name.
+        rerun = [n for n in failed if kind != "gitlab" and (not any(r["name"] == n for r in later)
+                 or not all(r["conclusion"] == "success" for r in later if r["name"] == n))]
         if rerun:
             raise Refused("a check that failed on the merge commit did not run and succeed on the commit: "
                           + ", ".join(rerun))
     except Refused as e:
         return {**rep, "status": "failed", "detail": str(e)}
+    except (UsageError, Unavailable):
+        raise  # a usage error and an outage keep their meaning, as for every check
+    except NotFound:
+        return {**rep, "status": "failed", "detail": f"the forge answered 404 while {step}"}
+    except Exception as e:  # the repair fails closed: any other surprise in its reads refuses it
+        return {**rep, "status": "failed", "detail": f"{type(e).__name__} while {step}"}
     return {**rep, "status": "passed"}
 
 

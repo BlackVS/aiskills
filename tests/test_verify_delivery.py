@@ -1217,11 +1217,17 @@ class RepairCases:
             "its merged flag is a string": ({pulls: listing({**pull, "merged": "true", "merged_at": None})},
                                             "is not the merge commit of another"),
             "a later run has no name": ({ci: serve({**later_ci, ci_key: [{**r, name_key: None} for r in later_ci[ci_key]]})},
-                                        "has no name or an invalid URL"),
+                                        "as strings"),
             "a later run's URL is a number": ({ci: serve({**later_ci, ci_key: [{**r, "html_url": 7, "target_url": 7}
                                                                                for r in later_ci[ci_key]]})},
-                                              "has no name or an invalid URL"),
-            "a later run is not an object": ({ci: serve({**later_ci, ci_key: ["run"]})}, "not in the expected shape"),
+                                              "as strings"),
+            "a later run's URL is false": ({ci: serve({**later_ci, ci_key: [{**r, "html_url": False, "target_url": False}
+                                                                            for r in later_ci[ci_key]]})},
+                                           "as strings"),
+            "a later run is not an object": ({ci: serve({**later_ci, ci_key: ["run"]})}, "is not a list of objects"),
+            "the CI page has no list": ({ci: serve({})}, "is not a list of objects"),
+            "the later CI is not found": ({ci: lambda req: (_ for _ in ()).throw(urllib.error.HTTPError(
+                req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))}, "the forge answered 404 while reading the commit's CI"),
         }
         if self.forge == "github":
             cases["the compare status is absent"] = ({compare: serve({"ahead_by": 1})}, "does not descend")
@@ -1241,6 +1247,60 @@ class RepairCases:
                     self.fake.overrides.update(overrides)
                 code, doc = self.run_vd("--ci-repaired-by", LATER)
                 self.assert_not_repaired(code, doc, words)
+
+    def test_a_second_ci_page_without_its_list_refuses(self):
+        """The first page holds the green rerun; the second, which the forge links to, has no list."""
+        ci_path = "/repos/acme/widgets/commits/" + LATER + ("/check-runs" if self.forge == "github" else "/status")
+        later_ci = FakeForge(self.forge).data[FORGES[self.forge]["ci"]]
+        api = FORGES[self.forge]["api"]
+
+        def paged(req):
+            if "page=2" in req.full_url:
+                return Response(200, b"{}")
+            return Response(200, json.dumps(later_ci).encode(), {"Link": f'<{api}{ci_path}?page=2>; rel="next"'})
+
+        self.ci_fail()
+        self.repair()
+        self.fake.overrides[ci_path] = paged
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assert_not_repaired(code, doc, "is not a list of objects")
+        self.assertTrue(any("page=2" in r["url"] for r in self.fake.requests), "the second page was read")
+
+    def test_the_merge_commits_own_ci_read_is_the_same_with_the_flag(self):
+        """Check 4's reading of the merge commit is untouched: byte for byte, with and without the flag."""
+        self.ci_fail()
+        self.repair()
+        _, without = self.run_vd()
+        _, with_flag = self.run_vd("--ci-repaired-by", LATER)
+        own = lambda doc: json.dumps({k: v for k, v in self.check(doc, "post_merge_ci").items()
+                                      if k in ("merge_commit_sha", "runs", "known_flaky_failures")}, sort_keys=True)
+        self.assertEqual(own(with_flag), own(without))
+        self.assertEqual([c for c in without["checks"] if c["name"] != "post_merge_ci"],
+                         [c for c in with_flag["checks"] if c["name"] != "post_merge_ci"])
+
+    def test_any_other_exception_in_a_repair_read_refuses(self):
+        for error in (LookupError("x"), ValueError("x"), AttributeError("x")):
+            with self.subTest(type(error).__name__):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                with mock.patch.object(vd, "merged_pulls", side_effect=error):
+                    code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assert_not_repaired(code, doc, f"{type(error).__name__} while reading the pull requests of the commit")
+                ci = self.check(doc, "post_merge_ci")
+                self.assertTrue(ci["runs"], "the merge commit's runs stay listed")
+
+    def test_an_outage_or_usage_error_in_a_repair_read_keeps_its_meaning(self):
+        for error, code_, verdict in ((vd.Unavailable("the forge is down"), 4, "pending"),
+                                      (vd.UsageError("another host"), 2, "not_confirmed")):
+            with self.subTest(type(error).__name__):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                with mock.patch.object(vd, "repair_runs", side_effect=error):
+                    code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assertEqual((code, doc["verdict"]), (code_, verdict))
+                self.assertNotIn("evidence", doc)
 
     def test_a_failed_run_on_the_merge_commit_without_a_name(self):
         if self.forge == "github":
@@ -1983,7 +2043,10 @@ class GitLabRepair(unittest.TestCase):
                  "no target branch": ({"requests": lambda mr: [{**mr, "target_branch": None}]}, "is not the merge commit of another"),
                  "no web URL": ({"requests": lambda mr: [{**mr, "web_url": None}]}, "is not the merge commit of another"),
                  "the listing holds a string": ({"requests": lambda mr: ["2"]}, "is not the merge commit of another"),
-                 "the pipeline has no URL": ({"pipelines": lambda p: [{**p, "web_url": 7}]}, "has no name or an invalid URL")}
+                 "the pipeline's URL is a number": ({"pipelines": lambda p: [{**p, "web_url": 7}]}, "lacks a status or URL as strings"),
+                 "the pipeline's URL is false": ({"pipelines": lambda p: [{**p, "web_url": False}]}, "lacks a status or URL as strings"),
+                 "the pipeline's status is null": ({"pipelines": lambda p: [{**p, "status": None}]}, "lacks a status or URL as strings"),
+                 "the pipeline listing holds a string": ({"pipelines": lambda p: ["pipeline"]}, "is not a list of objects")}
         for name, (serve, words) in cases.items():
             with self.subTest(name):
                 merge_base = serve.pop("merge_base", None)
@@ -1993,6 +2056,43 @@ class GitLabRepair(unittest.TestCase):
                 code, doc = self.run_vd("--ci-repaired-by", LATER)
                 self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"), name)
                 self.assertIn(words, self.case.check(doc, "post_merge_ci")["repaired_by"]["detail"])
+
+    def test_the_pipeline_is_matched_by_its_role_not_its_name(self):
+        """GitLab's one result is the latest push pipeline for the target branch; its name is not compared."""
+        for name in (None, "another pipeline"):
+            with self.subTest(name):
+                self.serve(pipelines=lambda p, n=name: [{**p, "name": n}])
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        self.assertIsNone(self.pipeline.get("name"), "the recorded pipelines carry no name")
+        # a named pipeline that failed is repaired by the later commit's pipeline, named or not
+        self.serve(pipelines=lambda p: [{**p, "name": None}])
+        self.case.fake.overrides[f"/pipelines?sha={self.merged}"] = (
+            lambda req: Response(200, json.dumps([{**self.pipeline, "status": "failed", "name": "release"}]).encode()))
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        self.assertEqual(self.case.check(doc, "post_merge_ci")["repaired_by"]["failed_on_merge_commit"], ["release"])
+
+    def test_a_commit_answer_that_is_not_an_object_refuses(self):
+        self.serve()
+        self.case.fake.overrides[f"/repository/commits/{LATER}"] = lambda req: Response(200, b"[]")
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        ci = self.case.check(doc, "post_merge_ci")
+        self.assertEqual(ci["repaired_by"]["detail"], "AttributeError while reading the commit")
+        self.assertEqual([r["result"] for r in ci["runs"]], ["failed"])
+        self.assertNotIn("evidence", doc)
+
+    def test_the_later_pipelines_not_found(self):
+        self.serve()
+        self.case.fake.overrides[f"/pipelines?sha={LATER}"] = lambda req: (_ for _ in ()).throw(
+            urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        ci = self.case.check(doc, "post_merge_ci")
+        self.assertIn("the forge answered 404 while reading the commit's CI", ci["repaired_by"]["detail"])
+        self.assertTrue(ci["runs"])
+        self.assertNotIn("evidence", doc)
 
     def test_the_merged_commit_is_read_as_check_2_reads_it(self):
         """A merge commit equal to the head with a distinct squash commit: the squash commit is the merged one."""
@@ -2009,7 +2109,7 @@ class GitLabRepair(unittest.TestCase):
     def test_the_failed_pipeline_still_failing_or_absent(self):
         # GitLab's one result is the latest pipeline: its name is the check that failed
         cases = {"still failing": (lambda p: [{**p, "status": "failed"}], "is not green"),
-                 "renamed": (lambda p: [{**p, "name": "another pipeline"}], "did not run and succeed on the commit"),
+
                  "still running": (lambda p: [{**p, "status": "running"}], "is not green"),
                  "none": (lambda p: [], "has no CI results")}
         for name, (pipelines, words) in cases.items():

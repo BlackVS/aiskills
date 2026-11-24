@@ -230,18 +230,23 @@ All four must pass for the verdict `confirmed` (check 4 may instead be `repaired
    - every check that failed on the merge commit ran again on it under the
      same name and succeeded (every run under that name, and on GitHub a
      `skipped` or `neutral` run does not count as one that ran), and all its
-     other checks passed, read as above (on GitLab its latest push pipeline
-     for the target branch).
+     other checks passed, read as above. On GitLab "the same check" is the
+     one result check 4 reads, the latest push pipeline for the target
+     branch, whatever its name: it must have the status `success`.
 
    Only a present value of the expected type counts as the forge's answer:
-   a field that is absent, null or of another type, an empty listing, or an
-   answer that is not an object refuses the repair. Otherwise the check
-   stays `failed`, and `repaired_by` says which condition failed and what
-   the forge answered. A forge that cannot be reached leaves the result
-   `pending`, as for every check. The merge commit's failed runs stay listed in `runs` either way.
-   Without the flag nothing changes: a red merge commit is `not_confirmed`.
-   With the flag and a merge commit whose CI did not fail, the flag is not
-   used (`repaired_by.status` is `not used`).
+   a field that is absent, null or of another type, an empty listing, a page
+   of the commit's CI that is not a list, or an answer that is not an object
+   refuses the repair. The commit's CI fields are read as the forge gave
+   them, before any default. Any other unexpected answer (a 404, or one the
+   tool cannot read) refuses it too, naming what was being read. Otherwise
+   the check stays `failed`, and `repaired_by` says which condition failed
+   and what the forge answered. A forge that cannot be reached leaves the
+   result `pending`, as for every check. The merge commit's failed runs stay
+   listed in `runs` either way. Without the flag nothing changes: a red
+   merge commit is `not_confirmed`. With the flag and a merge commit whose
+   CI did not fail, the flag is not used (`repaired_by.status` is
+   `not used`).
 
 ## How to call it
 
