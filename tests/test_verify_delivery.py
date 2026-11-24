@@ -1995,15 +1995,24 @@ class GitIdentity(unittest.TestCase):
             self.identity("T", "H", repo=clone)
 
     def test_a_partial_clone_is_refused(self):
-        for key in ("remote.origin.promisor", "remote.origin.partialclonefilter", "extensions.partialClone"):
-            with self.subTest(key):
-                clone = self.tmp / f"partial-{key.replace('.', '-')}"
+        # a promisor git cannot read as a boolean refuses, like true; one set to false is skipped by
+        # git, so that full clone gives the identity it gave before the setting
+        clean = self.identity("T", "H")
+        cases = [("remote.origin.promisor", "true", True), ("remote.origin.promisor", "yes", True),
+                 ("remote.origin.promisor", "maybe", True), ("remote.origin.partialclonefilter", "blob:none", True),
+                 ("extensions.partialClone", "origin", True), ("remote.origin.promisor", "false", False),
+                 ("remote.origin.promisor", "off", False)]
+        for n, (key, value, partial) in enumerate(cases):
+            with self.subTest(key=key, value=value):
+                clone = self.tmp / f"clone-{n}"
                 subprocess.run(["git", "clone", "-q", "--no-local", self.repo.resolve().as_uri(), str(clone)],
                                env=self.env, check=True, capture_output=True)
-                self.git("config", "--local", key, "blob:none" if "filter" in key else "true" if "promisor" in key else "origin",
-                         repo=clone)
-                with self.assertRaisesRegex(ValueError, "partial clone"):
-                    self.identity("T", "H", repo=clone)
+                self.git("config", "--local", key, value, repo=clone)
+                if partial:
+                    with self.assertRaisesRegex(ValueError, "partial clone"):
+                        self.identity("T", "H", repo=clone)
+                else:
+                    self.assertEqual(self.identity("T", "H", repo=clone), clean)
 
     def test_only_full_shas_and_commits_in_the_clone(self):
         with self.assertRaisesRegex(ValueError, "full 40-digit SHA"):

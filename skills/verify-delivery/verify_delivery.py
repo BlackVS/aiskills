@@ -966,6 +966,21 @@ def git_env():
     return {**{k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}, **GIT_ENV}
 
 
+def partial_clone(run):
+    """Is the clone a partial clone? extensions.partialClone or a remote's partialclonefilter, set
+    at all, or a remote's promisor that reads as true. Git skips a promisor set to false; a value it
+    cannot read as a boolean counts as true."""
+    names = run("config", "--name-only", "--get-regexp",
+                r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$")
+    for name in dict.fromkeys(names.stdout.decode("utf-8", "replace").split() if names.returncode == 0 else []):
+        if not name.endswith(".promisor"):
+            return True
+        value = run("config", "--type=bool", "--get", name)
+        if value.returncode != 0 or value.stdout.strip() != b"false":
+            return True
+    return False
+
+
 def git_change_identity(repo, base, sha):
     """patch_identity of SHA's change against its merge base with BASE, as git computes it in the
     clone at REPO. Both are full SHAs the forge named. Nothing is fetched: a commit the clone lacks
@@ -992,8 +1007,7 @@ def git_change_identity(repo, base, sha):
 
     if git("rev-parse", "--is-shallow-repository").strip() != b"false":
         raise ValueError(f"the clone at {repo} is shallow, so its merge base is not the real one: use a full clone")
-    promisor = run("config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$")
-    if promisor.returncode == 0 and promisor.stdout.strip():
+    if partial_clone(run):
         raise ValueError(f"the clone at {repo} is a partial clone, which fetches what it lacks: use a full clone")
     for c in (base, sha):
         if run("cat-file", "-e", f"{c}^{{commit}}").returncode != 0:
