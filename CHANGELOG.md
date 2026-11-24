@@ -25,6 +25,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
   review is reported, not removed, and the count of READY reviews is
   information only. The Gitea and GitLab writes follow their API
   documentation and are tested against recorded answers only.
+  `wait-review` takes `--review-after TIME`, a time the forge gave, so a
+  resumed wait does not take a review that a newer failure superseded as
+  the answer; request-review's document gives the resume command.
 
 - **`verify-delivery` and `forge-gates merge-check` take `--ci-repaired-by
   SHA`, for a merge commit whose CI a later pull request made green.** The

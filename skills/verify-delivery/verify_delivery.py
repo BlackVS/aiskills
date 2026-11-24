@@ -291,7 +291,7 @@ class GitLabForge(Forge):
             url = self.mr.get("web_url") or ""
             return [{"body": n.get("body"), "created_at": n.get("created_at"), "updated_at": n.get("updated_at"),
                      "html_url": f"{url}#note_{n.get('id')}", "user": {"login": (n.get("author") or {}).get("username")}}
-                    for n in super().pages(f"/merge_requests/{m.group(1)}/notes?sort=asc&order_by=created_at")
+                    for n in super().pages(f"/merge_requests/{m.group(1)}/notes?sort=asc&order_by=created_at", strict=strict)
                     if not n.get("system")]
         if re.fullmatch(r"/pulls/\d+/reviews", path):
             return []  # approvals carry no text: nothing to read
@@ -929,13 +929,14 @@ def verify(args, forge, kind, number):
     return checks, pr_url, head_url, merge_url, runs, repaired_evidence
 
 
-def comment_items(forge, number, formal=True):
+def comment_items(forge, number, formal=True, strict=False):
     """The pull request's comments in the shape check_reviews reads, and (FORMAL) its formal
-    reviews, which are read only to say why they do not count (see FORMAL_REVIEW)."""
+    reviews, which are read only to say why they do not count (see FORMAL_REVIEW). STRICT: a page
+    that is not a list of objects refuses (Refused) instead of counting as empty."""
     items = [{"body": c.get("body"), "created_at": c.get("created_at"), "updated_at": c.get("updated_at"),
               "url": c.get("html_url"), "author": (c.get("user") or {}).get("login"),
               "association": c.get("author_association")}
-             for c in forge.pages(f"/issues/{number}/comments")]
+             for c in forge.pages(f"/issues/{number}/comments", strict=strict)]
     if formal:
         items += [{"body": r.get("body"), "created_at": r.get("submitted_at"), "url": r.get("html_url"),
                    "author": (r.get("user") or {}).get("login"), "association": r.get("author_association"),

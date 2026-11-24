@@ -26,7 +26,7 @@ names the skill to install.
 ## Commands
 
     python3 scripts/forge_gates.py request-review --pr PR --head SHA [--variant PROFILE] [--dry-run] [wait-review's options]
-    python3 scripts/forge_gates.py wait-review --pr PR --head SHA [--wait-for NAME] [--timeout S] [--interval S]
+    python3 scripts/forge_gates.py wait-review --pr PR --head SHA [--wait-for NAME] [--timeout S] [--interval S] [--review-after TIME]
     python3 scripts/forge_gates.py gates --pr PR
     python3 scripts/forge_gates.py merge-check --pr PR
     python3 scripts/forge_gates.py post-review --pr PR --body-file FILE [--deny-file FILE] [--dry-run]
@@ -60,7 +60,9 @@ and never falls back from a missing variant to the plain label.
 Nothing is written until every refusal below was decided on the forge's own
 answers. A read that fails refuses the whole request and names the read: a
 404, or an answer of another shape than expected (a value of the wrong type,
-a list that is not one, a name that is not a string). An outage gives the
+a page of the comments or labels that is not a list of objects, a name that
+is not a string). Every listing this check reads is read strictly, the
+comments included, which `wait-review` reads as before. An outage gives the
 error document with exit 4 and a usage error exit 2, as for every command,
 and nothing is written then either. The checks:
 
@@ -108,13 +110,17 @@ request the forge does not accept gives `write_failed` and no label.
 | `dry_run` | `--dry-run`: every check passed; `request` names the write it would make | 0 |
 | `write_failed` | the forge refused the write (`request.added` false, `request.detail`) | 2 (the token may not label) or 4 |
 | `write_unknown` | no answer to the write: the label may or may not be on (`request.added` is `unknown`); read the labels before requesting again | 4 |
-| `error` | the label is on and the wait could not run (`error`) | 2 or 3 |
+| `error` | the label is on and the wait could not run (`error`, mapped as `wait-review`'s errors) | 2 (usage), 3 (not found or unexpected), or 4 |
 | `wait-review`'s | the label is on (`request.added` true, `request.added_at`), then the wait ended | as `wait-review` |
 
 Once the label is on, the document carries `request` whatever ends the wait.
-After `timeout`, wait again with `wait-review --head` (a second
-`request-review` is refused while the label is on); after `reviewer_failed`,
-run `request-review` again. `--anonymous` works only with `--dry-run`.
+After `timeout`, run the command in `request.resume`, with the other options
+the request was run with (`--api-base`, `--review-author` and the like); a
+second `request-review` is refused while the label is on. When the request followed
+a newer failure comment, it carries `--review-after` with that comment's
+creation time as the forge gave it, so the review the failure superseded is
+not taken as the answer. After `reviewer_failed`, run `request-review`
+again. `--anonymous` works only with `--dry-run`.
 
 ### wait-review
 
@@ -137,6 +143,10 @@ Run it in the background right after adding the request label by hand;
   included) was added, read from the label events. Where those cannot be
   read, the start of the wait is used, and the result says
   `"correlation": "wait_start"`.
+- `--review-after TIME` counts only a review created after TIME, a timestamp
+  with its offset as the forge gave it (request-review's `request.resume`
+  names it). A value that is not such a time is a usage error. Without the
+  option every review of the head counts, as before.
 - `--timeout` defaults to 2700 seconds (the reviewer's own watch window),
   `--interval` to 60 and never below 30. A forge that does not answer does
   not end the wait; the last error is reported with the timeout.

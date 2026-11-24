@@ -21,7 +21,7 @@ merge-check verify-delivery's; post-review 0 posted (or, with --dry-run, would p
 refused, 4 not posted for a forge error; request-review as wait-review once the label is on, 3
 refused, 4 the label write failed or its answer was lost, 0 with --dry-run; 2 usage error. See SKILL.md.
 """
-import copy, datetime, json, os, pathlib, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import copy, datetime, http.client, json, os, pathlib, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 sys.dont_write_bytecode = True  # no __pycache__ inside an installed skill
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "verify-delivery"))
@@ -340,9 +340,10 @@ def names_head(body, head):
     return not shas or any(head.startswith(s) for s in shas)
 
 
-def trusted_comments(args, forge, kind, number):
-    """The pull request's comments by an author the awaited review trusts, oldest first."""
-    items = sorted(vd.comment_items(forge, number, formal=False),
+def trusted_comments(args, forge, kind, number, strict=False):
+    """The pull request's comments by an author the awaited review trusts, oldest first. STRICT (the
+    request's preflight): a page that is not a list of objects refuses instead of counting as empty."""
+    items = sorted(vd.comment_items(forge, number, formal=False, strict=strict),
                    key=lambda c: vd.when(c["created_at"]) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc))
     name = args.wait_pattern[0]
     return [c for c in items if not vd.author_verdict(c, name, kind, args.review_authors, args.trust_any_author)]
@@ -445,6 +446,12 @@ def check_wait_args(args, kind):
         args.failure = re.compile(args.failure_pattern)
     except re.error:
         raise vd.UsageError("--failure-pattern is not a valid regular expression")
+    if getattr(args, "review_after", None) is not None:
+        when = vd.when(args.review_after)
+        if not when or when.tzinfo is None:
+            raise vd.UsageError("--review-after must be a timestamp with its offset, as the forge gives it "
+                                "(for example 2026-11-24T10:46:34Z)")
+        args.review_after = when
     if getattr(args, "variant", None) is not None and not PROFILE.fullmatch(args.variant):
         raise vd.UsageError("--variant must be a profile name: letters, digits, '.', '_' and '-'")
 
@@ -512,9 +519,9 @@ def label_write(kind, number, label):
 
 def request_checks(args, forge, kind, owner, number, name, step):
     """The refusals of request-review, decided on the forge's raw answers before anything is written:
-    (checks, the pull request, the label as the forge defines it, the time of an earlier review of
-    the head that a newer failure answered, the reviewed-label entry). STEP[0] names the read in
-    progress, for a refusal."""
+    (checks, the pull request, the label as the forge defines it, the creation time the forge gave
+    the newest failure comment that answered an earlier review of the head, the reviewed-label
+    entry). STEP[0] names the read in progress, for a refusal."""
     head, base = args.head, args.request_label
     pr = read_pull(forge, kind, number)
     raw = pr["raw"]
@@ -546,18 +553,19 @@ def request_checks(args, forge, kind, owner, number, name, step):
                               "this command removes nothing")
 
     step[0] = "reading the comments"
-    trusted = trusted_comments(args, forge, kind, number)
+    trusted = trusted_comments(args, forge, kind, number, strict=True)
     found, after = head_review(args, trusted, head), None
     review = {"name": "head_review", "status": "passed"}
     if found:
         c = found[0]
-        after = vd.when(c["created_at"])
-        newer = [f for f in head_failures(args, trusted, head) if after and vd.when(f["created_at"]) > after]
+        reviewed_at = vd.when(c["created_at"])
+        newer = [f for f in head_failures(args, trusted, head) if reviewed_at and vd.when(f["created_at"]) > reviewed_at]
         review["review_url"] = c["url"]
-        if not after:
+        if not reviewed_at:
             review.update(status="failed", detail="a review of this head exists and its time cannot be read")
         elif newer:
-            review.update(failure_url=newer[0]["url"],
+            after = newer[0]["created_at"]  # the forge's own time: only a review after it answers this request
+            review.update(failure_url=newer[0]["url"], review_after=after,
                           detail="a review of this head exists, and a newer failure comment asks for it again")
         else:
             review.update(status="failed", detail="a review of this head exists with no newer failure: read it")
@@ -618,29 +626,34 @@ def request_review(args, forge, kind, owner, repo, number, token, opener, clock,
         doc["outcome"] = "dry_run"
         return doc, EXIT_READY
     try:
-        status, _ = send(kind, forge, token, method, path, payload, opener)
+        status, _ = send(kind, forge, token, method, path, payload, opener, body=False)  # the status is the answer
     except urllib.error.HTTPError as e:
         denied = e.code in (401, 403)
         request.update(added=False, detail=f"the forge refused the label (HTTP {e.code})"
                        + (": the token may not label here" if denied else ""))
         doc["outcome"] = "write_failed"
         return doc, EXIT_USAGE if denied else EXIT_PENDING
-    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError):
-        status = None
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, http.client.HTTPException):
+        status = None  # no status arrived: the label may or may not be on
     if status is None or not 200 <= status < 300:
         request.update(added="unknown", detail=("no answer from the forge" if status is None else f"HTTP {status}")
                        + ": read the pull request's labels before requesting again")
         doc["outcome"] = "write_unknown"
         return doc, EXIT_PENDING
     request.update(added=True, added_at=datetime.datetime.fromtimestamp(clock(), datetime.timezone.utc).isoformat())
-    args.review_after = after  # a review of the head from before this request is not its answer
+    # a review of the head from before this request is not its answer, in this wait or a resumed one
+    args.review_after = vd.when(after) if after else None
+    request["resume"] = (f"wait-review --pr {args.pr} --head {args.head}"
+                         + (f" --review-after {after}" if after else ""))
     try:
         wait, code = wait_review(args, forge, kind, owner, repo, number, clock, sleep)
+    except (vd.UsageError, vd.Unavailable, vd.NotFound) as e:  # as wait-review maps them; the label is on
+        error, code = error_doc("wait-review", e)
+        doc.update(outcome="error", error=error["error"])
+        return doc, code
     except Exception as e:  # the label is on: the document says so whatever ends the wait
-        usage = isinstance(e, (vd.UsageError, vd.NotFound))
-        doc.update(outcome="error", error={"kind": "usage" if usage else "unexpected",
-                                           "message": str(e) if usage else f"{type(e).__name__} while waiting"})
-        return doc, EXIT_USAGE if usage else EXIT_NOT_READY
+        doc.update(outcome="error", error={"kind": "unexpected", "message": f"{type(e).__name__} while waiting"})
+        return doc, EXIT_NOT_READY
     doc.update({k: v for k, v in wait.items() if k not in ("pr", "head")})
     return doc, code
 
@@ -734,9 +747,9 @@ def review_checks(text, header, verdict_re, deny):
     return checks, sha
 
 
-def send(kind, forge, token, method, path, payload, opener):
+def send(kind, forge, token, method, path, payload, opener, body=True):
     """One write request to the repository's API path, never retried: (status, the first MAX_ANSWER
-    bytes of the answer). urllib's errors pass through for the caller to name."""
+    bytes of the answer, or None without BODY). urllib's errors pass through for the caller to name."""
     headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "aiskills-forge-gates"}
     if kind == "github":
         headers.update({"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
@@ -744,7 +757,7 @@ def send(kind, forge, token, method, path, payload, opener):
     req = urllib.request.Request(forge.api + forge.repo_path + path, data=json.dumps(payload).encode(),
                                  headers=headers, method=method)
     with (opener or vd.default_opener())(req, timeout=vd.TIMEOUT) as resp:
-        return resp.status, resp.read(MAX_ANSWER)
+        return resp.status, resp.read(MAX_ANSWER) if body else None
 
 
 def post_comment(kind, forge, number, token, body, opener):
@@ -1374,8 +1387,11 @@ def wait_arguments(w):
 def build_parser():
     p = vd.ArgParser(prog="forge_gates.py", description=__doc__.split("\n\n")[0], allow_abbrev=False)
     sub = p.add_subparsers(dest="command", required=True, metavar="{" + ",".join(COMMANDS) + "}")
-    wait_arguments(vd.add_arguments(sub.add_parser("wait-review", allow_abbrev=False,
-                                                   help="wait for the external reviewer's answer for a head")))
+    w = wait_arguments(vd.add_arguments(sub.add_parser("wait-review", allow_abbrev=False,
+                                                       help="wait for the external reviewer's answer for a head")))
+    w.add_argument("--review-after", metavar="TIME",
+                   help="count only a review created after TIME, a timestamp the forge gave with its offset "
+                        "(request-review's resume command names it)")
     q = wait_arguments(vd.add_arguments(sub.add_parser(
         "request-review", allow_abbrev=False, help="add the request label for a head, then wait as wait-review")))
     q.add_argument("--variant", metavar="PROFILE",
