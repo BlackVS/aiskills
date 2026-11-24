@@ -4,21 +4,24 @@ reviewer's answer for a head, say whether the current head is ready for a person
 or give verify-delivery's delivery verdict; post the local review once it has the form
 verify-delivery reads.
 
-Read-only except post-review: every other request is an HTTP GET. post-review creates one
-comment and never edits one; nothing here labels, pushes or merges.
+Read-only except post-review and request-review: every other request is an HTTP GET. post-review
+creates one comment and never edits one; request-review adds one existing label and removes none;
+nothing here pushes or merges.
 Standard library only; it imports verify_delivery.py from the sibling verify-delivery skill.
 
     forge_gates.py wait-review --pr https://github.com/OWNER/REPO/pull/7 --head <40-digit SHA>
     forge_gates.py gates --pr https://github.com/OWNER/REPO/pull/7
     forge_gates.py merge-check --pr https://github.com/OWNER/REPO/pull/7
     forge_gates.py post-review --pr https://github.com/OWNER/REPO/pull/7 --body-file review.md [--dry-run]
+    forge_gates.py request-review --pr https://github.com/OWNER/REPO/pull/7 --head <40-digit SHA> [--dry-run]
 
 Prints one JSON document on stdout and one summary line on stderr. Exit codes: gates 0 ready,
 3 not ready, 4 pending; wait-review 0 review found, 3 the wait ended otherwise, 4 timeout;
 merge-check verify-delivery's; post-review 0 posted (or, with --dry-run, would post), 3
-refused, 4 not posted for a forge error; 2 usage error. See SKILL.md.
+refused, 4 not posted for a forge error; request-review as wait-review once the label is on, 3
+refused, 4 the label write failed or its answer was lost, 0 with --dry-run; 2 usage error. See SKILL.md.
 """
-import datetime, json, os, pathlib, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import copy, datetime, json, os, pathlib, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 sys.dont_write_bytecode = True  # no __pycache__ inside an installed skill
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "verify-delivery"))
@@ -28,7 +31,7 @@ except ImportError:
     vd = None
 
 EXIT_READY, EXIT_USAGE, EXIT_NOT_READY, EXIT_PENDING = 0, 2, 3, 4
-COMMANDS = ("wait-review", "gates", "merge-check", "post-review", "check-links", "check-words",
+COMMANDS = ("wait-review", "request-review", "gates", "merge-check", "post-review", "check-links", "check-words",
             "record-review", "pre-push", "install-hook", "uninstall-hook")
 LOCAL = ("check-links", "check-words", "record-review", "pre-push", "install-hook", "uninstall-hook")  # no forge needed
 # gh lets these override its stored logins whatever --hostname names: a token for instance A
@@ -37,6 +40,7 @@ GH_OVERRIDES = {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTER
 GH_TIMEOUT = 15
 GITEA_DRAFT_PREFIXES = ("WIP:", "[WIP]")  # Gitea's default WORK_IN_PROGRESS_PREFIXES
 MIN_INTERVAL = 30
+PROFILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a reviewer profile, the suffix of a variant request label
 SHA_TOKEN = re.compile(r"(?<![0-9A-Za-z])[0-9a-fA-F]{7,40}(?![0-9A-Za-z])")
 # A UUID in its 8-4-4-4-12 form: its first group alone looks like an abbreviated SHA.
 UUID = re.compile(r"(?<![0-9A-Za-z-])[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?![0-9A-Za-z-])")
@@ -336,19 +340,42 @@ def names_head(body, head):
     return not shas or any(head.startswith(s) for s in shas)
 
 
-def poll(args, forge, kind, number, head, since):
-    """One look at the pull request: (outcome, details), or None to keep waiting."""
-    pr = read_pull(forge, kind, number)
-    name, pattern = args.wait_pattern
+def trusted_comments(args, forge, kind, number):
+    """The pull request's comments by an author the awaited review trusts, oldest first."""
     items = sorted(vd.comment_items(forge, number, formal=False),
                    key=lambda c: vd.when(c["created_at"]) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc))
-    trusted = [c for c in items if not vd.author_verdict(c, name, kind, args.review_authors, args.trust_any_author)]
+    name = args.wait_pattern[0]
+    return [c for c in items if not vd.author_verdict(c, name, kind, args.review_authors, args.trust_any_author)]
+
+
+def head_review(args, trusted, head, after=None):
+    """The latest trusted review comment that names HEAD, as (comment, sha), or None. AFTER, when
+    given, counts only a comment created after it."""
     found = None
     for c in trusted:
-        m = pattern.search(c["body"] or "")
+        if after and not ((vd.when(c["created_at"]) or after) > after):
+            continue
+        m = args.wait_pattern[1].search(c["body"] or "")
         sha = (m.group("sha") or "").lower() if m else ""
         if re.fullmatch(r"[0-9a-f]{7,40}", sha) and head.startswith(sha):
             found = (c, sha)
+    return found
+
+
+def head_failures(args, trusted, head):
+    """The reviewer's failure comments that can be about HEAD, newest first. A comment that is itself
+    a review (it carries a configured review's header, the local one included) is never the
+    reviewer's failure comment, whatever its prose says."""
+    return [c for c in reversed(trusted) if args.failure.search(c["body"] or "") and names_head(c["body"], head)
+            and vd.when(c["created_at"]) and not any(p.search(c["body"] or "") for p in args.review_headers)]
+
+
+def poll(args, forge, kind, number, head, since):
+    """One look at the pull request: (outcome, details), or None to keep waiting."""
+    pr = read_pull(forge, kind, number)
+    name = args.wait_pattern[0]
+    trusted = trusted_comments(args, forge, kind, number)
+    found = head_review(args, trusted, head, getattr(args, "review_after", None))
     if found:
         c, sha = found
         word = VERDICT_WORD.search(c["body"] or "")
@@ -356,10 +383,7 @@ def poll(args, forge, kind, number, head, since):
                                            "verdict": word.group(1) if word else None,
                                            "ready_verdict": bool(args.verdict.search(c["body"] or "")),
                                            "url": c["url"], "author": c["author"], "created_at": c["created_at"]}}
-    # a comment that is itself a review (it carries a configured review's header, the local one
-    # included) is never the reviewer's failure comment, whatever its prose says
-    failures = [c for c in reversed(trusted) if args.failure.search(c["body"] or "") and names_head(c["body"], head)
-                and vd.when(c["created_at"]) and not any(p.search(c["body"] or "") for p in args.review_headers)]
+    failures = head_failures(args, trusted, head)
     correlation = {}
     if failures:  # the label events are read only when there is a failure to correlate
         label = label_added(forge, kind, number, args.request_label)
@@ -421,6 +445,204 @@ def check_wait_args(args, kind):
         args.failure = re.compile(args.failure_pattern)
     except re.error:
         raise vd.UsageError("--failure-pattern is not a valid regular expression")
+    if getattr(args, "variant", None) is not None and not PROFILE.fullmatch(args.variant):
+        raise vd.UsageError("--variant must be a profile name: letters, digits, '.', '_' and '-'")
+
+
+# ---------------------------------------------------------------- requesting the external review
+
+def label_names(items, what, plain=False):
+    """The names in a raw list of labels: objects with a name or, PLAIN (GitLab's merge request),
+    the names themselves. Refused when the list or any entry has another shape."""
+    if not isinstance(items, list):
+        raise vd.Refused(f"{what} is not a list")
+    names = [vd.text(i) if plain else vd.text(i.get("name")) if isinstance(i, dict) else None for i in items]
+    if None in names:
+        raise vd.Refused(f"{what} has an entry without a name")
+    return names
+
+
+def root_pages(forge, path):
+    """A strict listing at PATH under the API root instead of the repository's path."""
+    view = copy.copy(forge)
+    view.repo_path = ""
+    return vd.Forge.pages(view, path, strict=True)
+
+
+def forge_label(forge, kind, owner, name):
+    """The label NAME as the forge defines it for the repository ({name}, and on Gitea its id), or
+    Refused. It is looked up before the write because GitLab's add_labels creates a label it does
+    not know, and what GitHub or Gitea do with an unknown name is not relied on either."""
+    missing = f"the label {name} does not exist on the forge, and this command never creates one"
+    if kind == "github":
+        try:
+            item = forge.get("/labels/" + urllib.parse.quote(name, safe=""))
+        except vd.NotFound:
+            raise vd.Refused(missing)
+        if not isinstance(item, dict):
+            raise vd.Refused(f"the forge's answer for the label {name} is not an object")
+        if vd.text(item.get("name")) != name:
+            raise vd.Refused(f"the forge has no label named exactly {name}")
+        return {"name": name}
+    if kind == "gitlab":
+        items = forge.pages("/labels?include_ancestor_groups=true", strict=True)
+    else:
+        items = forge.pages("/labels", strict=True)
+        try:
+            items += root_pages(forge, f"/orgs/{urllib.parse.quote(owner, safe='')}/labels")
+        except vd.NotFound:
+            pass  # a repository a user owns has no organisation labels
+    for item in items:  # the repository's own label first
+        if vd.text(item.get("name")) == name:
+            if kind == "gitea" and vd.integer(item.get("id")) is None:
+                raise vd.Refused(f"the forge's label {name} has no numeric id")
+            return {"name": name, "id": item["id"]} if kind == "gitea" else {"name": name}
+    raise vd.Refused(missing)
+
+
+def label_write(kind, number, label):
+    """The one write, as (method, path, payload): GitHub takes the name, Gitea the id, and GitLab
+    adds the name to the merge request's labels."""
+    if kind == "github":
+        return "POST", f"/issues/{number}/labels", {"labels": [label["name"]]}
+    if kind == "gitea":
+        return "POST", f"/issues/{number}/labels", {"labels": [label["id"]]}
+    return "PUT", f"/merge_requests/{number}", {"add_labels": label["name"]}
+
+
+def request_checks(args, forge, kind, owner, number, name, step):
+    """The refusals of request-review, decided on the forge's raw answers before anything is written:
+    (checks, the pull request, the label as the forge defines it, the time of an earlier review of
+    the head that a newer failure answered, the reviewed-label entry). STEP[0] names the read in
+    progress, for a refusal."""
+    head, base = args.head, args.request_label
+    pr = read_pull(forge, kind, number)
+    raw = pr["raw"]
+    state = vd.text(raw.get("state"))
+    raw_head = vd.text(raw.get("sha")) if kind == "gitlab" else \
+        vd.text(raw["head"].get("sha")) if isinstance(raw.get("head"), dict) else None
+    names = label_names(raw.get("labels"), "the pull request's labels", plain=kind == "gitlab")
+    is_open = state == ("opened" if kind == "gitlab" else "open")
+    checks = [{"name": "state", "state": state, "status": "passed" if is_open else "failed"},
+              {"name": "head", "head_sha": raw_head, "status": "passed" if raw_head and raw_head.lower() == head
+               else "failed"}]
+    if not is_open:
+        checks[0]["detail"] = "the pull request is not open: " + (
+            "merged" if pr["state"] == "merged" else f"its state is {state!r}")
+    if checks[1]["status"] == "failed":
+        checks[1]["detail"] = (f"the pull request's head is {raw_head}, not --head: a review would be of another head"
+                               if raw_head else "the forge's answer names no head")
+    on = [n for n in names if n == base or n.startswith(base + ":")]
+    checks.append({"name": "request_label", "status": "failed" if on else "passed"})
+    if on:
+        checks[-1]["detail"] = f"a request label is already on: {', '.join(on)}"
+    running = args.in_progress_label in names
+    checks.append({"name": "in_progress_label", "status": "failed" if running else "passed"})
+    if running:
+        checks[-1]["detail"] = f"{args.in_progress_label} is on: a review is running"
+    reviewed = {"name": args.reviewed_label, "on": args.reviewed_label in names}
+    if reviewed["on"]:
+        reviewed["detail"] = ("the label of an earlier review is on: remove it by hand, as the label protocol asks; "
+                              "this command removes nothing")
+
+    step[0] = "reading the comments"
+    trusted = trusted_comments(args, forge, kind, number)
+    found, after = head_review(args, trusted, head), None
+    review = {"name": "head_review", "status": "passed"}
+    if found:
+        c = found[0]
+        after = vd.when(c["created_at"])
+        newer = [f for f in head_failures(args, trusted, head) if after and vd.when(f["created_at"]) > after]
+        review["review_url"] = c["url"]
+        if not after:
+            review.update(status="failed", detail="a review of this head exists and its time cannot be read")
+        elif newer:
+            review.update(failure_url=newer[0]["url"],
+                          detail="a review of this head exists, and a newer failure comment asks for it again")
+        else:
+            review.update(status="failed", detail="a review of this head exists with no newer failure: read it")
+    checks.append(review)
+
+    step[0] = "reading the forge's labels"
+    try:
+        label = forge_label(forge, kind, owner, name)
+        checks.append({"name": "label", "label": name, "status": "passed"})
+    except vd.Refused as e:
+        label = None
+        checks.append({"name": "label", "label": name, "status": "failed", "detail": str(e)})
+    return checks, pr, label, after, reviewed
+
+
+def review_count(args, forge, kind, number, pr):
+    """The reviews of the gate row as gates counts them (--review, --required-reviews): reported,
+    never a ground for a refusal."""
+    try:
+        gate = review_gate(args, forge, kind, number, pr)
+    except Exception as e:  # the count is information only
+        return {"error": f"the reviews could not be counted ({type(e).__name__})"}
+    return {"ready": gate["ready"], "required": gate["required"],
+            "summary": f"{gate['ready']} of {gate['required']} READY"}
+
+
+def request_review(args, forge, kind, owner, repo, number, token, opener, clock, sleep):
+    """Add the request label for --head, once every refusal was decided, then wait as wait-review.
+    Nothing is written when a read fails: an outage or a usage error passes up as for every command,
+    and any other surprise in the reads refuses, naming the read. The time between the last read and
+    the write is not closed: a second requester in it adds the same label, which the forge holds once."""
+    if not token and not args.dry_run:
+        raise vd.UsageError("requesting needs a token that may label: --anonymous works only with --dry-run")
+    name = f"{args.request_label}:{args.variant}" if args.variant else args.request_label
+    doc = {"outcome": None, "pr": {"forge": kind, "repo": f"{owner}/{repo}", "number": number}, "head": args.head,
+           "label": name}
+    step = ["reading the pull request"]
+    try:
+        checks, pr, label, after, reviewed = request_checks(args, forge, kind, owner, number, name, step)
+    except (vd.UsageError, vd.Unavailable):
+        raise
+    except vd.NotFound:
+        doc.update(outcome="refused", reason=f"the forge answered 404 while {step[0]}")
+        return doc, EXIT_NOT_READY
+    except Exception as e:  # fails closed: a malformed answer refuses, and nothing is written
+        reason = f"{e} while {step[0]}" if isinstance(e, vd.Refused) else f"{type(e).__name__} while {step[0]}"
+        doc.update(outcome="refused", reason=reason)
+        return doc, EXIT_NOT_READY
+    doc["pr"].update(url=pr["url"], head_sha=pr["head"])
+    doc.update(checks=checks, reviewed_label=reviewed, reviews=review_count(args, forge, kind, number, pr))
+    if any(c["status"] == "failed" for c in checks):
+        doc["outcome"] = "refused"
+        return doc, EXIT_NOT_READY
+    method, path, payload = label_write(kind, number, label)
+    request = doc["request"] = {"label": name, "method": method, "path": path}
+    if args.dry_run:
+        request["added"] = False
+        doc["outcome"] = "dry_run"
+        return doc, EXIT_READY
+    try:
+        status, _ = send(kind, forge, token, method, path, payload, opener)
+    except urllib.error.HTTPError as e:
+        denied = e.code in (401, 403)
+        request.update(added=False, detail=f"the forge refused the label (HTTP {e.code})"
+                       + (": the token may not label here" if denied else ""))
+        doc["outcome"] = "write_failed"
+        return doc, EXIT_USAGE if denied else EXIT_PENDING
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError):
+        status = None
+    if status is None or not 200 <= status < 300:
+        request.update(added="unknown", detail=("no answer from the forge" if status is None else f"HTTP {status}")
+                       + ": read the pull request's labels before requesting again")
+        doc["outcome"] = "write_unknown"
+        return doc, EXIT_PENDING
+    request.update(added=True, added_at=datetime.datetime.fromtimestamp(clock(), datetime.timezone.utc).isoformat())
+    args.review_after = after  # a review of the head from before this request is not its answer
+    try:
+        wait, code = wait_review(args, forge, kind, owner, repo, number, clock, sleep)
+    except Exception as e:  # the label is on: the document says so whatever ends the wait
+        usage = isinstance(e, (vd.UsageError, vd.NotFound))
+        doc.update(outcome="error", error={"kind": "usage" if usage else "unexpected",
+                                           "message": str(e) if usage else f"{type(e).__name__} while waiting"})
+        return doc, EXIT_USAGE if usage else EXIT_NOT_READY
+    doc.update({k: v for k, v in wait.items() if k not in ("pr", "head")})
+    return doc, code
 
 
 # ---------------------------------------------------------------- posting the local review
@@ -512,19 +734,25 @@ def review_checks(text, header, verdict_re, deny):
     return checks, sha
 
 
-def post_comment(kind, forge, number, token, body, opener):
-    """Create one comment; never retried, since a retry after a lost answer could post twice.
-    Returns its URL (or None when the forge gives none)."""
-    path = f"/merge_requests/{number}/notes" if kind == "gitlab" else f"/issues/{number}/comments"
+def send(kind, forge, token, method, path, payload, opener):
+    """One write request to the repository's API path, never retried: (status, the first MAX_ANSWER
+    bytes of the answer). urllib's errors pass through for the caller to name."""
     headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "aiskills-forge-gates"}
     if kind == "github":
         headers.update({"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
     headers["Authorization"] = ("token " if kind == "gitea" else "Bearer ") + token
-    req = urllib.request.Request(forge.api + forge.repo_path + path, data=json.dumps({"body": body}).encode(),
-                                 headers=headers, method="POST")
+    req = urllib.request.Request(forge.api + forge.repo_path + path, data=json.dumps(payload).encode(),
+                                 headers=headers, method=method)
+    with (opener or vd.default_opener())(req, timeout=vd.TIMEOUT) as resp:
+        return resp.status, resp.read(MAX_ANSWER)
+
+
+def post_comment(kind, forge, number, token, body, opener):
+    """Create one comment; never retried, since a retry after a lost answer could post twice.
+    Returns its URL (or None when the forge gives none)."""
+    path = f"/merge_requests/{number}/notes" if kind == "gitlab" else f"/issues/{number}/comments"
     try:
-        with (opener or vd.default_opener())(req, timeout=vd.TIMEOUT) as resp:
-            status, data = resp.status, resp.read(MAX_ANSWER)
+        status, data = send(kind, forge, token, "POST", path, {"body": body}, opener)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise vd.UsageError(f"the forge refused the comment (HTTP {e.code}): the token may not comment here")
@@ -1132,11 +1360,7 @@ def uninstall_hook(args, run):
 
 # ---------------------------------------------------------------- CLI
 
-def build_parser():
-    p = vd.ArgParser(prog="forge_gates.py", description=__doc__.split("\n\n")[0], allow_abbrev=False)
-    sub = p.add_subparsers(dest="command", required=True, metavar="{" + ",".join(COMMANDS) + "}")
-    w = vd.add_arguments(sub.add_parser("wait-review", allow_abbrev=False,
-                                        help="wait for the external reviewer's answer for a head"))
+def wait_arguments(w):
     w.add_argument("--head", required=True, help="the full 40-digit SHA of the head that was pushed")
     w.add_argument("--wait-for", default="external", metavar="NAME", help="the configured review to wait for (default external)")
     w.add_argument("--timeout", type=int, default=2700, help="seconds to wait (default 2700)")
@@ -1144,6 +1368,23 @@ def build_parser():
     w.add_argument("--failure-pattern", default="could not run", help="regex of the reviewer's failure comment")
     w.add_argument("--request-label", default="review-this",
                    help="the label that requests the review; LABEL:<profile> variants count too (default review-this)")
+    return w
+
+
+def build_parser():
+    p = vd.ArgParser(prog="forge_gates.py", description=__doc__.split("\n\n")[0], allow_abbrev=False)
+    sub = p.add_subparsers(dest="command", required=True, metavar="{" + ",".join(COMMANDS) + "}")
+    wait_arguments(vd.add_arguments(sub.add_parser("wait-review", allow_abbrev=False,
+                                                   help="wait for the external reviewer's answer for a head")))
+    q = wait_arguments(vd.add_arguments(sub.add_parser(
+        "request-review", allow_abbrev=False, help="add the request label for a head, then wait as wait-review")))
+    q.add_argument("--variant", metavar="PROFILE",
+                   help="add REQUEST_LABEL:PROFILE instead of the plain label; it must exist on the forge")
+    q.add_argument("--in-progress-label", default="hands-reviewing",
+                   help="the reviewer's label while a review runs: refused while it is on (default hands-reviewing)")
+    q.add_argument("--reviewed-label", default="hands-reviewed",
+                   help="the reviewer's label after a review: reported when on, never removed (default hands-reviewed)")
+    q.add_argument("--dry-run", action="store_true", help="run every read and refusal, write nothing")
     g = vd.add_arguments(sub.add_parser("gates", allow_abbrev=False,
                                         help="whether the current head is ready for a person to merge"))
     g.add_argument("--draft-prefix", action="append", default=[], metavar="PREFIX",
@@ -1200,7 +1441,7 @@ def error_doc(command, e):
             else "not_found")
     code = {"usage": EXIT_USAGE, "unavailable": EXIT_PENDING}.get(kind, EXIT_NOT_READY)
     error = {"kind": kind, "message": str(e) if kind != "not_found" else "a record the pull request refers to was not found"}
-    if command in ("wait-review", "post-review") + LOCAL:
+    if command in ("wait-review", "request-review", "post-review") + LOCAL:
         return {"outcome": "error", "error": error}, code
     return {"status": "pending" if code == EXIT_PENDING else "not_ready", "ready": False, "error": error}, code
 
@@ -1238,7 +1479,31 @@ def pre_push_summary(doc):
     return "\n".join(lines + [f"pre-push: {doc['outcome']}, {len(doc['refs'])} ref(s)"])
 
 
+def request_summary(doc):
+    line = f"request-review: {doc['outcome']} for {doc['head'][:12]}"
+    if "reason" in doc:
+        return f"{line}: {doc['reason']}"
+    parts = [f"{c['name']}: {c['detail']}" for c in doc.get("checks", []) if c["status"] == "failed"]
+    req = doc.get("request")
+    if req:
+        parts.append(f"{req['label']} " + {True: "added", False: "not added"}.get(req["added"], "may or may not be on")
+                     + (f" ({req['detail']})" if req.get("detail") else ""))
+    if doc.get("review"):
+        parts.append(f"{doc['review']['verdict']} at {doc['review']['url']}")
+    if doc.get("error"):
+        parts.append(f"{doc['error']['kind']} error: {doc['error']['message']}")
+    if doc.get("last_error") and not doc.get("review"):
+        parts.append(doc["last_error"])
+    if doc.get("reviews", {}).get("summary"):
+        parts.append(doc["reviews"]["summary"])
+    if doc.get("reviewed_label", {}).get("on"):
+        parts.append(f"{doc['reviewed_label']['name']} is on: remove it by hand")
+    return line + (": " + "; ".join(parts) if parts else "")
+
+
 def summary(command, doc):
+    if command == "request-review" and "head" in doc:
+        return request_summary(doc)
     if "error" in doc and command != "merge-check":
         return f"{command}: {doc['error']['kind']} error: {doc['error']['message']}"
     if command == "merge-check":
@@ -1348,7 +1613,7 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
             stderr.write((f"{command}: refused: {doc['reason']}" if "reason" in doc else summary(command, doc)) + "\n")
             return code
         kind, api_base, owner, repo, number, token = resolve(args, env, run)
-        if command == "wait-review":
+        if command in ("wait-review", "request-review"):
             check_wait_args(args, kind)
         forge = vd.make_forge(token, kind, api_base, owner, repo, opener, sleep)
         if command == "merge-check":
@@ -1357,6 +1622,8 @@ def main(argv=None, env=None, stdout=None, stderr=None, opener=None, sleep=time.
             doc, code = gates(args, forge, kind, owner, repo, number)
         elif command == "post-review":
             doc, code = post_review(args, env, api_base, forge, kind, owner, repo, number, token, opener)
+        elif command == "request-review":
+            doc, code = request_review(args, forge, kind, owner, repo, number, token, opener, clock, sleep)
         else:
             doc, code = wait_review(args, forge, kind, owner, repo, number, clock, sleep)
     except (vd.UsageError, vd.Unavailable, vd.NotFound) as e:

@@ -14,7 +14,11 @@ review-this  →  hands-reviewing  →  hands-reviewed
 ```
 
 1. Add the **`review-this`** label to the PR. Nothing else — no comment, no
-   mention.
+   mention. With the `forge-gates` skill installed, `forge_gates.py
+   request-review --pr <PR> --head <full SHA>` adds it, once it has checked
+   the rules below (open, the head, no request or working label on, no
+   review of the head yet, the label defined on the forge), and then waits
+   for the result.
 2. hands swaps it to **`hands-reviewing`** when it picks the PR up (seconds
    on a webhook-driven site, up to a couple of minutes on a polling one).
 3. hands posts ONE comment starting with `[hands-bot review] reviewed at head
@@ -24,7 +28,8 @@ review-this  →  hands-reviewing  →  hands-reviewed
 Failures are never silent: if the review could not run, a
 `⚠️ [hands-bot review] could not run: …` comment appears, the working label
 is cleared and, on sites that define it, **`hands-review-failed`** is set —
-re-add `review-this` to retry (it clears the failure label). A slow review
+re-add `review-this` (or run `request-review` again) to retry (it clears
+the failure label). A slow review
 is not a failure: the receiver waits past its soft deadline while the
 conversation is still running, so leave a `hands-reviewing` PR alone.
 
@@ -59,8 +64,9 @@ conversation is still running, so leave a `hands-reviewing` PR alone.
 - Adding the label means **watching for the result**: start a background
   watch and act on the findings when the comment lands — never leave a
   triggered review for the user to discover. With the `forge-gates` skill
-  installed, the watch is `forge_gates.py wait-review --pr <PR> --head
-  <full SHA>`, run in the background. It reads the forge token from the
+  installed, the watch is `forge_gates.py request-review` (which adds the
+  label), or `forge_gates.py wait-review --pr <PR> --head <full SHA>` after
+  a label added by hand, run in the background. It reads the forge token from the
   credential store the session already uses (the GitHub CLI's login, or Git's
   credential helper on Gitea and GitLab), and from a token file only when one
   is set; the skill's Credentials section has the order.

@@ -52,7 +52,7 @@ class FakeApi:
     def __init__(self, api):
         self.base = urllib.parse.urlsplit(api).path
         self.routes, self.requests = {}, []
-        self.posts = {}  # path -> (status, body) answered to a POST; the posted bodies are recorded
+        self.posts = {}  # path -> (status, body) answered to a POST or PUT; the written bodies are recorded
 
     @staticmethod
     def key(path, query):
@@ -70,7 +70,7 @@ class FakeApi:
         self.requests.append({"method": req.get_method(), "url": req.full_url, "headers": dict(req.header_items()),
                               "timeout": timeout, "data": req.data})
         url = urllib.parse.urlsplit(req.full_url)
-        if req.get_method() == "POST":
+        if req.get_method() != "GET":
             post = self.posts.get(url.path[len(self.base):], (404, {"message": "Not Found"}))
             if isinstance(post, Exception):
                 raise post
@@ -249,6 +249,9 @@ class Gates:
         if command == "post-review":
             self.assertLessEqual(len(posts), 1, "post-review makes at most one write")
             self.assertEqual({r["method"] for r in posts} - {"POST"}, set(), "and never edits")
+        elif command == "request-review":
+            self.assertLessEqual(len(posts), 1, "request-review makes at most one write")
+            self.assertEqual({r["method"] for r in posts} - {"POST", "PUT"}, set(), "and never removes")
         else:
             self.assertEqual(posts, [], "every request is a GET")
         return code, json.loads(out.getvalue())
@@ -528,6 +531,292 @@ class WaitContract(Gates):
                 self.assertIn(why, doc["error"]["message"])
                 self.assertEqual(self.fake.requests, [], "nothing is read")
                 self.assertEqual(self.clock.sleeps, [])
+
+
+class RequestContract(Gates):
+    """request-review: one existing label is added for the head, only after every refusal was
+    decided on the forge's raw answers, then the wait runs as wait-review's."""
+
+    def setUp(self):
+        super().setUp()
+        del self.comments[2]  # no review of the head yet: the local one only
+        self.publish_comments()
+        self.pr["labels"] = []
+        self.publish_pr()
+        self.define_labels("review-this", "review-this:codex-astra", "hands-reviewing", "hands-reviewed")
+        self.write_path = (f"{self.repo}/merge_requests/42" if self.forge == "gitlab" else f"{self.repo}/issues/42/labels")
+        self.fake.posts[self.write_path] = (200, [] if self.forge != "gitlab" else self.pr)
+        # the reviewer answers after the first sleep of the wait
+        self.clock.steps = [lambda: self.comment(review("example-bot", HEAD), minutes=3)]
+
+    def define_labels(self, *names, org=()):
+        """The labels the forge defines for the repository (and, on Gitea, its organisation)."""
+        if self.forge == "github":
+            for route in [k for k in self.fake.routes if k[0].startswith(f"{self.repo}/labels/")]:
+                del self.fake.routes[route]
+            for n in names:
+                self.fake.set(f"{self.repo}/labels/{urllib.parse.quote(n, safe='')}", {"id": 900, "name": n})
+        elif self.forge == "gitea":
+            self.fake.set(f"{self.repo}/labels", [{"id": 70 + i, "name": n} for i, n in enumerate(names)])
+            if org:
+                self.fake.set("/orgs/acme/labels", [{"id": 90 + i, "name": n} for i, n in enumerate(org)])
+        else:
+            self.fake.set(f"{self.repo}/labels?include_ancestor_groups=true", [{"id": 70 + i, "name": n}
+                                                                                for i, n in enumerate(names + org)])
+
+    def put_labels(self, *names):
+        self.pr["labels"] = list(names) if self.forge == "gitlab" else [{"id": 1, "name": n} for n in names]
+        self.publish_pr()
+
+    def request(self, *extra, **kw):
+        return self.run_fg("request-review", "--head", HEAD, "--interval", "60", "--timeout", "600", *extra, **kw)
+
+    def writes(self):
+        return [r for r in self.fake.requests if r["method"] != "GET"]
+
+    def refused(self, doc, name):
+        return next(c for c in doc["checks"] if c["name"] == name)["status"] == "failed"
+
+    def test_adds_the_label_then_waits_for_the_review(self):
+        code, doc = self.request()
+        self.assertEqual((code, doc["outcome"]), (0, "review_found"), json.dumps(doc, indent=1))
+        (w,) = self.writes()
+        payload = json.loads(w["data"])
+        expected = {"github": ("POST", {"labels": ["review-this"]}), "gitea": ("POST", {"labels": [70]}),
+                    "gitlab": ("PUT", {"add_labels": "review-this"})}[self.forge]
+        self.assertEqual((w["method"], payload), expected)
+        self.assertTrue(w["url"].endswith(self.write_path))
+        self.assertEqual((doc["request"]["added"], doc["request"]["label"]), (True, "review-this"))
+        self.assertTrue(doc["request"]["added_at"])
+        self.assertEqual((doc["review"]["verdict"], doc["polls"]), ("READY_FOR_HUMAN_MERGE", 2))
+        self.assertEqual(doc["reviews"], {"ready": 1, "required": 2, "summary": "1 of 2 READY"})
+        self.assertEqual(doc["reviewed_label"], {"name": "hands-reviewed", "on": False})
+
+    def test_the_write_comes_after_every_read_of_the_refusals(self):
+        self.request()
+        order = [r["method"] for r in self.fake.requests]
+        first_write = order.index("PUT" if self.forge == "gitlab" else "POST")
+        reads = [r["url"] for r in self.fake.requests[:first_write]]
+        self.assertTrue(any("label" in u for u in reads), "the label is looked up before the write")
+        self.assertTrue(any(("/notes" in u or "/comments" in u) for u in reads), "the comments are read before it")
+
+    def test_dry_run_reads_and_refuses_but_writes_nothing(self):
+        code, doc = self.request("--dry-run")
+        self.assertEqual((code, doc["outcome"], doc["request"]["added"]), (0, "dry_run", False))
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.clock.sleeps, [], "no wait")
+        self.put_labels("hands-reviewing")
+        code, doc = self.request("--dry-run")
+        self.assertEqual((code, doc["outcome"]), (3, "refused"))
+
+    def test_anonymous_only_with_dry_run(self):
+        code, doc = self.request("--anonymous", env={})
+        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+        self.assertEqual(self.fake.requests, [], "refused before any read")
+        code, doc = self.request("--anonymous", "--dry-run", env={})
+        self.assertEqual((code, doc["outcome"]), (0, "dry_run"))
+
+    def assert_refused(self, check, *extra):
+        code, doc = self.request(*extra)
+        self.assertEqual((code, doc["outcome"]), (3, "refused"), json.dumps(doc, indent=1))
+        self.assertTrue(self.refused(doc, check), json.dumps(doc["checks"], indent=1))
+        self.assertEqual(self.writes(), [], "a refusal writes nothing")
+        self.assertEqual(self.clock.sleeps, [], "and does not wait")
+        return doc
+
+    def test_refuses_a_moved_head(self):
+        if self.forge == "gitlab":
+            self.pr["sha"] = NEW
+        else:
+            self.pr["head"]["sha"] = NEW
+        self.publish_pr()
+        self.assertIn(NEW, next(c for c in self.assert_refused("head")["checks"] if c["name"] == "head")["detail"])
+
+    def test_refuses_a_closed_or_merged_pull_request(self):
+        for state in ("closed", "merged", "locked"):
+            if state == "locked" and self.forge != "gitlab":
+                continue
+            with self.subTest(state):
+                self.fake.requests.clear()
+                if self.forge == "gitlab":
+                    self.pr["state"] = state
+                else:
+                    self.pr.update(state="closed", merged=state == "merged")
+                self.publish_pr()
+                self.assert_refused("state")
+
+    def test_refuses_while_a_review_runs(self):
+        self.put_labels("hands-reviewing")
+        self.assert_refused("in_progress_label")
+
+    def test_refuses_a_request_label_already_on_plain_or_variant(self):
+        for on in ("review-this", "review-this:claude-fable"):
+            with self.subTest(on):
+                self.fake.requests.clear()
+                self.put_labels(on)
+                self.assert_refused("request_label")
+                self.assert_refused("request_label", "--variant", "codex-astra")
+
+    def test_refuses_when_a_review_of_the_head_exists(self):
+        self.comment(review("example-bot", HEAD), minutes=-10)
+        self.assert_refused("head_review")
+
+    def test_a_newer_failure_lets_the_review_be_requested_again_and_the_old_review_is_no_answer(self):
+        old = self.comment(review("example-bot", HEAD), minutes=-10)
+        self.comment(f"⚠️ The external review could not run for {HEAD[:7]}.", minutes=-5)
+        self.labels.append(self.labels[0] | {"created_at": stamp(0)})  # the label event of this request
+        code, doc = self.request()
+        self.assertEqual((code, doc["outcome"]), (0, "review_found"), json.dumps(doc, indent=1))
+        self.assertEqual(len(self.writes()), 1)
+        self.assertNotEqual(doc["review"]["url"], old.get("html_url") or "", "the answer is the new review")
+        self.assertEqual(doc["polls"], 2, "the review from before the request did not end the wait")
+
+    def test_a_failure_older_than_the_review_does_not_let_it_be_requested_again(self):
+        self.comment(f"⚠️ The external review could not run for {HEAD[:7]}.", minutes=-15)
+        self.comment(review("example-bot", HEAD), minutes=-10)
+        self.assert_refused("head_review")
+
+    def test_a_404_while_reading_refuses_naming_the_read(self):
+        self.fake.drop(f"{self.repo}/merge_requests/42/notes?sort=asc&order_by=created_at" if self.forge == "gitlab"
+                       else f"{self.repo}/issues/42/comments")
+        code, doc = self.request()
+        self.assertEqual((code, doc["outcome"], doc["reason"]), (3, "refused", "the forge answered 404 while reading the comments"))
+        self.assertEqual(self.writes(), [])
+
+    def test_refuses_a_label_the_forge_does_not_define_and_never_creates_one(self):
+        self.define_labels("hands-reviewing")
+        doc = self.assert_refused("label")
+        self.assertIn("never creates", next(c for c in doc["checks"] if c["name"] == "label")["detail"])
+
+    def test_a_variant_is_added_only_when_it_exists(self):
+        code, doc = self.request("--variant", "codex-astra")
+        self.assertEqual((code, doc["request"]["label"]), (0, "review-this:codex-astra"))
+        payload = json.loads(self.writes()[0]["data"])
+        self.assertIn(payload, ({"labels": ["review-this:codex-astra"]}, {"labels": [71]},
+                                {"add_labels": "review-this:codex-astra"}))
+        self.fake.requests.clear()
+        self.clock.steps, self.clock.sleeps = [], []
+        self.assert_refused("label", "--variant", "cc-sol")  # no fallback to the plain label
+
+    def test_a_variant_must_be_a_profile_name(self):
+        code, doc = self.request("--variant", "a b")
+        self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+        self.assertEqual(self.fake.requests, [])
+
+    def test_the_stale_reviewed_label_is_reported_and_left_on(self):
+        self.put_labels("hands-reviewed")
+        code, doc = self.request()
+        self.assertEqual((code, doc["reviewed_label"]["on"]), (0, True))
+        self.assertIn("remove it by hand", doc["reviewed_label"]["detail"])
+        self.assertIn("hands-reviewed is on", self.output)
+        self.assertEqual(len(self.writes()), 1, "nothing is removed")
+
+    def test_a_refused_write_says_no_label_was_added(self):
+        for status, code in ((403, 2), (422, 4), (500, 4)):
+            with self.subTest(status):
+                self.fake.requests.clear()
+                self.fake.posts[self.write_path] = (status, {"message": "no"})
+                got, doc = self.request()
+                self.assertEqual((got, doc["outcome"], doc["request"]["added"]), (code, "write_failed", False))
+                self.assertEqual(len(self.writes()), 1, "never retried")
+
+    def test_a_lost_answer_says_the_label_may_be_on(self):
+        self.fake.posts[self.write_path] = urllib.error.URLError("connection reset")
+        code, doc = self.request()
+        self.assertEqual((code, doc["outcome"], doc["request"]["added"]), (4, "write_unknown", "unknown"))
+        self.assertIn("read the pull request's labels", doc["request"]["detail"])
+        self.assertEqual((len(self.writes()), self.clock.sleeps), (1, []))
+
+    def test_a_wait_that_fails_after_the_write_keeps_the_request(self):
+        self.clock.steps = []
+        code, doc = self.request("--timeout", "120")
+        self.assertEqual((code, doc["outcome"], doc["request"]["added"]), (4, "timeout", True))
+        self.fake.requests.clear()
+        self.clock.steps = [lambda: self.comment(f"⚠️ The external review could not run for {HEAD[:7]}.", minutes=4)]
+        self.labels.append(self.labels[0] | {"created_at": stamp(1)})  # this request's label
+        code, doc = self.request()
+        self.assertEqual((code, doc["outcome"], doc["request"]["added"]), (3, "reviewer_failed", True))
+
+    def test_a_head_pushed_during_the_wait_keeps_the_request(self):
+        self.fake.set(f"{self.repo}/merge_requests/42" if self.forge == "gitlab" else f"{self.repo}/pulls/42",
+                      json.loads(json.dumps(self.pr)))  # the head the reads before the write see
+        if self.forge == "gitlab":
+            self.pr["sha"] = NEW
+        else:
+            self.pr["head"]["sha"] = NEW
+        self.clock.steps = [self.publish_pr]  # pushed while the reviewer works
+        code, doc = self.request()
+        self.assertEqual((code, doc["outcome"], doc["request"]["added"]), (3, "head_moved", True))
+
+    def test_an_error_while_waiting_keeps_the_request(self):
+        original = fg.wait_review
+
+        def broken(*a, **kw):
+            raise KeyError("x")
+        fg.wait_review = broken
+        try:
+            code, doc = self.request()
+        finally:
+            fg.wait_review = original
+        self.assertEqual((code, doc["outcome"], doc["request"]["added"]), (3, "error", True))
+        self.assertIn("KeyError while waiting", doc["error"]["message"])
+
+    def test_an_outage_before_the_write_is_pending_and_writes_nothing(self):
+        self.fake.set(f"{self.repo}/merge_requests/42" if self.forge == "gitlab" else f"{self.repo}/pulls/42",
+                      {"message": "down"}, status=503)
+        code, doc = self.request()
+        self.assertEqual((code, doc["error"]["kind"]), (4, "unavailable"))
+        self.assertEqual(self.writes(), [])
+
+    def test_malformed_answers_refuse_naming_the_read_and_write_nothing(self):
+        head_key = "sha" if self.forge == "gitlab" else "head"
+        # a value of the wrong type refuses, either in its own check or as a surprise in the read itself
+        cases = [("labels", 7, ("the pull request's labels is not a list",)),
+                 ("labels", [{"id": 1}] if self.forge != "gitlab" else [None], ("without a name",)),
+                 ("labels", ["review-this"] if self.forge != "gitlab" else [{"name": "x"}], ("without a name",)),
+                 ("labels", [{"name": "\ud800"}] if self.forge != "gitlab" else ["\ud800"], ("without a name",)),
+                 (head_key, 42, ("head", "while reading the pull request")),
+                 ("state", ["open"], ("state", "while reading the pull request")),
+                 ("state", None, ("state",))]
+        for field, value, expect in cases:
+            with self.subTest(field=field, value=value):
+                self.build()
+                del self.comments[2]
+                self.publish_comments()
+                self.pr["labels"] = []
+                self.pr[field] = value
+                self.publish_pr()
+                self.fake.requests.clear()
+                code, doc = self.request()
+                self.assertEqual((code, doc["outcome"]), (3, "refused"), json.dumps(doc, indent=1))
+                said = doc.get("reason") or json.dumps([c for c in doc["checks"] if c["status"] == "failed"])
+                self.assertTrue(any(e in said for e in expect), said)
+                self.assertEqual(self.writes(), [])
+
+    def test_a_surprise_in_any_read_refuses_naming_it(self):
+        for target, step in (("read_pull", "reading the pull request"), ("trusted_comments", "reading the comments"),
+                             ("forge_label", "reading the forge's labels")):
+            with self.subTest(target):
+                original = getattr(fg, target)
+                setattr(fg, target, lambda *a, **kw: (_ for _ in ()).throw(TypeError("x")))
+                self.fake.requests.clear()
+                try:
+                    code, doc = self.request()
+                finally:
+                    setattr(fg, target, original)
+                self.assertEqual((code, doc["reason"]), (3, f"TypeError while {step}"))
+                self.assertEqual(self.writes(), [])
+
+    def test_a_label_listing_that_is_not_a_list_refuses(self):
+        if self.forge == "github":
+            self.fake.set(f"{self.repo}/labels/review-this", ["review-this"])
+        elif self.forge == "gitea":
+            self.fake.set(f"{self.repo}/labels", {"labels": []})
+        else:
+            self.fake.set(f"{self.repo}/labels?include_ancestor_groups=true", [["review-this"]])
+        code, doc = self.request()
+        self.assertEqual((code, self.refused(doc, "label")), (3, True), json.dumps(doc, indent=1))
+        self.assertEqual(self.writes(), [])
 
 
 def local_review(sha=HEAD, header="[oh-code-review (high) review]", verdict="VERDICT\nREADY_FOR_HUMAN_MERGE",
@@ -1003,6 +1292,44 @@ class GitLabPost(PostContract, unittest.TestCase):
 
 class GitLabWait(WaitContract, unittest.TestCase):
     forge = "gitlab"
+
+
+class GitHubRequest(RequestContract, unittest.TestCase):
+    forge = "github"
+
+    def test_a_label_found_under_another_case_is_not_this_label(self):
+        self.fake.set(f"{self.repo}/labels/review-this", {"id": 900, "name": "Review-This"})
+        code, doc = self.request()
+        self.assertEqual((code, self.refused(doc, "label")), (3, True))
+        self.assertEqual(self.writes(), [])
+
+
+class GiteaRequest(RequestContract, unittest.TestCase):
+    forge = "gitea"
+
+    def test_an_organisation_label_is_written_by_its_id(self):
+        self.define_labels("hands-reviewing", org=("review-this",))
+        code, doc = self.request()
+        self.assertEqual(code, 0, json.dumps(doc, indent=1))
+        self.assertEqual(json.loads(self.writes()[0]["data"]), {"labels": [90]})
+
+    def test_a_label_without_a_numeric_id_refuses(self):
+        self.fake.set(f"{self.repo}/labels", [{"id": "70", "name": "review-this"}])
+        code, doc = self.request()
+        self.assertEqual((code, self.refused(doc, "label")), (3, True))
+        self.assertEqual(self.writes(), [])
+
+
+class GitLabRequest(RequestContract, unittest.TestCase):
+    forge = "gitlab"
+
+    def test_a_label_missing_from_the_project_and_its_groups_makes_no_request(self):
+        # add_labels would create it: the read before the write is what keeps the command from doing so
+        self.define_labels("hands-reviewing", "hands-reviewed")
+        code, doc = self.request()
+        self.assertEqual((code, self.refused(doc, "label")), (3, True))
+        self.assertEqual([r for r in self.fake.requests if r["method"] != "GET"], [])
+        self.assertTrue(any("include_ancestor_groups=true" in r["url"] for r in self.fake.requests))
 
 
 class Credentials(Gates, unittest.TestCase):

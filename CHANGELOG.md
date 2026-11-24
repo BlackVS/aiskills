@@ -11,6 +11,21 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ### Added
 
+- **`forge-gates request-review` requests the external review of a head and
+  waits for it.** It adds the existing request label (`review-this`, or a
+  `review-this:<profile>` variant the caller names, with no fallback to the
+  plain label) and then waits as `wait-review` does. Every refusal is decided
+  on the forge's own answers before the write, and a read that fails refuses
+  the request with nothing written: a pull request that is not open or is at
+  another head, a request label or the reviewer's working label already on, a
+  review of the head with no newer failure comment, and a label the forge
+  does not define (GitLab's write would create it, so it is read first on
+  every forge). The write is never retried. Once the label is on, the
+  document says so whatever ends the wait. The reviewer's label of an earlier
+  review is reported, not removed, and the count of READY reviews is
+  information only. The Gitea and GitLab writes follow their API
+  documentation and are tested against recorded answers only.
+
 - **`verify-delivery` and `forge-gates merge-check` take `--ci-repaired-by
   SHA`, for a merge commit whose CI a later pull request made green.** The
   merge commit's run stays red for good, so such a delivery was recorded by
