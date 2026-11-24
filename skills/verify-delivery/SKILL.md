@@ -221,18 +221,24 @@ All four must pass for the verdict `confirmed` (check 4 may instead be `repaired
    then `repaired`, and the verdict `confirmed_after_repair`, only when each
    of these holds, each answered by the forge itself:
    - the commit descends from the merge commit: GitHub's compare status is
-     `ahead`, Gitea's compare lists no commit of the merge commit missing
-     from it (Gitea 1.22 or later), or GitLab's merge base of the two is the
-     merge commit;
+     `ahead`, Gitea's compare counts no commit of the merge commit missing
+     from it (on a Gitea whose compare API takes commit SHAs), or GitLab's
+     merge base of the two is the merge commit;
    - it is the merge commit of another merged pull request into the same
      base branch, as the forge lists the pull requests of a commit (on
      GitLab its merged commit, read as for check 2);
-   - every check that failed on the merge commit ran on it under the same
-     name, and all its checks passed, read as above (on GitLab its latest
-     push pipeline for the target branch).
+   - every check that failed on the merge commit ran again on it under the
+     same name and succeeded (every run under that name, and on GitHub a
+     `skipped` or `neutral` run does not count as one that ran), and all its
+     other checks passed, read as above (on GitLab its latest push pipeline
+     for the target branch).
 
-   Otherwise the check stays `failed`, and `repaired_by` says which condition
-   failed. The merge commit's failed runs stay listed in `runs` either way.
+   Only a present value of the expected type counts as the forge's answer:
+   a field that is absent, null or of another type, an empty listing, or an
+   answer that is not an object refuses the repair. Otherwise the check
+   stays `failed`, and `repaired_by` says which condition failed and what
+   the forge answered. A forge that cannot be reached leaves the result
+   `pending`, as for every check. The merge commit's failed runs stay listed in `runs` either way.
    Without the flag nothing changes: a red merge commit is `not_confirmed`.
    With the flag and a merge commit whose CI did not fail, the flag is not
    used (`repaired_by.status` is `not used`).

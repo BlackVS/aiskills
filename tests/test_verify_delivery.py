@@ -1138,7 +1138,7 @@ class RepairCases:
         def still(runs):
             runs[0].update(conclusion="failure") if self.forge == "github" else runs[0].update(status="failure")
 
-        cases = {"still failing": (still, "is not green"), "absent": (lambda runs: runs.pop(0), "did not run on the commit")}
+        cases = {"still failing": (still, "is not green"), "absent": (lambda runs: runs.pop(0), "did not run and succeed on the commit")}
         for name, (edit, words) in cases.items():
             with self.subTest(name):
                 self.fake = FakeForge(self.forge)
@@ -1158,6 +1158,98 @@ class RepairCases:
                 self.fake = FakeForge(self.forge)
                 _, _, code, doc = self.failed_with_repair(later_ci=edit)
                 self.assert_not_repaired(code, doc, "has no CI results" if name == "no CI at all" else "is not green")
+
+    def test_a_failed_check_must_run_again_not_be_skipped(self):
+        """Skipped and neutral pass on GitHub, but a check that failed has to run and succeed again."""
+        if self.forge != "github":
+            self.skipTest("only GitHub passes a check that did not run")
+        for conclusion in ("skipped", "neutral"):
+            with self.subTest(conclusion):
+                self.fake = FakeForge(self.forge)
+                failed, _, code, doc = self.failed_with_repair(later_ci=lambda runs: runs[0].update(conclusion=conclusion))
+                self.assert_not_repaired(code, doc, "did not run and succeed on the commit: " + failed)
+
+    def test_two_runs_under_the_failed_name_one_of_them_red(self):
+        def twice(runs):
+            red = copy.deepcopy(runs[0])
+            red.update(conclusion="failure", id=999) if self.forge == "github" else red.update(status="failure", id=999)
+            runs.append(red)
+
+        failed, _, code, doc = self.failed_with_repair(later_ci=twice)
+        self.assert_not_repaired(code, doc, "is not green: " + failed)
+
+    def test_only_a_present_value_of_the_expected_type_is_evidence(self):
+        """Each field of a forge answer the repair reads: absent, null or of another type refuses."""
+        repo = "/repos/acme/widgets"
+        serve = lambda body: (lambda req: Response(200, json.dumps(body).encode()))
+        compare = f"{repo}/compare/{MERGE}...{LATER}" if self.forge == "github" else f"{repo}/compare/{LATER}...{MERGE}"
+        pulls = f"{repo}/commits/{LATER}/pulls" if self.forge == "github" else f"{repo}/commits/{LATER}/pull"
+        listing = (lambda pull: serve([pull])) if self.forge == "github" else serve
+        ci = f"{repo}/commits/{LATER}/check-runs" if self.forge == "github" else f"{repo}/commits/{LATER}/status"
+        ci_key = "check_runs" if self.forge == "github" else "statuses"
+        name_key = "name" if self.forge == "github" else "context"
+        later_ci = FakeForge(self.forge).data[FORGES[self.forge]["ci"]]
+        pull = {"number": 43, "html_url": "https://example.org/pulls/43", "state": "closed", "merged": True,
+                "merged_at": "2026-09-28T10:00:00Z", "merge_commit_sha": LATER, "base": {"ref": "main"}}
+        cases = {
+            "the commit is not an object": ({f"{repo}/git/commits/{LATER}": serve([LATER])}, "is not an object"),
+            "the commit has no URL": ({f"{repo}/git/commits/{LATER}": serve({"sha": LATER})}, "gives no URL for the commit"),
+            "the commit's URL is a number": ({f"{repo}/git/commits/{LATER}": serve({"sha": LATER, "html_url": 7})},
+                                             "gives no URL for the commit"),
+            "the compare is empty": ({compare: serve({})}, "does not descend"),
+            "the compare is a list": ({compare: serve([])}, "is not an object" if self.forge == "github" else "does not descend"),
+            "the pull request's base is absent": (None, "gives no base branch for the pull request"),
+            "the pull request listing is not a list": ({pulls: serve("43")}, "is not the merge commit of another"),
+            "the pull request listing is a number": ({pulls: serve(43)}, "is not the merge commit of another"),
+            "a listed pull request is not an object": ({pulls: serve(["43"]) if self.forge == "github" else serve("43")},
+                                                       "is not the merge commit of another"),
+            "the pull request has no number": ({pulls: listing({k: v for k, v in pull.items() if k != "number"})},
+                                               "is not the merge commit of another"),
+            "its number is a string": ({pulls: listing({**pull, "number": "43"})}, "is not the merge commit of another"),
+            "its number is a boolean": ({pulls: listing({**pull, "number": True})}, "is not the merge commit of another"),
+            "it has no base": ({pulls: listing({k: v for k, v in pull.items() if k != "base"})},
+                               "is not the merge commit of another"),
+            "its base is a string": ({pulls: listing({**pull, "base": "main"})}, "is not the merge commit of another"),
+            "it has no URL": ({pulls: listing({k: v for k, v in pull.items() if k != "html_url"})},
+                              "is not the merge commit of another"),
+            "its merge commit is not a string": ({pulls: listing({**pull, "merge_commit_sha": 7})},
+                                                 "is not the merge commit of another"),
+            "its merged flag is a string": ({pulls: listing({**pull, "merged": "true", "merged_at": None})},
+                                            "is not the merge commit of another"),
+            "a later run has no name": ({ci: serve({**later_ci, ci_key: [{**r, name_key: None} for r in later_ci[ci_key]]})},
+                                        "has no name or an invalid URL"),
+            "a later run's URL is a number": ({ci: serve({**later_ci, ci_key: [{**r, "html_url": 7, "target_url": 7}
+                                                                               for r in later_ci[ci_key]]})},
+                                              "has no name or an invalid URL"),
+            "a later run is not an object": ({ci: serve({**later_ci, ci_key: ["run"]})}, "not in the expected shape"),
+        }
+        if self.forge == "github":
+            cases["the compare status is absent"] = ({compare: serve({"ahead_by": 1})}, "does not descend")
+            cases["the compare status is not a string"] = ({compare: serve({"status": 1})}, "does not descend")
+        else:
+            cases["the commit count is a string"] = ({compare: serve({"total_commits": "0", "commits": []})}, "does not descend")
+            cases["the commit count is null"] = ({compare: serve({"total_commits": None, "commits": []})}, "does not descend")
+            cases["the commit count is false"] = ({compare: serve({"total_commits": False, "commits": []})}, "does not descend")
+        for name, (overrides, words) in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                if overrides is None:
+                    del self.fake.data["pull"]["base"]
+                else:
+                    self.fake.overrides.update(overrides)
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assert_not_repaired(code, doc, words)
+
+    def test_a_failed_run_on_the_merge_commit_without_a_name(self):
+        if self.forge == "github":
+            self.fake.data["check_runs"]["check_runs"][0].update(conclusion="failure", name=None)
+        else:
+            self.fake.data["status"]["statuses"][0].update(status="failure", context=None)
+        self.repair()
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assert_not_repaired(code, doc, "has no name to look for on the commit")
 
     def test_the_flag_changes_nothing_when_the_merge_commit_is_green(self):
         self.repair()
@@ -1882,10 +1974,42 @@ class GitLabRepair(unittest.TestCase):
             with self.subTest(name):
                 self.assert_refused("is not the merge commit of another merged pull request", requests=requests)
 
+    def test_only_a_present_value_of_the_expected_type_is_evidence(self):
+        cases = {"the merge base has no id": ({"merge_base": {}}, "does not descend"),
+                 "the merge base id is a number": ({"merge_base": {"id": 7}}, "does not descend"),
+                 "the merge base is a list": ({"merge_base": []}, "does not descend"),
+                 "the iid is a string": ({"requests": lambda mr: [{**mr, "iid": "2"}]}, "is not the merge commit of another"),
+                 "no iid": ({"requests": lambda mr: [{k: v for k, v in mr.items() if k != "iid"}]}, "is not the merge commit of another"),
+                 "no target branch": ({"requests": lambda mr: [{**mr, "target_branch": None}]}, "is not the merge commit of another"),
+                 "no web URL": ({"requests": lambda mr: [{**mr, "web_url": None}]}, "is not the merge commit of another"),
+                 "the listing holds a string": ({"requests": lambda mr: ["2"]}, "is not the merge commit of another"),
+                 "the pipeline has no URL": ({"pipelines": lambda p: [{**p, "web_url": 7}]}, "has no name or an invalid URL")}
+        for name, (serve, words) in cases.items():
+            with self.subTest(name):
+                merge_base = serve.pop("merge_base", None)
+                self.serve(**serve)
+                if merge_base is not None:
+                    self.case.fake.overrides["/repository/merge_base"] = lambda req, b=merge_base: Response(200, json.dumps(b).encode())
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"), name)
+                self.assertIn(words, self.case.check(doc, "post_merge_ci")["repaired_by"]["detail"])
+
+    def test_the_merged_commit_is_read_as_check_2_reads_it(self):
+        """A merge commit equal to the head with a distinct squash commit: the squash commit is the merged one."""
+        both = lambda mr, merged: [{**mr, "merge_commit_sha": mr["sha"], "squash_commit_sha": merged}]
+        self.serve(requests=lambda mr: both(mr, LATER))
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        # and the head, which a merge commit equal to it would have named, is not the merged commit
+        self.serve(requests=lambda mr: [{**mr, "sha": LATER, "merge_commit_sha": LATER, "squash_commit_sha": "c" * 40}])
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        self.assertIn("is not the merge commit of another", self.case.check(doc, "post_merge_ci")["repaired_by"]["detail"])
+
     def test_the_failed_pipeline_still_failing_or_absent(self):
         # GitLab's one result is the latest pipeline: its name is the check that failed
         cases = {"still failing": (lambda p: [{**p, "status": "failed"}], "is not green"),
-                 "renamed": (lambda p: [{**p, "name": "another pipeline"}], "did not run on the commit"),
+                 "renamed": (lambda p: [{**p, "name": "another pipeline"}], "did not run and succeed on the commit"),
                  "still running": (lambda p: [{**p, "status": "running"}], "is not green"),
                  "none": (lambda p: [], "has no CI results")}
         for name, (pipelines, words) in cases.items():

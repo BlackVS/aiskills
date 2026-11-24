@@ -18,8 +18,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
   inferred) gives the new verdict `confirmed_after_repair` with exit code
   0, when the forge answers that the commit descends from the merge
   commit, that it is another merged pull request's merge commit on the
-  same base branch, and that every check that failed ran there under the
-  same name and all its checks are green. The merge commit's failed runs
+  same base branch, and that every check that failed ran again there under
+  the same name and succeeded (a skipped or neutral run is not one) and all
+  its other checks are green. Only a present value of the expected type in
+  the forge's answers counts. The merge commit's failed runs
   stay listed, and the evidence names the later commit's runs under the
   new kind `post_merge_ci_repaired`. A consumer that compares the verdict
   with `confirmed` records nothing until it knows the new value. Without

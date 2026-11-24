@@ -205,6 +205,17 @@ def next_link(header):
     return None
 
 
+def gitlab_merged(mr):
+    """(merged commit, how) of a merged merge request: the merge commit, else the squash commit (a
+    fast-forward squash), else the head itself (a fast-forward merge, also when GitLab reports the
+    head as the merge commit). Check 2 and --ci-repaired-by read it this one way."""
+    if mr.get("merge_commit_sha") and mr["merge_commit_sha"] != mr.get("sha"):
+        return mr["merge_commit_sha"], "squash and merge commit" if mr.get("squash_commit_sha") else "merge commit"
+    if mr.get("squash_commit_sha"):
+        return mr["squash_commit_sha"], "fast-forward squash"
+    return mr.get("sha"), "fast-forward"
+
+
 class GitLabForge(Forge):
     """GitLab's merge request API read through the requests verify() makes of GitHub and Gitea:
     each one is translated, and each answer normalised to the shape the checks read.
@@ -238,17 +249,12 @@ class GitLabForge(Forge):
         merged = mr.get("state") == "merged"
         merged_sha = merged_as = base = None
         if merged:
-            if mr.get("merge_commit_sha") and mr["merge_commit_sha"] != mr.get("sha"):
-                merged_sha = mr["merge_commit_sha"]
-                merged_as = "squash and merge commit" if mr.get("squash_commit_sha") else "merge commit"
-            elif mr.get("squash_commit_sha"):
-                merged_sha, merged_as = mr["squash_commit_sha"], "fast-forward squash"
-            else:
+            merged_sha, merged_as = gitlab_merged(mr)
+            if merged_as == "fast-forward":
                 # a fast-forward: the head is the merged commit, and the base the request started from
-                # (its first parent is only the request's previous commit)
-                merged_sha, merged_as = mr.get("sha"), "fast-forward"
-                # without its base the change cannot be told apart from the commits under it: False
-                # (not None) makes the content check fail instead of comparing from the first parent
+                # (its first parent is only the request's previous commit). Without its base the change
+                # cannot be told apart from the commits under it: False (not None) makes the content
+                # check fail instead of comparing from the first parent
                 base = (mr.get("diff_refs") or {}).get("base_sha") or False
         user = mr.get("merge_user") or mr.get("merged_by")
         merged_by = None
@@ -319,20 +325,12 @@ class GitLabForge(Forge):
         return gitlab_diff(self.compare(m.group(1), m.group(2)))
 
     def merge_base(self, a, b):
-        """GitLab's own merge base of commits A and B."""
-        return (super().get(f"/repository/merge_base?refs[]={a}&refs[]={b}").get("id") or "").lower()
+        """GitLab's own answer for the merge base of commits A and B (the commit record)."""
+        return super().get(f"/repository/merge_base?refs[]={a}&refs[]={b}")
 
-    def merged_requests(self, sha):
-        """The merged merge requests whose merged commit is SHA, as (iid, web URL, target branch):
-        the merge commit, else the squash commit, else (a fast-forward) the head."""
-        found = []
-        for mr in super().pages(f"/repository/commits/{sha}/merge_requests"):
-            if mr.get("state") != "merged":
-                continue
-            merged = mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or mr.get("sha")
-            if (merged or "").lower() == sha:
-                found.append((mr.get("iid"), mr.get("web_url") or "", mr.get("target_branch")))
-        return found
+    def merge_requests_of(self, sha):
+        """GitLab's merge requests of commit SHA, as it lists them."""
+        return super().pages(f"/repository/commits/{sha}/merge_requests")
 
     def pipelines(self, sha):
         target = urllib.parse.quote(self.mr.get("target_branch") or "", safe="")
@@ -605,71 +603,144 @@ def ci_evidence(runs, fallback):
     return urls
 
 
+class Refused(Exception):
+    """A condition of --ci-repaired-by that the forge's answer does not establish."""
+
+
+def text(v):
+    """V when it is a non-empty string: only a present value of the expected type is evidence."""
+    return v if isinstance(v, str) and v else None
+
+
+def integer(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def answer(forge, path, what):
+    """The forge's object at PATH, or Refused naming WHAT when it is absent or not an object."""
+    try:
+        data = forge.get(path)
+    except NotFound:
+        raise Refused(f"the forge does not know {what} (404)")
+    if not isinstance(data, dict):
+        raise Refused(f"the forge's answer for {what} is not an object")
+    return data
+
+
 def descends(forge, kind, ancestor, sha):
-    """Whether commit SHA descends from commit ANCESTOR (and is not it), as the forge answers:
-    GitHub's compare status, GitLab's merge base, and on Gitea a compare that lists no commit of
-    ANCESTOR missing from SHA. (answer, how the forge said it)."""
+    """Refused unless the forge answers that commit SHA descends from commit ANCESTOR: GitHub's
+    compare status is "ahead", GitLab's merge base of the two is ANCESTOR, and Gitea's compare of
+    SHA...ANCESTOR counts no commit of ANCESTOR missing from SHA. Returns how the forge said it."""
     if kind == "github":
-        status = forge.get(f"/compare/{ancestor}...{sha}").get("status")
-        return status == "ahead", f"GitHub's compare status is {status!r}"
+        status = answer(forge, f"/compare/{ancestor}...{sha}", "the compare of the two commits").get("status")
+        how = f"GitHub's compare status is {status!r}"
+        if status != "ahead":
+            raise Refused(f"the commit does not descend from the merge commit ({how})")
+        return how
     if kind == "gitlab":
-        base = forge.merge_base(ancestor, sha)
-        return base == ancestor, f"GitLab's merge base of the two is {base or 'none'}"
+        base = text(forge_merge_base(forge, ancestor, sha))
+        how = f"GitLab's merge base of the two is {base or 'not given'}"
+        if base is None or base.lower() != ancestor:
+            raise Refused(f"the commit does not descend from the merge commit ({how})")
+        return how
     try:
         data = forge.get(f"/compare/{sha}...{ancestor}")
     except NotFound:
-        return False, "this Gitea has no compare API (Gitea before 1.22)"
-    missing = data.get("total_commits", len(data.get("commits") or []))
-    return missing == 0, f"Gitea's compare lists {missing} commit(s) of the merge commit missing from it"
+        raise Refused("the commit does not descend from the merge commit: Gitea's compare API did not answer for "
+                      "these two commits (404)")
+    missing = integer(data.get("total_commits")) if isinstance(data, dict) else None
+    how = f"Gitea's compare counts {missing if missing is not None else 'no number of'} commit(s) of the merge commit missing from it"
+    if missing != 0:
+        raise Refused(f"the commit does not descend from the merge commit ({how})")
+    return how
+
+
+def forge_merge_base(forge, a, b):
+    try:
+        data = forge.merge_base(a, b)
+    except NotFound:
+        raise Refused("GitLab does not give the merge base of the two commits (404)")
+    return data.get("id") if isinstance(data, dict) else None
 
 
 def merged_pulls(forge, kind, sha):
-    """The merged pull requests whose merge commit is SHA, as the forge lists them: [(number, URL,
-    base branch)]. GitHub lists the pull requests of a commit, Gitea gives the one a commit merged,
-    GitLab the merge requests of a commit."""
-    if kind == "gitlab":
-        return forge.merged_requests(sha)
-    if kind == "github":
-        pulls = forge.pages(f"/commits/{sha}/pulls")
-    else:
-        pull = forge.get_or_none(f"/commits/{sha}/pull")
-        pulls = [pull] if pull else []
-    return [(p.get("number"), p.get("html_url") or "", (p.get("base") or {}).get("ref")) for p in pulls
-            if p.get("merged") or p.get("merged_at") if (p.get("merge_commit_sha") or "").lower() == sha]
+    """The forge's pull requests of commit SHA, each as {number, url, base, merged, merged_sha} taken
+    as the forge gives them: GitHub lists the pull requests of a commit, Gitea gives the one a commit
+    merged, GitLab the merge requests of a commit (its merged commit read as check 2 reads it)."""
+    try:
+        if kind == "github":
+            pulls = forge.pages(f"/commits/{sha}/pulls")
+        elif kind == "gitlab":
+            pulls = forge.merge_requests_of(sha)
+        else:
+            pulls = [forge.get(f"/commits/{sha}/pull")]
+    except (NotFound, AttributeError, TypeError):  # none, or a listing that is not one: no pull request
+        return []
+    found = []
+    for p in pulls if isinstance(pulls, list) else []:
+        if not isinstance(p, dict):
+            continue
+        if kind == "gitlab":
+            found.append({"number": p.get("iid"), "url": p.get("web_url"), "base": p.get("target_branch"),
+                          "merged": p.get("state") == "merged", "merged_sha": gitlab_merged(p)[0]})
+        else:
+            base = p.get("base")
+            found.append({"number": p.get("number"), "url": p.get("html_url"),
+                          "base": base.get("ref") if isinstance(base, dict) else None,
+                          # GitHub's listing gives merged_at, Gitea's pull request the flag
+                          "merged": text(p.get("merged_at")) is not None if kind == "github" else p.get("merged") is True,
+                          "merged_sha": p.get("merge_commit_sha")})
+    return found
 
 
 def ci_repair(forge, kind, pr, number, merge_sha, runs, sha):
     """The --ci-repaired-by check: the merge commit's failed checks were made green by SHA, a later
-    pull request's merge commit on the same base branch. Every condition is the forge's own answer.
-    Returns the repaired_by record, with status passed or failed and the reason."""
-    failed = sorted({r["name"] for r in runs if r["result"] in ("failed", "failed: known flaky")})
-    rep = {"sha": sha, "failed_on_merge_commit": failed}
-    if sha == merge_sha:
-        return {**rep, "status": "failed", "detail": "--ci-repaired-by names the merge commit itself"}
-    commit = forge.get_or_none(f"/git/commits/{sha}")
-    if commit is None:
-        return {**rep, "status": "failed", "detail": "the forge does not know the commit --ci-repaired-by names"}
-    rep["url"] = commit.get("html_url") or ""
-    later, how = descends(forge, kind, merge_sha, sha)
-    rep["descends_from_merge_commit"] = later
-    if not later:
-        return {**rep, "status": "failed", "detail": f"the commit does not descend from the merge commit ({how})"}
-    base = (pr.get("base") or {}).get("ref")
-    pulls = [p for p in merged_pulls(forge, kind, sha) if p[0] != number and p[2] == base]
-    if not pulls:
-        return {**rep, "status": "failed", "detail": f"the commit is not the merge commit of another merged pull "
-                                                     f"request into {base or 'the same base branch'}"}
-    rep["pull_request"] = {"number": pulls[0][0], "url": pulls[0][1]}
-    later_runs = rep["runs"] = ci_results(kind, sha, forge, set())
-    if not later_runs:
-        return {**rep, "status": "failed", "detail": "the commit has no CI results"}
-    not_green = sorted({r["name"] for r in later_runs if r["result"] != "passed"})
-    if not_green:
-        return {**rep, "status": "failed", "detail": "the commit's CI is not green: " + ", ".join(map(str, not_green))}
-    absent = [n for n in failed if n not in {r["name"] for r in later_runs}]
-    if absent:
-        return {**rep, "status": "failed", "detail": "a check that failed on the merge commit did not run on the "
-                                                     "commit: " + ", ".join(map(str, absent))}
+    pull request's merge commit on the same base branch. Every condition is the forge's own answer,
+    and only a present value of the expected type counts. Returns the repaired_by record, with status
+    passed or failed and the reason."""
+    rep = {"sha": sha}
+    try:
+        failed = [r["name"] for r in runs if r["result"] in ("failed", "failed: known flaky")]
+        if not all(text(n) for n in failed):
+            raise Refused("a run that failed on the merge commit has no name to look for on the commit")
+        failed = rep["failed_on_merge_commit"] = sorted(set(failed))
+        if sha == merge_sha:
+            raise Refused("--ci-repaired-by names the merge commit itself")
+        url = rep["url"] = text(answer(forge, f"/git/commits/{sha}", "the commit --ci-repaired-by names").get("html_url"))
+        if url is None:
+            raise Refused("the forge gives no URL for the commit")
+        rep["descends_from_merge_commit"] = False
+        rep["descends_basis"] = descends(forge, kind, merge_sha, sha)
+        rep["descends_from_merge_commit"] = True
+        base = text(pr["base"].get("ref") if isinstance(pr.get("base"), dict) else None)
+        if base is None:
+            raise Refused("the forge gives no base branch for the pull request")
+        pulls = [p for p in merged_pulls(forge, kind, sha)
+                 if p["merged"] is True and integer(p["number"]) is not None and p["number"] != number
+                 and text(p["base"]) == base and text(p["url"]) is not None
+                 and (text(p["merged_sha"]) or "").lower() == sha]
+        if not pulls:
+            raise Refused(f"the commit is not the merge commit of another merged pull request into {base}")
+        rep["pull_request"] = {"number": pulls[0]["number"], "url": pulls[0]["url"]}
+        try:
+            later = rep["runs"] = ci_results(kind, sha, forge, set())
+        except (AttributeError, TypeError, KeyError):
+            raise Refused("the forge's CI answer for the commit is not in the expected shape")
+        if not later:
+            raise Refused("the commit has no CI results")
+        if not all(text(r["name"]) and isinstance(r["url"], str) for r in later):
+            raise Refused("a CI run on the commit has no name or an invalid URL")
+        not_green = sorted({r["name"] for r in later if r["result"] != "passed"})
+        if not_green:
+            raise Refused("the commit's CI is not green: " + ", ".join(not_green))
+        # a check that failed must have run again: on GitHub skipped and neutral pass, but did not run
+        rerun = [n for n in failed if not any(r["name"] == n for r in later)
+                 or not all(r["conclusion"] == "success" for r in later if r["name"] == n)]
+        if rerun:
+            raise Refused("a check that failed on the merge commit did not run and succeed on the commit: "
+                          + ", ".join(rerun))
+    except Refused as e:
+        return {**rep, "status": "failed", "detail": str(e)}
     return {**rep, "status": "passed"}
 
 
