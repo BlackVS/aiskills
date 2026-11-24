@@ -619,8 +619,17 @@ class Refused(Exception):
 
 
 def text(v):
-    """V when it is a non-empty string: only a present value of the expected type is evidence."""
-    return v if isinstance(v, str) and v else None
+    """V when it is a non-empty string that encodes as UTF-8 (JSON can carry a lone surrogate, which
+    does not): only a present value of the expected type is evidence."""
+    return v if isinstance(v, str) and v and encodes(v) else None
+
+
+def encodes(v):
+    try:
+        v.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def integer(v):
@@ -729,7 +738,7 @@ def repair_runs(kind, sha, forge):
         for st in forge.pages(f"/commits/{sha}/status", key="statuses", strict=True):
             state = st["status"] if "status" in st else st.get("state")
             name, url = st.get("context"), st.get("target_url")
-            if not (text(name) and text(state) and isinstance(url, str)):
+            if not (text(name) and text(state) and isinstance(url, str) and encodes(url)):
                 raise Refused("a commit status on the commit lacks a context, state or URL as strings")
             runs.append({"name": name, "id": st.get("id"), "url": url, "state": state, "conclusion": state,
                          "result": "passed" if state in GITEA_PASS else "pending" if state in GITEA_PENDING else "failed"})
@@ -739,8 +748,10 @@ def repair_runs(kind, sha, forge):
 def ci_repair(forge, kind, pr, number, merge_sha, runs, sha):
     """The --ci-repaired-by check: the merge commit's failed checks were made green by SHA, a later
     pull request's merge commit on the same base branch. Every condition is the forge's own answer,
-    and only a present value of the expected type counts. Returns the repaired_by record, with status
-    passed or failed and the reason."""
+    and only a present value of the expected type counts.
+    Returns (the repaired_by record, with status passed or failed and the reason; the repair's evidence
+    entries, or None when it is refused). Everything the repair puts into the output is built and
+    encoded inside its boundary, so a failure while producing it refuses the repair too."""
     rep = {"sha": sha}
     step = "reading the merge commit's failed runs"
     try:
@@ -783,15 +794,19 @@ def ci_repair(forge, kind, pr, number, merge_sha, runs, sha):
         if rerun:
             raise Refused("a check that failed on the merge commit did not run and succeed on the commit: "
                           + ", ".join(rerun))
+        step = "building the repair's evidence"
+        evidence = [{"kind": "post_merge_ci_repaired", "ref": u} for u in ci_evidence(later, url)]
+        done = {**rep, "status": "passed"}
+        json.dumps([done, evidence], ensure_ascii=False).encode("utf-8")  # all of it must reach the output
+        return done, evidence
     except Refused as e:
-        return {**rep, "status": "failed", "detail": str(e)}
+        return {**rep, "status": "failed", "detail": str(e)}, None
     except (UsageError, Unavailable):
         raise  # a usage error and an outage keep their meaning, as for every check
     except NotFound:
-        return {**rep, "status": "failed", "detail": f"the forge answered 404 while {step}"}
-    except Exception as e:  # the repair fails closed: any other surprise in its reads refuses it
-        return {**rep, "status": "failed", "detail": f"{type(e).__name__} while {step}"}
-    return {**rep, "status": "passed"}
+        return {**rep, "status": "failed", "detail": f"the forge answered 404 while {step}"}, None
+    except Exception as e:  # the repair fails closed: any other surprise in its reads or its output refuses it
+        return {**rep, "status": "failed", "detail": f"{type(e).__name__} while {step}"}, None
 
 
 def verify(args, forge, kind, number):
@@ -854,7 +869,7 @@ def verify(args, forge, kind, number):
         why = "the pull request is not merged"
         checks.append({"name": "tree_equality", "status": merge["status"], "detail": why})
         checks.append({"name": "post_merge_ci", "status": merge["status"], "detail": why})
-        return checks, pr_url, head_url, None, []
+        return checks, pr_url, head_url, None, [], None
 
     # 3. merged content = reviewed content: equal trees, or else an equal patch identity
     merge_commit = forge.get_or_none(f"/git/commits/{merge_sha}") or {}
@@ -883,6 +898,7 @@ def verify(args, forge, kind, number):
 
     # 4. post-merge CI
     runs = ci_results(kind, merge_sha, forge, set(args.known_flaky))
+    repaired_evidence = None
     results = {r["result"] for r in runs}
     ci = {"name": "post_merge_ci", "merge_commit_sha": merge_sha, "runs": runs,
           "known_flaky_failures": [r["name"] for r in runs if r["result"] == "failed: known flaky"]}
@@ -898,7 +914,8 @@ def verify(args, forge, kind, number):
         ci["status"] = "passed"
     repaired_by = getattr(args, "ci_repaired_by", None)
     if repaired_by and ci["status"] == "failed":
-        rep = ci["repaired_by"] = ci_repair(forge, kind, pr, number, merge_sha, runs, repaired_by)
+        rep, repaired_evidence = ci_repair(forge, kind, pr, number, merge_sha, runs, repaired_by)
+        ci["repaired_by"] = rep
         if rep["status"] == "passed":
             ci["status"] = "repaired"
             ci["detail"] = (f"the merge commit's CI failed, and the later merge commit {repaired_by} (--ci-repaired-by) "
@@ -909,7 +926,7 @@ def verify(args, forge, kind, number):
         ci["repaired_by"] = {"sha": repaired_by, "status": "not used",
                              "detail": "only a failed post-merge CI is read against --ci-repaired-by"}
     checks.append(ci)
-    return checks, pr_url, head_url, merge_url, runs
+    return checks, pr_url, head_url, merge_url, runs, repaired_evidence
 
 
 def comment_items(forge, number, formal=True):
@@ -1273,10 +1290,11 @@ def tree_of(commit):
 
 def evidence_for(pr_url, head_url, merge_url, runs, repaired=None):
     """The evidence of a confirmed delivery. After a repair the merge commit's own runs are red, so
-    they are not post_merge_ci evidence: the later commit's runs are, as post_merge_ci_repaired."""
+    they are not post_merge_ci evidence: the later commit's runs are, as post_merge_ci_repaired,
+    the finished entries the repair built (REPAIRED)."""
     ev = [{"kind": "reviewed_head", "ref": head_url}, {"kind": "human_merge", "ref": pr_url}]
     if repaired:
-        ev += [{"kind": "post_merge_ci_repaired", "ref": u} for u in ci_evidence(repaired["runs"], repaired["url"])]
+        ev += repaired
     else:
         ev += [{"kind": "post_merge_ci", "ref": u} for u in ci_evidence(runs, merge_url)]
     if len(ev) > MAX_EVIDENCE or any(not e["ref"] or len(e["ref"].encode()) > MAX_REF for e in ev):
@@ -1483,7 +1501,7 @@ def failure(e):
 def deliver(args, forge, kind, owner, repo, number):
     """(document, exit code): the delivery verdict for pull request NUMBER, as main prints it."""
     try:
-        checks, pr_url, head_url, merge_url, runs = verify(args, forge, kind, number)
+        checks, pr_url, head_url, merge_url, runs, repaired_evidence = verify(args, forge, kind, number)
     except (UsageError, Unavailable, NotFound) as e:
         return failure(e)
     statuses = {c["status"] for c in checks}
@@ -1492,8 +1510,7 @@ def deliver(args, forge, kind, owner, repo, number):
     doc = {"verdict": verdict, "pr": {"forge": kind, "repo": f"{owner}/{repo}", "number": number, "url": pr_url},
            "checks": checks}
     if verdict in DELIVERED:
-        ci = next(c for c in checks if c["name"] == "post_merge_ci")
-        evidence = evidence_for(pr_url, head_url, merge_url, runs, ci["repaired_by"] if verdict != "confirmed" else None)
+        evidence = evidence_for(pr_url, head_url, merge_url, runs, repaired_evidence if verdict != "confirmed" else None)
         if evidence is None:
             verdict = doc["verdict"] = "not_confirmed"
             doc["error"] = {"kind": "evidence", "message": "the evidence would not fit its limits (16 entries, 512 bytes each)"}

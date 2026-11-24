@@ -241,12 +241,16 @@ All four must pass for the verdict `confirmed` (check 4 may instead be `repaired
    them, before any default. Any other unexpected answer (a 404, or one the
    tool cannot read) refuses it too, naming what was being read. Otherwise
    the check stays `failed`, and `repaired_by` says which condition failed
-   and what the forge answered. A forge that cannot be reached leaves the
-   result `pending`, as for every check. The merge commit's failed runs stay
-   listed in `runs` either way. Without the flag nothing changes: a red
-   merge commit is `not_confirmed`. With the flag and a merge commit whose
-   CI did not fail, the flag is not used (`repaired_by.status` is
-   `not used`).
+   and what the forge answered. A repair that is decided, passed or failed,
+   keeps the merge commit's failed runs listed in `runs`. A forge that
+   cannot be reached during the repair returns the ordinary `pending`
+   document, with no checks, as for every check: check again later. A
+   string that does not encode as UTF-8 counts as no value, and the
+   repair's own entry and evidence are built before anything is recorded,
+   so a failure there refuses the repair too. Without the flag nothing
+   changes: a red merge commit is `not_confirmed`. With the flag and a
+   merge commit whose CI did not fail, the flag is not used
+   (`repaired_by.status` is `not used`).
 
 ## How to call it
 

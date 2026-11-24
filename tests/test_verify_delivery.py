@@ -1248,6 +1248,39 @@ class RepairCases:
                 code, doc = self.run_vd("--ci-repaired-by", LATER)
                 self.assert_not_repaired(code, doc, words)
 
+    def test_a_string_that_does_not_encode_refuses(self):
+        """JSON can carry a lone surrogate, which no output can: such a string is no evidence."""
+        repo = "/repos/acme/widgets"
+        serve = lambda body: (lambda req: Response(200, json.dumps(body).encode()))
+        ci = f"{repo}/commits/{LATER}/check-runs" if self.forge == "github" else f"{repo}/commits/{LATER}/status"
+        ci_key, name_key = ("check_runs", "name") if self.forge == "github" else ("statuses", "context")
+        url_key = "html_url" if self.forge == "github" else "target_url"
+        later_ci = FakeForge(self.forge).data[FORGES[self.forge]["ci"]]
+        bad = "\ud800"
+        cases = {"a later run's URL": ({ci: serve({**later_ci, ci_key: [{**r, url_key: r[url_key] + bad} for r in later_ci[ci_key]]})},
+                                       "as strings"),
+                 "a later run's name": ({ci: serve({**later_ci, ci_key: [{**r, name_key: r[name_key] + bad} for r in later_ci[ci_key]]})},
+                                        "as strings"),
+                 "the commit's URL": ({f"{repo}/git/commits/{LATER}": serve({"sha": LATER, "html_url": "https://example.org/c" + bad})},
+                                      "gives no URL for the commit")}
+        for name, (overrides, words) in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                self.fake.overrides.update(overrides)
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assert_not_repaired(code, doc, words)
+                self.assertTrue(self.check(doc, "post_merge_ci")["runs"])
+
+    def test_a_failure_while_building_the_repairs_evidence_refuses(self):
+        self.ci_fail()
+        self.repair()
+        with mock.patch.object(vd, "ci_evidence", side_effect=UnicodeEncodeError("utf-8", "x", 0, 1, "surrogate")):
+            code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assert_not_repaired(code, doc, "UnicodeEncodeError while building the repair's evidence")
+        self.assertTrue(self.check(doc, "post_merge_ci")["runs"])
+
     def test_a_second_ci_page_without_its_list_refuses(self):
         """The first page holds the green rerun; the second, which the forge links to, has no list."""
         ci_path = "/repos/acme/widgets/commits/" + LATER + ("/check-runs" if self.forge == "github" else "/status")
@@ -2046,6 +2079,8 @@ class GitLabRepair(unittest.TestCase):
                  "the pipeline's URL is a number": ({"pipelines": lambda p: [{**p, "web_url": 7}]}, "lacks a status or URL as strings"),
                  "the pipeline's URL is false": ({"pipelines": lambda p: [{**p, "web_url": False}]}, "lacks a status or URL as strings"),
                  "the pipeline's status is null": ({"pipelines": lambda p: [{**p, "status": None}]}, "lacks a status or URL as strings"),
+                 "the pipeline's URL does not encode": ({"pipelines": lambda p: [{**p, "web_url": p["web_url"] + "\ud800"}]},
+                                                        "lacks a status or URL as strings"),
                  "the pipeline listing holds a string": ({"pipelines": lambda p: ["pipeline"]}, "is not a list of objects")}
         for name, (serve, words) in cases.items():
             with self.subTest(name):
