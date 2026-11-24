@@ -121,7 +121,13 @@ diff's file headers and hunk lines, context included). It is not a
 `git patch-id` and is never compared with one; it is the stricter of the two,
 so where they disagree the head is not ready and a re-review settles it. On
 Gitea the compare diff needs Gitea 1.27 (`?output=diff`); an older Gitea
-gives `unknown` for a review of an older head: re-review at the current head.
+gives `unknown` for a review of an older head: re-review at the current head,
+or name a local clone with `--repo DIR`. Where the forge gives no diff, git
+computes both identities in that clone (each head against its merge base with
+the base tip, with the diff options fixed so configuration cannot change the
+text) and the review says `identity_source: git`; where the forge gives the
+diff, `--repo` is not used and the source is `forge`. Nothing is fetched: a
+commit the clone lacks gives `unknown` with "fetch it".
 
 ### merge-check
 

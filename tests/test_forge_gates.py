@@ -309,6 +309,14 @@ class GatesContract(Gates):
                          json.dumps(doc, indent=1))
         self.assertEqual(r["change_identity"]["reviewed"], r["change_identity"]["current"])
         self.assertEqual(self.check(doc, "reviews")["base_tip"], TIP)
+        self.assertEqual(r["identity_source"], "forge")
+
+    def test_repo_is_not_used_where_the_forge_gives_the_diff(self):
+        self.external_at_head()["body"] = review("example-bot", OLD)
+        self.publish_comments()
+        code, doc = self.gates("--repo", str(self.tmp / "no-clone-here"))
+        r = self.review_of(doc)
+        self.assertEqual((code, r["status"], r["identity_source"]), (0, "ready", "forge"), json.dumps(r))
 
     def test_identity_that_cannot_be_read_is_unknown_not_ready(self):
         self.external_at_head()["body"] = review("example-bot", OLD)
@@ -816,6 +824,58 @@ class GitHubWait(WaitContract, unittest.TestCase):
 
 class GiteaGates(GatesContract, unittest.TestCase):
     forge = "gitea"
+
+    # ---- before 1.27 the compare API answers JSON: with --repo, git computes both identities
+    def on_real_commits(self, head="H"):
+        """The pull request moved onto real commits (tvd.real_repo): the base tip T, the head HEAD
+        (H, a base-only update of O, or S, a different change), the local review at the head and
+        the external review READY at O only. The compare API answers JSON."""
+        self.clone, shas = tvd.real_repo(self.tmp)
+        r, current = self.repo, shas[head]
+        self.pr["head"]["sha"] = current
+        self.publish_pr()
+        self.fake.set(f"{r}/branches/main", {"name": "main", "commit": {"id": shas["T"]}})
+        self.fake.set(f"{r}/commits/{current}/status", {"state": "success", "statuses": self.statuses})
+        for sha in (shas["O"], current):
+            self.fake.set(f"{r}/compare/{shas['T']}...{sha}?output=diff", json.dumps({"commits": []}).encode())
+        self.comments[:] = []
+        self.comment(review("local", current), author="author", minutes=-60)
+        self.comment(review("example-bot", shas["O"]), minutes=-10)
+        return shas
+
+    def test_an_older_gitea_carries_a_review_over_with_repo(self):
+        shas = self.on_real_commits()
+        code, doc = self.gates("--repo", str(self.clone))
+        r = self.review_of(doc)
+        self.assertEqual((code, doc["status"], r["status"], r.get("carried_from"), r["identity_source"]),
+                         (0, "ready", "ready", shas["O"], "git"), json.dumps(doc, indent=1))
+        self.assertEqual(r["change_identity"]["reviewed"], r["change_identity"]["current"])
+        self.assertEqual(self.check(doc, "reviews")["base_tip"], shas["T"])
+
+    def test_without_repo_an_older_gitea_names_the_option(self):
+        self.on_real_commits()
+        code, doc = self.gates()
+        r = self.review_of(doc)
+        self.assertEqual((code, r["status"]), (4, "unknown"))
+        self.assertIn("1.27", r["detail"])
+        self.assertIn("--repo", r["detail"])
+
+    def test_git_does_not_carry_a_review_over_a_different_change(self):
+        shas = self.on_real_commits(head="S")
+        code, doc = self.gates("--repo", str(self.clone))
+        r = self.review_of(doc)
+        self.assertEqual((code, r["status"], r["identity_source"]), (3, "stale", "git"), json.dumps(r))
+        self.assertNotEqual(r["change_identity"]["reviewed"], r["change_identity"]["current"])
+
+    def test_a_clone_without_the_commits_gives_unknown(self):
+        self.on_real_commits()
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        subprocess.run(["git", "init", "-q", str(empty)], env=tvd.git_env(self.tmp, helper=False), check=True)
+        code, doc = self.gates("--repo", str(empty))
+        r = self.review_of(doc)
+        self.assertEqual((code, r["status"], r["identity_source"]), (4, "unknown", "git"), json.dumps(r))
+        self.assertIn("fetch it", r["detail"])
 
     def test_title_prefix_marks_a_draft_without_the_field(self):
         del self.pr["draft"]

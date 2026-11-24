@@ -664,7 +664,7 @@ def verify(args, forge, kind, number):
         same_tree = bool(t_head) and t_head == t_merge
         rebase = once(lambda: rebase_base(forge, number, head, merge_commit))
     results = [merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase,
-                              pr.get("merged_base"), heads)
+                              pr.get("merged_base"), heads, getattr(args, "repo", None))
                for reviewed in (reviewed_heads or [head])]
     worst = next((r for status in ("failed", "pending") for r in results if r["status"] == status), None)
     shown = worst or next((r for r in results if r["rule"] == "patch_identity"), results[0])
@@ -744,7 +744,7 @@ def once(read):
 
 
 def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, merge_commit, rebase=None, base=None,
-                   heads=None):
+                   heads=None, repo=None):
     """Is the merged content the content reviewed at head REVIEWED? Rule tree_equality: the merge
     commit's tree is the reviewed (final) head's tree. Rule patch_identity, when the trees differ
     because the base moved after the review: the merge commit's change against its first parent
@@ -791,6 +791,8 @@ def merged_matches(kind, forge, number, reviewed, head, same_tree, merge_sha, me
         return {**result, "status": "failed",
                 "detail": "the trees differ, and the merge commit has no parent to compare its change against"}
     matched = change_matches(kind, forge, number, reviewed, final, parent, merge_sha, result)
+    if repo and not final and matched.get("forge_diff") == "unavailable":
+        return git_matches(repo, reviewed, head, parent, same_tree, result)
     if rebase is None or matched["status"] != "failed" or "patch_identity" not in matched:
         return matched
     try:
@@ -828,7 +830,7 @@ def change_matches(kind, forge, number, reviewed, final, parent, merge_sha, resu
                                      "no diff of their combined change (compare with ?output=diff needs Gitea 1.27 "
                                      "or later): the trees differ, so the merged content cannot be confirmed"}
     else:
-        no_compare_diff = {**result, "status": "failed",
+        no_compare_diff = {**result, "status": "failed", "forge_diff": "unavailable",
                            "detail": "the review names an older head, and this Gitea's API returns no diff of an "
                                      "older head's change (compare with ?output=diff needs Gitea 1.27 or later): "
                                      "re-review at the final head"}
@@ -936,6 +938,72 @@ def patch_identity(diff):
     return hashlib.sha256(b"\n".join(kept)).hexdigest(), files
 
 
+# Every option that configuration could change in the diff's text is fixed here, so the identity
+# git gives in one clone is the identity it gives in any other for the same two commits.
+GIT_DIFF = ("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3",
+            "--inter-hunk-context=0", "--diff-algorithm=myers", "--indent-heuristic", "--submodule=short",
+            "--src-prefix=a/", "--dst-prefix=b/", "-O" + os.devnull)  # no order file: git's own path order
+GIT_CONFIG = ("-c", "core.quotePath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+              "-c", "diff.relative=false", "-c", "diff.suppressBlankEmpty=false")
+GIT_TIMEOUT = 60
+
+
+def git_change_identity(repo, base, sha):
+    """patch_identity of SHA's change against its merge base with BASE, as git computes it in the
+    clone at REPO. Both are full SHAs the forge named; a commit's SHA fixes its content, so the clone
+    cannot show another change under them. Nothing is fetched: a commit the clone lacks is a
+    ValueError that says so."""
+    for c in (base, sha):
+        if not re.fullmatch(r"[0-9a-f]{40}", c or ""):
+            raise ValueError(f"{c!r} is not a full 40-digit SHA")
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(repo), *GIT_CONFIG, *args], capture_output=True,
+                               stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT)
+        except FileNotFoundError:
+            raise ValueError("git is not installed")
+        except subprocess.TimeoutExpired:
+            raise ValueError(f"git did not answer within {GIT_TIMEOUT} seconds")
+        if r.returncode != 0:
+            raise ValueError(f"git {args[0]} failed in {repo}: "
+                             + (r.stderr.decode("utf-8", "replace").strip().splitlines() or ["no message"])[-1])
+        return r.stdout
+
+    for c in (base, sha):
+        try:
+            git("cat-file", "-e", f"{c}^{{commit}}")
+        except ValueError:
+            raise ValueError(f"the commit {c} is not in the clone at {repo}: fetch it, then run again")
+    merge_base = git("merge-base", base, sha).decode().strip()
+    return patch_identity(git(*GIT_DIFF, merge_base, sha, "--"))[0]
+
+
+def git_matches(repo, reviewed, head, parent, same_tree, result):
+    """The rule patch_identity from git, for a review of an older head where the forge gives no
+    diff: the merged content is the final head's by the forge's own tree equality, and git in the
+    clone gives the reviewed head's change and the final head's change, each against its merge base
+    with PARENT (the merge commit's first parent, as the forge names it), the same identity. Git's
+    identity is never taken for the merged change itself."""
+    result = {**result, "identity_source": "git", "base_parent_sha": parent}
+    if not same_tree:
+        return {**result, "status": "failed",
+                "detail": "the forge gives no diff, and the merged tree is not the final head's: a review of an older "
+                          "head carries over on git's identity only when the forge shows the merged content is the "
+                          "final head's (equal trees); re-review at the final head"}
+    try:
+        was_reviewed, final_change = git_change_identity(repo, parent, reviewed), git_change_identity(repo, parent, head)
+    except ValueError as e:
+        return {**result, "status": "failed",
+                "detail": f"the forge gives no diff, and git could not compute the patch identity ({e})"}
+    result["patch_identity"] = {"reviewed_change": was_reviewed, "final_head_change": final_change}
+    if was_reviewed == final_change:
+        return {**result, "status": "passed", "rule": "patch_identity"}
+    return {**result, "status": "failed",
+            "detail": "the forge gives no diff, and in git the final head's change is not the reviewed change: "
+                      "re-review at the final head"}
+
+
 def tree_of(commit):
     """The tree SHA: top level on GitHub's git/commits, under "commit" on Gitea's."""
     tree = commit.get("tree") or (commit.get("commit") or {}).get("tree") or {}
@@ -980,6 +1048,9 @@ def add_arguments(p):
     p.add_argument("--merger", action="append", default=[], help="allowlist of accounts that may merge, repeatable")
     p.add_argument("--bot-account", action="append", default=[], help="treat this account as a bot, repeatable")
     p.add_argument("--known-flaky", action="append", default=[], help="check/status name to report as known flaky, repeatable")
+    p.add_argument("--repo", metavar="DIR",
+                   help="a local clone: where the forge gives no diff, the patch identity that carries a review of an "
+                        "older head over is computed by git there (never fetched; reported as identity_source git)")
     return p
 
 
