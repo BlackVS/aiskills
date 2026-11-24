@@ -938,42 +938,65 @@ def patch_identity(diff):
     return hashlib.sha256(b"\n".join(kept)).hexdigest(), files
 
 
-# Every option that configuration could change in the diff's text is fixed here, so the identity
-# git gives in one clone is the identity it gives in any other for the same two commits.
+# What git answers depends on the clone's local state as well as on the two SHAs. Each such input
+# is pinned here, refused, or harmless (it can only make the identities differ or git fail):
+# - the caller's environment: every GIT_* variable is dropped (GIT_DIR, GIT_WORK_TREE, the object
+#   directories, GIT_CONFIG_*), and only the ones below are set;
+# - system and global configuration and attributes are not read; the clone's own configuration is,
+#   so every key that changes the diff's text is overridden by an option or a -c below;
+# - replace refs, grafts and the commit-graph (a cache that git trusts for parents) are not used;
+# - nothing is fetched: lazy fetching is off, and a partial or shallow clone is refused (a shallow
+#   clone's merge base is not the real one; GIT_NO_LAZY_FETCH needs git 2.44).
 GIT_DIFF = ("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3",
-            "--inter-hunk-context=0", "--diff-algorithm=myers", "--indent-heuristic", "--submodule=short",
-            "--src-prefix=a/", "--dst-prefix=b/", "-O" + os.devnull)  # no order file: git's own path order
-GIT_CONFIG = ("-c", "core.quotePath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
-              "-c", "diff.relative=false", "-c", "diff.suppressBlankEmpty=false")
+            "--inter-hunk-context=0", "--diff-algorithm=myers", "--indent-heuristic", "--no-relative",
+            "--ignore-submodules=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
+            "-O" + os.devnull)  # no order file: git's own path order
+GIT_CONFIG = ("--no-replace-objects", "-c", "core.quotePath=true", "-c", "diff.noprefix=false",
+              "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false", "-c", "diff.suppressBlankEmpty=false",
+              "-c", "diff.renames=true", "-c", f"core.attributesFile={os.devnull}", "-c", "core.commitGraph=false",
+              "-c", "core.fsmonitor=false")
+GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1",
+           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull, "GIT_NO_LAZY_FETCH": "1",
+           "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
 GIT_TIMEOUT = 60
+
+
+def git_env():
+    """The process environment without the caller's GIT_* variables, plus GIT_ENV."""
+    return {**{k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}, **GIT_ENV}
 
 
 def git_change_identity(repo, base, sha):
     """patch_identity of SHA's change against its merge base with BASE, as git computes it in the
-    clone at REPO. Both are full SHAs the forge named; a commit's SHA fixes its content, so the clone
-    cannot show another change under them. Nothing is fetched: a commit the clone lacks is a
-    ValueError that says so."""
+    clone at REPO. Both are full SHAs the forge named. Nothing is fetched: a commit the clone lacks
+    is a ValueError that says so, and so is a partial or a shallow clone."""
     for c in (base, sha):
         if not re.fullmatch(r"[0-9a-f]{40}", c or ""):
             raise ValueError(f"{c!r} is not a full 40-digit SHA")
 
-    def git(*args):
+    def run(*args):
         try:
-            r = subprocess.run(["git", "-C", str(repo), *GIT_CONFIG, *args], capture_output=True,
-                               stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT)
+            return subprocess.run(["git", "-C", str(repo), *GIT_CONFIG, *args], capture_output=True,
+                                  stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT, env=git_env())
         except FileNotFoundError:
             raise ValueError("git is not installed")
         except subprocess.TimeoutExpired:
             raise ValueError(f"git did not answer within {GIT_TIMEOUT} seconds")
+
+    def git(*args):
+        r = run(*args)
         if r.returncode != 0:
             raise ValueError(f"git {args[0]} failed in {repo}: "
                              + (r.stderr.decode("utf-8", "replace").strip().splitlines() or ["no message"])[-1])
         return r.stdout
 
+    if git("rev-parse", "--is-shallow-repository").strip() != b"false":
+        raise ValueError(f"the clone at {repo} is shallow, so its merge base is not the real one: use a full clone")
+    promisor = run("config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$")
+    if promisor.returncode == 0 and promisor.stdout.strip():
+        raise ValueError(f"the clone at {repo} is a partial clone, which fetches what it lacks: use a full clone")
     for c in (base, sha):
-        try:
-            git("cat-file", "-e", f"{c}^{{commit}}")
-        except ValueError:
+        if run("cat-file", "-e", f"{c}^{{commit}}").returncode != 0:
             raise ValueError(f"the commit {c} is not in the clone at {repo}: fetch it, then run again")
     merge_base = git("merge-base", base, sha).decode().strip()
     return patch_identity(git(*GIT_DIFF, merge_base, sha, "--"))[0]

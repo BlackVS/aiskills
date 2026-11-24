@@ -124,10 +124,14 @@ Gitea the compare diff needs Gitea 1.27 (`?output=diff`); an older Gitea
 gives `unknown` for a review of an older head: re-review at the current head,
 or name a local clone with `--repo DIR`. Where the forge gives no diff, git
 computes both identities in that clone (each head against its merge base with
-the base tip, with the diff options fixed so configuration cannot change the
-text) and the review says `identity_source: git`; where the forge gives the
-diff, `--repo` is not used and the source is `forge`. Nothing is fetched: a
-commit the clone lacks gives `unknown` with "fetch it".
+the base tip) and the review says `identity_source: git`; where the forge gives
+the diff, `--repo` is not used and the source is `forge`. The clone's local
+state cannot change the answer: the caller's `GIT_*` environment, system and
+global configuration, replace refs, grafts and the commit-graph are not used,
+and every diff option the clone's own configuration could change is fixed,
+submodule changes included. Nothing is fetched: a partial or a shallow clone
+gives `unknown` (use a full clone), and so does a commit the clone lacks
+("fetch it").
 
 ### merge-check
 

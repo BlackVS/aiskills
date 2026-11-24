@@ -718,6 +718,26 @@ class PostContract(Gates):
 class GitHubGates(GatesContract, unittest.TestCase):
     forge = "github"
 
+    def test_a_compare_the_forge_cannot_serve_falls_back_to_git_with_repo(self):
+        # a 404 from the compare (a head no longer on the forge, for example): with --repo, git
+        # computes both identities; the full SHAs name the same commits in the clone
+        self.clone, shas = tvd.real_repo(self.tmp)
+        r = self.repo
+        self.pr["head"]["sha"] = shas["H"]
+        self.publish_pr()
+        self.fake.set(f"{r}/branches/main", {"name": "main", "commit": {"sha": shas["T"]}})
+        self.fake.set(f"{r}/commits/{shas['H']}/check-runs?filter=latest", {"check_runs": self.runs})
+        self.fake.set(f"{r}/commits/{shas['H']}/status", {"state": "success", "statuses": self.statuses})
+        self.comments[:] = []
+        self.comment(review("local", shas["H"]), author="author", minutes=-60, association="MEMBER")
+        self.comment(review("example-bot", shas["O"]), minutes=-10)
+        code, doc = self.gates()
+        self.assertEqual((code, self.review_of(doc)["status"]), (4, "unknown"), "no compare, no --repo: unknown")
+        code, doc = self.gates("--repo", str(self.clone))
+        rv = self.review_of(doc)
+        self.assertEqual((code, rv["status"], rv.get("carried_from"), rv["identity_source"]),
+                         (0, "ready", shas["O"], "git"), json.dumps(doc, indent=1))
+
     def test_ci_counts_check_runs_and_statuses(self):
         code, doc = self.gates()
         self.assertEqual([r["name"] for r in self.check(doc, "ci")["runs"]], ["tests", "ci/legacy"])

@@ -16,12 +16,16 @@ content fixes inside existing skills. The current version is in `VERSION`.
   JSON instead of a diff, so a review of an older head could not be
   carried over a base-only update and the gates asked for a re-review.
   Where the forge gives no diff, git now computes the change identity in
-  the named clone, with the diff options fixed so configuration cannot
-  change it, and the result says `identity_source: git`. `gates` uses
-  git for both identities it compares; the delivery check uses it only
-  when the forge's trees show the merged content is the final head's,
-  and never for the merged change itself. Nothing is fetched: a commit
-  the clone lacks is reported with "fetch it". Where the forge gives the
+  the named clone, and the result says `identity_source: git`. The
+  clone's local state cannot change the answer: the caller's `GIT_*`
+  environment, system and global configuration, replace refs, grafts and
+  the commit-graph are not used, and every diff option the clone's own
+  configuration could change is fixed, submodule changes included.
+  `gates` uses git for both identities it compares; the delivery check
+  uses it only when the forge's trees show the merged content is the
+  final head's, and never for the merged change itself. Nothing is
+  fetched: a partial or a shallow clone is refused, and a commit the
+  clone lacks is reported with "fetch it". Where the forge gives the
   diff, nothing changes.
 
 ### Changed

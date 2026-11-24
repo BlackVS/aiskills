@@ -1896,44 +1896,130 @@ class References(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout)["verdict"], "not_confirmed")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class GitIdentity(unittest.TestCase):
-    """git_change_identity on real commits: the same change on a moved base keeps its identity,
-    another change does not, and configuration that would change the diff's text is overridden."""
+    """git_change_identity on real commits. The same change on a moved base keeps its identity and
+    another change does not; the clone's local state (configuration, the caller's environment,
+    replace refs, grafts, submodule settings) cannot change what it computes, and a clone that would
+    fetch or has no real merge base is refused."""
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="git-identity-"))
         self.repo, self.shas = real_repo(self.tmp)
+        self.env = git_env(self.tmp, helper=False)
 
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def identity(self, base, sha):
-        return vd.git_change_identity(self.repo, self.shas[base], self.shas[sha])
+    def git(self, *args, repo=None):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                              cwd=repo or self.repo, env=self.env, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def identity(self, base, sha, repo=None):
+        return vd.git_change_identity(repo or self.repo, self.shas.get(base, base), self.shas.get(sha, sha))
 
     def test_a_base_only_update_keeps_the_identity(self):
         self.assertEqual(self.identity("B0", "O"), self.identity("T", "H"))
         self.assertNotEqual(self.identity("T", "H"), self.identity("T", "S"))
 
-    def test_configuration_does_not_change_the_identity(self):
+    def test_the_clones_configuration_does_not_change_the_identity(self):
         # B0..H changes two files, so an order file that reverses git's own order would show
         clean = self.identity("B0", "H")
-        noisy = self.tmp / "noisy-gitconfig"
         order = self.tmp / "order"
         order.write_bytes(b"notes.txt\napp.py\n")
-        noisy.write_bytes(("[diff]\n\tnoprefix = true\n\tmnemonicPrefix = true\n\tcontext = 1\n"
-                           "\tinterHunkContext = 5\n\talgorithm = histogram\n\trenames = false\n"
-                           f"\torderFile = {order.as_posix()}\n\tsuppressBlankEmpty = true\n"
-                           "[core]\n\tquotePath = false\n").encode())
-        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(noisy), "GIT_CONFIG_NOSYSTEM": "1"}):
-            self.assertEqual(self.identity("B0", "H"), clean)
+        attributes = self.tmp / "attributes"
+        attributes.write_bytes(b"*.py binary\n")
+        for key, value in [("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"), ("diff.context", "1"),
+                           ("diff.interHunkContext", "5"), ("diff.algorithm", "histogram"), ("diff.renames", "false"),
+                           ("diff.orderFile", order.as_posix()), ("diff.suppressBlankEmpty", "true"),
+                           ("diff.relative", "true"), ("core.quotePath", "false"), ("diff.external", "false"),
+                           ("core.attributesFile", attributes.as_posix()), ("diff.ignoreSubmodules", "all")]:
+            self.git("config", "--local", key, value)
+        self.assertEqual(self.identity("B0", "H"), clean)
+
+    def test_a_diff_driver_from_the_clones_attributes_does_not_change_the_identity(self):
+        # info/attributes (and a tracked .gitattributes) cannot be switched off by an option: a diff
+        # driver's command, textconv and algorithm are overridden, its funcname is only hunk-header text
+        clean = self.identity("B0", "H")
+        info = self.repo / ".git" / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_bytes(b"*.py diff=py\n*.txt diff=py\n")
+        for key, value in [("diff.py.command", "false"), ("diff.py.textconv", "false"),
+                           ("diff.py.algorithm", "patience"), ("diff.py.xfuncname", "^(.*)$")]:
+            self.git("config", "--local", key, value)
+        self.assertEqual(self.identity("B0", "H"), clean)
+
+    def test_the_callers_git_environment_is_not_used(self):
+        clean = self.identity("T", "H")
+        other = self.tmp / "other"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q", str(other)], env=self.env, check=True)
+        noisy = {"GIT_DIR": str(other / ".git"), "GIT_CONFIG_PARAMETERS": "'diff.noprefix'='true'",
+                 "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "diff.context", "GIT_CONFIG_VALUE_0": "0",
+                 "GIT_OBJECT_DIRECTORY": str(other / ".git" / "objects"), "GIT_NO_REPLACE_OBJECTS": ""}
+        with mock.patch.dict(os.environ, noisy):
+            self.assertEqual(self.identity("T", "H"), clean)
+
+    def test_a_changed_submodule_is_part_of_the_change(self):
+        # the final head makes the reviewed edit and also moves a submodule pointer: not the same change
+        self.git("checkout", "-q", "--detach", self.shas["H"])
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{self.shas['B0']},vendor")
+        self.git("commit", "-q", "-m", "and a submodule")
+        with_gitlink = self.git("rev-parse", "HEAD")
+        self.git("config", "--local", "diff.ignoreSubmodules", "all")
+        (self.repo / ".gitmodules").write_bytes(b'[submodule "vendor"]\n\tpath = vendor\n\turl = ./vendor\n\tignore = all\n')
+        self.assertNotEqual(self.identity("T", with_gitlink), self.identity("T", "H"))
+
+    def test_replace_refs_do_not_substitute_a_commit(self):
+        different = self.identity("T", "S")
+        self.git("replace", self.shas["S"], self.shas["H"])
+        self.assertEqual(self.git("rev-parse", f"{self.shas['S']}^{{tree}}"), self.git("rev-parse", f"{self.shas['H']}^{{tree}}"),
+                         "the replace ref is in force for plain git")
+        self.assertEqual(self.identity("T", "S"), different)
+        self.assertNotEqual(self.identity("T", "S"), self.identity("T", "H"))
+
+    def test_grafts_do_not_move_the_merge_base(self):
+        clean = self.identity("T", "H")
+        grafts = self.repo / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_bytes(f"{self.shas['H']} {self.shas['B0']}\n".encode())
+        self.assertEqual(self.identity("T", "H"), clean)
+
+    def test_a_shallow_clone_is_refused(self):
+        # depth 2 holds both H and its parent T, so only the refusal can stop it
+        clone = self.tmp / "depth-2"
+        subprocess.run(["git", "clone", "-q", "--depth", "2", "--no-local", "--branch", "updated",
+                        self.repo.resolve().as_uri(), str(clone)], env=self.env, check=True, capture_output=True)
+        with self.assertRaisesRegex(ValueError, "is shallow, so its merge base is not the real one"):
+            self.identity("T", "H", repo=clone)
+
+    def test_a_partial_clone_is_refused(self):
+        for key in ("remote.origin.promisor", "remote.origin.partialclonefilter", "extensions.partialClone"):
+            with self.subTest(key):
+                clone = self.tmp / f"partial-{key.replace('.', '-')}"
+                subprocess.run(["git", "clone", "-q", "--no-local", self.repo.resolve().as_uri(), str(clone)],
+                               env=self.env, check=True, capture_output=True)
+                self.git("config", "--local", key, "blob:none" if "filter" in key else "true" if "promisor" in key else "origin",
+                         repo=clone)
+                with self.assertRaisesRegex(ValueError, "partial clone"):
+                    self.identity("T", "H", repo=clone)
 
     def test_only_full_shas_and_commits_in_the_clone(self):
         with self.assertRaisesRegex(ValueError, "full 40-digit SHA"):
             vd.git_change_identity(self.repo, self.shas["T"], self.shas["H"][:12])
         with self.assertRaisesRegex(ValueError, "not in the clone"):
             vd.git_change_identity(self.repo, self.shas["T"], "e" * 40)
+
+    def test_git_missing_or_slow_is_not_reported_as_a_missing_commit(self):
+        for error, text in [(FileNotFoundError(), "git is not installed"),
+                            (subprocess.TimeoutExpired("git", 60), "did not answer")]:
+            with self.subTest(text), mock.patch.object(vd.subprocess, "run", side_effect=error):
+                with self.assertRaises(ValueError) as caught:
+                    self.identity("T", "H")
+                self.assertIn(text, str(caught.exception))
+                self.assertNotIn("fetch it", str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()
