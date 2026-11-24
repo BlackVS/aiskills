@@ -131,9 +131,10 @@ global configuration, replace refs, grafts and the commit-graph are not used,
 and every diff option the clone's own configuration could change is fixed,
 submodule changes included. Nothing is fetched. With git 2.46 or later lazy
 fetching is off, so a partial clone that lacks an object of the change gives
-`unknown`; an older git cannot be kept from fetching, so there a clone with
-any partial-clone or promisor setting gives `unknown`, whatever its value (a
-full clone with `promisor = false` included: use git 2.46 or later). A
+`unknown`. Below git 2.46, the check refuses a clone with partial-clone or
+promisor settings, because support varies by patch release: such a clone
+gives `unknown`, whatever the setting's value (a full clone with
+`promisor = false` included: use git 2.46 or later). A
 shallow clone gives `unknown` too (it has no real merge base), and so does a
 commit the clone lacks ("fetch it").
 
@@ -141,7 +142,8 @@ commit the clone lacks ("fetch it").
 
 Exactly the document and exit code `verify-delivery` produces for the same
 options: use it after the merge, before recording the pull request as
-delivered.
+delivered. That includes `--ci-repaired-by SHA` and its verdict
+`confirmed_after_repair` (exit 0), passed through unchanged.
 
 ### post-review
 
@@ -363,7 +365,7 @@ What the check does not do:
 | --- | --- | --- | --- | --- |
 | `wait-review` | review found | failed, moved, closed, merged | timeout | usage error |
 | `gates` | ready | not ready | pending | usage error |
-| `merge-check` | confirmed | not confirmed | pending | usage error |
+| `merge-check` | confirmed, or confirmed after repair (`--ci-repaired-by`) | not confirmed | pending | usage error |
 | `post-review` | posted, or would post (`--dry-run`) | refused | the forge refused or did not answer | usage error, or the token may not comment |
 | `check-links` | clean | a session link found | (none) | usage error |
 | `check-words` | clean, or off (no word file) | a private word found | (none) | usage error (no input, an unreadable word file) |

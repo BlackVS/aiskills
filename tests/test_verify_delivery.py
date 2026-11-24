@@ -1031,7 +1031,341 @@ class Verify:
         self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
 
 
-class GitHub(Verify, unittest.TestCase):
+LATER = "7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b"  # a later pull request's merge commit, for --ci-repaired-by
+
+
+class RepairCases:
+    """--ci-repaired-by on GitHub and Gitea: the merge commit's CI failed, and LATER, the merge
+    commit of pull request 43 on the same base branch, is green. Each condition is answered by the
+    forge: the ancestry by the compare API, the pull request by the forge's pull requests of a
+    commit, the checks by the later commit's own check runs or statuses."""
+
+    def repair(self, descends=True, pulls=None, later_ci=None):
+        """Serve LATER: its commit, its ancestry, its pull request and (LATER_CI edits) its CI."""
+        repo = "/repos/acme/widgets"
+        url = f"{self.fake.cfg['pr'].rsplit('/', 2)[0]}/commit/{LATER}"
+        pull = {"number": 43, "html_url": self.fake.cfg["pr"][:-2] + "43", "state": "closed", "merged": True,
+                "merged_at": "2026-09-28T10:00:00Z", "merge_commit_sha": LATER, "base": {"ref": "main"}}
+        if pulls is not None:
+            pulls(pull)
+        ci = FakeForge(self.forge).data[FORGES[self.forge]["ci"]]  # the recorded, green CI
+        runs = ci["check_runs"] if self.forge == "github" else ci["statuses"]
+        for r in runs:
+            if self.forge == "github":
+                r["html_url"] = r["html_url"].replace("/runs/500", "/runs/600")
+            else:
+                r["target_url"] = r["target_url"].replace("/runs/31", "/runs/47")
+        if later_ci:
+            later_ci(runs)
+        answer = lambda body: (lambda req: Response(200, json.dumps(body).encode()))
+        missing = lambda req: (_ for _ in ()).throw(urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))
+        o = self.fake.overrides
+        o[f"{repo}/git/commits/{LATER}"] = answer({"sha": LATER, "html_url": url, "tree": {"sha": "e" * 40}})
+        if self.forge == "github":
+            o[f"{repo}/compare/{MERGE}...{LATER}"] = answer({"status": "ahead" if descends else "diverged"})
+            o[f"{repo}/commits/{LATER}/pulls"] = answer([pull] if pull.get("number") else [])
+            o[f"{repo}/commits/{LATER}/check-runs"] = answer(ci)
+        else:
+            o[f"{repo}/compare/{LATER}...{MERGE}"] = answer({"total_commits": 0 if descends else 2, "commits": []})
+            o[f"{repo}/commits/{LATER}/pull"] = answer(pull) if pull.get("number") else missing
+            o[f"{repo}/commits/{LATER}/status"] = answer(ci)
+        return url
+
+    def failed_with_repair(self, **kw):
+        failed = self.ci_fail()
+        url = self.repair(**kw)
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        return failed, url, code, doc
+
+    def assert_not_repaired(self, code, doc, words):
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"), json.dumps(doc, indent=1))
+        ci = self.check(doc, "post_merge_ci")
+        self.assertEqual((ci["status"], ci["repaired_by"]["status"]), ("failed", "failed"))
+        self.assertIn(words, ci["repaired_by"]["detail"])
+        self.assertIn("does not repair it", ci["detail"])
+        self.assertNotIn("evidence", doc)
+
+    def test_a_later_green_merge_commit_repairs_the_post_merge_ci(self):
+        failed, url, code, doc = self.failed_with_repair()
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        self.assertEqual([c["status"] for c in doc["checks"]], ["passed"] * 3 + ["repaired"])
+        ci = self.check(doc, "post_merge_ci")
+        # the merge commit's own red run stays listed
+        self.assertEqual([r["result"] for r in ci["runs"] if r["name"] == failed], ["failed"])
+        rep = ci["repaired_by"]
+        self.assertEqual((rep["status"], rep["sha"], rep["url"], rep["failed_on_merge_commit"]),
+                         ("passed", LATER, url, [failed]))
+        self.assertEqual(rep["pull_request"]["number"], 43)
+        self.assertTrue(rep["descends_from_merge_commit"])
+        self.assertEqual({r["result"] for r in rep["runs"]}, {"passed"})
+        kinds = [e["kind"] for e in doc["evidence"]]
+        self.assertEqual(kinds[:2], ["reviewed_head", "human_merge"])
+        self.assertEqual(set(kinds[2:]), {"post_merge_ci_repaired"}, "the red merge commit's runs are no post_merge_ci evidence")
+        later = "/runs/600" if self.forge == "github" else "/runs/47"
+        self.assertTrue(all(later in e["ref"] for e in doc["evidence"][2:]))
+        self.assertLessEqual(len(doc["evidence"]), 16)
+        self.assertTrue(all(len(e["ref"].encode()) <= 512 for e in doc["evidence"]))
+
+    def test_without_the_flag_a_red_merge_commit_stays_not_confirmed(self):
+        self.ci_fail()
+        self.repair()  # a repairing commit exists, but nobody named it
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        ci = self.check(doc, "post_merge_ci")
+        self.assertEqual(ci["status"], "failed")
+        self.assertNotIn("repaired_by", ci)
+        self.assertNotIn("evidence", doc)
+        self.assertFalse([r for r in self.fake.requests if LATER in r["url"]], "nothing about the later commit is read")
+
+    def test_a_commit_that_does_not_descend_from_the_merge_commit(self):
+        _, _, code, doc = self.failed_with_repair(descends=False)
+        self.assert_not_repaired(code, doc, "does not descend from the merge commit")
+        self.assertFalse(self.check(doc, "post_merge_ci")["repaired_by"]["descends_from_merge_commit"])
+
+    def test_a_commit_that_is_no_pull_requests_merge_commit(self):
+        cases = {"no pull request": lambda p: p.clear(),
+                 "a commit inside a pull request": lambda p: p.update(merge_commit_sha="d" * 40),
+                 "an unmerged pull request": lambda p: p.update(merged=False, merged_at=None),
+                 "the delivered pull request itself": lambda p: p.update(number=42),
+                 "another base branch": lambda p: p.update(base={"ref": "release"})}
+        for name, edit in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                _, _, code, doc = self.failed_with_repair(pulls=edit)
+                self.assert_not_repaired(code, doc, "is not the merge commit of another merged pull request into main")
+
+    def test_a_failed_check_still_failing_or_absent_on_the_later_commit(self):
+        def still(runs):
+            runs[0].update(conclusion="failure") if self.forge == "github" else runs[0].update(status="failure")
+
+        cases = {"still failing": (still, "is not green"), "absent": (lambda runs: runs.pop(0), "did not run and succeed on the commit")}
+        for name, (edit, words) in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                failed, _, code, doc = self.failed_with_repair(later_ci=edit)
+                self.assert_not_repaired(code, doc, words)
+                self.assertIn(failed, self.check(doc, "post_merge_ci")["repaired_by"]["detail"])
+
+    def test_a_red_or_unfinished_run_on_the_later_commit(self):
+        def red(runs):
+            runs[-1].update(conclusion="failure") if self.forge == "github" else runs[-1].update(status="error")
+
+        def running(runs):
+            runs[-1].update(status="in_progress", conclusion=None) if self.forge == "github" else runs[-1].update(status="pending")
+
+        for name, edit in (("red", red), ("still running", running), ("no CI at all", lambda runs: runs.clear())):
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                _, _, code, doc = self.failed_with_repair(later_ci=edit)
+                self.assert_not_repaired(code, doc, "has no CI results" if name == "no CI at all" else "is not green")
+
+    def test_a_failed_check_must_run_again_not_be_skipped(self):
+        """Skipped and neutral pass on GitHub, but a check that failed has to run and succeed again."""
+        if self.forge != "github":
+            self.skipTest("only GitHub passes a check that did not run")
+        for conclusion in ("skipped", "neutral"):
+            with self.subTest(conclusion):
+                self.fake = FakeForge(self.forge)
+                failed, _, code, doc = self.failed_with_repair(later_ci=lambda runs: runs[0].update(conclusion=conclusion))
+                self.assert_not_repaired(code, doc, "did not run and succeed on the commit: " + failed)
+
+    def test_two_runs_under_the_failed_name_one_of_them_red(self):
+        def twice(runs):
+            red = copy.deepcopy(runs[0])
+            red.update(conclusion="failure", id=999) if self.forge == "github" else red.update(status="failure", id=999)
+            runs.append(red)
+
+        failed, _, code, doc = self.failed_with_repair(later_ci=twice)
+        self.assert_not_repaired(code, doc, "is not green: " + failed)
+
+    def test_only_a_present_value_of_the_expected_type_is_evidence(self):
+        """Each field of a forge answer the repair reads: absent, null or of another type refuses."""
+        repo = "/repos/acme/widgets"
+        serve = lambda body: (lambda req: Response(200, json.dumps(body).encode()))
+        compare = f"{repo}/compare/{MERGE}...{LATER}" if self.forge == "github" else f"{repo}/compare/{LATER}...{MERGE}"
+        pulls = f"{repo}/commits/{LATER}/pulls" if self.forge == "github" else f"{repo}/commits/{LATER}/pull"
+        listing = (lambda pull: serve([pull])) if self.forge == "github" else serve
+        ci = f"{repo}/commits/{LATER}/check-runs" if self.forge == "github" else f"{repo}/commits/{LATER}/status"
+        ci_key = "check_runs" if self.forge == "github" else "statuses"
+        name_key = "name" if self.forge == "github" else "context"
+        later_ci = FakeForge(self.forge).data[FORGES[self.forge]["ci"]]
+        pull = {"number": 43, "html_url": "https://example.org/pulls/43", "state": "closed", "merged": True,
+                "merged_at": "2026-09-28T10:00:00Z", "merge_commit_sha": LATER, "base": {"ref": "main"}}
+        cases = {
+            "the commit is not an object": ({f"{repo}/git/commits/{LATER}": serve([LATER])}, "is not an object"),
+            "the commit has no URL": ({f"{repo}/git/commits/{LATER}": serve({"sha": LATER})}, "gives no URL for the commit"),
+            "the commit's URL is a number": ({f"{repo}/git/commits/{LATER}": serve({"sha": LATER, "html_url": 7})},
+                                             "gives no URL for the commit"),
+            "the compare is empty": ({compare: serve({})}, "does not descend"),
+            "the compare is a list": ({compare: serve([])}, "is not an object" if self.forge == "github" else "does not descend"),
+            "the pull request's base is absent": (None, "gives no base branch for the pull request"),
+            "the pull request listing is not a list": ({pulls: serve("43")}, "is not the merge commit of another"),
+            "the pull request listing is a number": ({pulls: serve(43)}, "is not the merge commit of another"),
+            "a listed pull request is not an object": ({pulls: serve(["43"]) if self.forge == "github" else serve("43")},
+                                                       "is not the merge commit of another"),
+            "the pull request has no number": ({pulls: listing({k: v for k, v in pull.items() if k != "number"})},
+                                               "is not the merge commit of another"),
+            "its number is a string": ({pulls: listing({**pull, "number": "43"})}, "is not the merge commit of another"),
+            "its number is a boolean": ({pulls: listing({**pull, "number": True})}, "is not the merge commit of another"),
+            "it has no base": ({pulls: listing({k: v for k, v in pull.items() if k != "base"})},
+                               "is not the merge commit of another"),
+            "its base is a string": ({pulls: listing({**pull, "base": "main"})}, "is not the merge commit of another"),
+            "it has no URL": ({pulls: listing({k: v for k, v in pull.items() if k != "html_url"})},
+                              "is not the merge commit of another"),
+            "its merge commit is not a string": ({pulls: listing({**pull, "merge_commit_sha": 7})},
+                                                 "is not the merge commit of another"),
+            "its merged flag is a string": ({pulls: listing({**pull, "merged": "true", "merged_at": None})},
+                                            "is not the merge commit of another"),
+            "a later run has no name": ({ci: serve({**later_ci, ci_key: [{**r, name_key: None} for r in later_ci[ci_key]]})},
+                                        "as strings"),
+            "a later run's URL is a number": ({ci: serve({**later_ci, ci_key: [{**r, "html_url": 7, "target_url": 7}
+                                                                               for r in later_ci[ci_key]]})},
+                                              "as strings"),
+            "a later run's URL is false": ({ci: serve({**later_ci, ci_key: [{**r, "html_url": False, "target_url": False}
+                                                                            for r in later_ci[ci_key]]})},
+                                           "as strings"),
+            "a later run is not an object": ({ci: serve({**later_ci, ci_key: ["run"]})}, "is not a list of objects"),
+            "the CI page has no list": ({ci: serve({})}, "is not a list of objects"),
+            "the later CI is not found": ({ci: lambda req: (_ for _ in ()).throw(urllib.error.HTTPError(
+                req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))}, "the forge answered 404 while reading the commit's CI"),
+        }
+        if self.forge == "github":
+            cases["the compare status is absent"] = ({compare: serve({"ahead_by": 1})}, "does not descend")
+            cases["the compare status is not a string"] = ({compare: serve({"status": 1})}, "does not descend")
+        else:
+            cases["the commit count is a string"] = ({compare: serve({"total_commits": "0", "commits": []})}, "does not descend")
+            cases["the commit count is null"] = ({compare: serve({"total_commits": None, "commits": []})}, "does not descend")
+            cases["the commit count is false"] = ({compare: serve({"total_commits": False, "commits": []})}, "does not descend")
+        for name, (overrides, words) in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                if overrides is None:
+                    del self.fake.data["pull"]["base"]
+                else:
+                    self.fake.overrides.update(overrides)
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assert_not_repaired(code, doc, words)
+
+    def test_a_string_that_does_not_encode_refuses(self):
+        """JSON can carry a lone surrogate, which no output can: such a string is no evidence."""
+        repo = "/repos/acme/widgets"
+        serve = lambda body: (lambda req: Response(200, json.dumps(body).encode()))
+        ci = f"{repo}/commits/{LATER}/check-runs" if self.forge == "github" else f"{repo}/commits/{LATER}/status"
+        ci_key, name_key = ("check_runs", "name") if self.forge == "github" else ("statuses", "context")
+        url_key = "html_url" if self.forge == "github" else "target_url"
+        later_ci = FakeForge(self.forge).data[FORGES[self.forge]["ci"]]
+        bad = "\ud800"
+        cases = {"a later run's URL": ({ci: serve({**later_ci, ci_key: [{**r, url_key: r[url_key] + bad} for r in later_ci[ci_key]]})},
+                                       "as strings"),
+                 "a later run's name": ({ci: serve({**later_ci, ci_key: [{**r, name_key: r[name_key] + bad} for r in later_ci[ci_key]]})},
+                                        "as strings"),
+                 "the commit's URL": ({f"{repo}/git/commits/{LATER}": serve({"sha": LATER, "html_url": "https://example.org/c" + bad})},
+                                      "gives no URL for the commit")}
+        for name, (overrides, words) in cases.items():
+            with self.subTest(name):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                self.fake.overrides.update(overrides)
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assert_not_repaired(code, doc, words)
+                self.assertTrue(self.check(doc, "post_merge_ci")["runs"])
+
+    def test_a_failure_while_building_the_repairs_evidence_refuses(self):
+        self.ci_fail()
+        self.repair()
+        with mock.patch.object(vd, "ci_evidence", side_effect=UnicodeEncodeError("utf-8", "x", 0, 1, "surrogate")):
+            code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assert_not_repaired(code, doc, "UnicodeEncodeError while building the repair's evidence")
+        self.assertTrue(self.check(doc, "post_merge_ci")["runs"])
+
+    def test_a_second_ci_page_without_its_list_refuses(self):
+        """The first page holds the green rerun; the second, which the forge links to, has no list."""
+        ci_path = "/repos/acme/widgets/commits/" + LATER + ("/check-runs" if self.forge == "github" else "/status")
+        later_ci = FakeForge(self.forge).data[FORGES[self.forge]["ci"]]
+        api = FORGES[self.forge]["api"]
+
+        def paged(req):
+            if "page=2" in req.full_url:
+                return Response(200, b"{}")
+            return Response(200, json.dumps(later_ci).encode(), {"Link": f'<{api}{ci_path}?page=2>; rel="next"'})
+
+        self.ci_fail()
+        self.repair()
+        self.fake.overrides[ci_path] = paged
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assert_not_repaired(code, doc, "is not a list of objects")
+        self.assertTrue(any("page=2" in r["url"] for r in self.fake.requests), "the second page was read")
+
+    def test_the_merge_commits_own_ci_read_is_the_same_with_the_flag(self):
+        """Check 4's reading of the merge commit is untouched: byte for byte, with and without the flag."""
+        self.ci_fail()
+        self.repair()
+        _, without = self.run_vd()
+        _, with_flag = self.run_vd("--ci-repaired-by", LATER)
+        own = lambda doc: json.dumps({k: v for k, v in self.check(doc, "post_merge_ci").items()
+                                      if k in ("merge_commit_sha", "runs", "known_flaky_failures")}, sort_keys=True)
+        self.assertEqual(own(with_flag), own(without))
+        self.assertEqual([c for c in without["checks"] if c["name"] != "post_merge_ci"],
+                         [c for c in with_flag["checks"] if c["name"] != "post_merge_ci"])
+
+    def test_any_other_exception_in_a_repair_read_refuses(self):
+        for error in (LookupError("x"), ValueError("x"), AttributeError("x")):
+            with self.subTest(type(error).__name__):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                with mock.patch.object(vd, "merged_pulls", side_effect=error):
+                    code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assert_not_repaired(code, doc, f"{type(error).__name__} while reading the pull requests of the commit")
+                ci = self.check(doc, "post_merge_ci")
+                self.assertTrue(ci["runs"], "the merge commit's runs stay listed")
+
+    def test_an_outage_or_usage_error_in_a_repair_read_keeps_its_meaning(self):
+        for error, code_, verdict in ((vd.Unavailable("the forge is down"), 4, "pending"),
+                                      (vd.UsageError("another host"), 2, "not_confirmed")):
+            with self.subTest(type(error).__name__):
+                self.fake = FakeForge(self.forge)
+                self.ci_fail()
+                self.repair()
+                with mock.patch.object(vd, "repair_runs", side_effect=error):
+                    code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assertEqual((code, doc["verdict"]), (code_, verdict))
+                self.assertNotIn("evidence", doc)
+
+    def test_a_failed_run_on_the_merge_commit_without_a_name(self):
+        if self.forge == "github":
+            self.fake.data["check_runs"]["check_runs"][0].update(conclusion="failure", name=None)
+        else:
+            self.fake.data["status"]["statuses"][0].update(status="failure", context=None)
+        self.repair()
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assert_not_repaired(code, doc, "has no name to look for on the commit")
+
+    def test_the_flag_changes_nothing_when_the_merge_commit_is_green(self):
+        self.repair()
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed"))
+        ci = self.check(doc, "post_merge_ci")
+        self.assertEqual((ci["status"], ci["repaired_by"]["status"]), ("passed", "not used"))
+        self.assertEqual({e["kind"] for e in doc["evidence"]}, {"reviewed_head", "human_merge", "post_merge_ci"})
+
+    def test_the_flag_naming_the_merge_commit_itself(self):
+        self.ci_fail()
+        code, doc = self.run_vd("--ci-repaired-by", MERGE)
+        self.assert_not_repaired(code, doc, "names the merge commit itself")
+
+    def test_the_flag_takes_a_full_sha(self):
+        for value in (LATER[:12], "main", LATER + "0"):
+            with self.subTest(value):
+                code, doc = self.run_vd("--ci-repaired-by", value)
+                self.assertEqual((code, doc["error"]["kind"]), (2, "usage"))
+                self.assertIn("full 40-digit SHA", doc["error"]["message"])
+
+
+class GitHub(Verify, RepairCases, unittest.TestCase):
     forge = "github"
 
     def test_review_at_an_older_head_carries_over_a_base_only_update(self):
@@ -1067,7 +1401,7 @@ class GitHub(Verify, unittest.TestCase):
                       [i["reason"] for i in self.check(doc, "reviewed_head")["ignored"]])
 
 
-class Gitea(Verify, unittest.TestCase):
+class Gitea(Verify, RepairCases, unittest.TestCase):
     forge = "gitea"
 
     # ---- a Gitea before 1.27 gives no compare diff; with --repo, git computes the identity
@@ -1660,6 +1994,162 @@ class GitLab(unittest.TestCase):
         code = vd.main(["--pr", "acme/widgets!5", "--forge", "gitlab"], env={"GITLAB_TOKEN_FILE": str(self.token_file)}, stdout=out)
         self.assertEqual(code, 2)
         self.assertIn("--api-base is required for GitLab without a merge request URL", json.loads(out.getvalue())["error"]["message"])
+
+
+class GitLabRepair(unittest.TestCase):
+    """--ci-repaired-by on GitLab, on the recorded merge commit: its pipeline is made red, and LATER
+    is the merge commit of merge request 2 into the same target branch. GitLab answers the ancestry
+    (its merge base), the merge request (the merge requests of a commit) and the pipeline."""
+
+    def setUp(self):
+        self.case = GitLab()
+        self.case.setUp()
+        self.mr = self.case.load("merge_commit")
+        self.merged = self.mr["merge_commit_sha"]
+        self.pipeline = self.case.fake.body(f"/pipelines?sha={self.merged}")[0]
+
+    def tearDown(self):
+        self.case.tearDown()
+
+    def serve(self, merge_base=None, requests=None, pipelines=None):
+        answer = lambda body: (lambda req: Response(200, json.dumps(body).encode()))
+        later_mr = {"iid": 2, "state": "merged", "merge_commit_sha": LATER, "squash_commit_sha": None, "sha": "f" * 40,
+                    "target_branch": self.mr["target_branch"], "web_url": self.mr["web_url"][:-1] + "2"}
+        green = {**self.pipeline, "id": 9002, "sha": LATER, "web_url": self.pipeline["web_url"][:-4] + "9002"}
+        self.case.fake.overrides = {
+            f"/pipelines?sha={self.merged}": answer([{**self.pipeline, "status": "failed"}]),
+            f"/repository/commits/{LATER}/merge_requests": answer([later_mr] if requests is None else requests(later_mr)),
+            f"/repository/commits/{LATER}": answer({"id": LATER, "web_url": "https://gitlab.example.org/acme/widgets/-/commit/" + LATER,
+                                                    "parent_ids": [self.merged]}),
+            "/repository/merge_base": answer({"id": self.merged if merge_base is None else merge_base}),
+            f"/pipelines?sha={LATER}": answer([green] if pipelines is None else pipelines(green)),
+        }
+        return green
+
+    def run_vd(self, *extra):
+        return self.case.run_vd("--allow-bot-merge", *extra)
+
+    def test_a_later_green_merge_commit_repairs_the_pipeline(self):
+        green = self.serve()
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        ci = self.case.check(doc, "post_merge_ci")
+        self.assertEqual((ci["status"], [r["result"] for r in ci["runs"]]), ("repaired", ["failed"]))
+        self.assertEqual((ci["repaired_by"]["status"], ci["repaired_by"]["pull_request"]["number"]), ("passed", 2))
+        self.assertEqual([e for e in doc["evidence"] if e["kind"].startswith("post_merge_ci")],
+                         [{"kind": "post_merge_ci_repaired", "ref": green["web_url"]}])
+        asked = [urllib.parse.unquote(r["url"]) for r in self.case.fake.requests]
+        self.assertTrue(any(f"/repository/merge_base?refs[]={self.merged}&refs[]={LATER}" in u for u in asked))
+
+    def test_without_the_flag_a_red_pipeline_stays_not_confirmed(self):
+        self.serve()
+        code, doc = self.run_vd()
+        self.assertEqual((code, doc["verdict"], self.case.check(doc, "post_merge_ci")["status"]), (3, "not_confirmed", "failed"))
+        self.assertNotIn("evidence", doc)
+
+    def assert_refused(self, words, **serve):
+        self.serve(**serve)
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"), json.dumps(doc, indent=1))
+        rep = self.case.check(doc, "post_merge_ci")["repaired_by"]
+        self.assertEqual(rep["status"], "failed")
+        self.assertIn(words, rep["detail"])
+        self.assertNotIn("evidence", doc)
+
+    def test_a_commit_that_does_not_descend_from_the_merge_commit(self):
+        self.assert_refused("does not descend from the merge commit", merge_base="a" * 40)
+
+    def test_a_commit_that_is_no_merge_requests_merged_commit(self):
+        cases = {"none": lambda mr: [], "a commit inside it": lambda mr: [{**mr, "merge_commit_sha": "d" * 40}],
+                 "still open": lambda mr: [{**mr, "state": "opened"}], "this one": lambda mr: [{**mr, "iid": self.mr["iid"]}],
+                 "another target": lambda mr: [{**mr, "target_branch": "release"}]}
+        for name, requests in cases.items():
+            with self.subTest(name):
+                self.assert_refused("is not the merge commit of another merged pull request", requests=requests)
+
+    def test_only_a_present_value_of_the_expected_type_is_evidence(self):
+        cases = {"the merge base has no id": ({"merge_base": {}}, "does not descend"),
+                 "the merge base id is a number": ({"merge_base": {"id": 7}}, "does not descend"),
+                 "the merge base is a list": ({"merge_base": []}, "does not descend"),
+                 "the iid is a string": ({"requests": lambda mr: [{**mr, "iid": "2"}]}, "is not the merge commit of another"),
+                 "no iid": ({"requests": lambda mr: [{k: v for k, v in mr.items() if k != "iid"}]}, "is not the merge commit of another"),
+                 "no target branch": ({"requests": lambda mr: [{**mr, "target_branch": None}]}, "is not the merge commit of another"),
+                 "no web URL": ({"requests": lambda mr: [{**mr, "web_url": None}]}, "is not the merge commit of another"),
+                 "the listing holds a string": ({"requests": lambda mr: ["2"]}, "is not the merge commit of another"),
+                 "the pipeline's URL is a number": ({"pipelines": lambda p: [{**p, "web_url": 7}]}, "lacks a status or URL as strings"),
+                 "the pipeline's URL is false": ({"pipelines": lambda p: [{**p, "web_url": False}]}, "lacks a status or URL as strings"),
+                 "the pipeline's status is null": ({"pipelines": lambda p: [{**p, "status": None}]}, "lacks a status or URL as strings"),
+                 "the pipeline's URL does not encode": ({"pipelines": lambda p: [{**p, "web_url": p["web_url"] + "\ud800"}]},
+                                                        "lacks a status or URL as strings"),
+                 "the pipeline listing holds a string": ({"pipelines": lambda p: ["pipeline"]}, "is not a list of objects")}
+        for name, (serve, words) in cases.items():
+            with self.subTest(name):
+                merge_base = serve.pop("merge_base", None)
+                self.serve(**serve)
+                if merge_base is not None:
+                    self.case.fake.overrides["/repository/merge_base"] = lambda req, b=merge_base: Response(200, json.dumps(b).encode())
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"), name)
+                self.assertIn(words, self.case.check(doc, "post_merge_ci")["repaired_by"]["detail"])
+
+    def test_the_pipeline_is_matched_by_its_role_not_its_name(self):
+        """GitLab's one result is the latest push pipeline for the target branch; its name is not compared."""
+        for name in (None, "another pipeline"):
+            with self.subTest(name):
+                self.serve(pipelines=lambda p, n=name: [{**p, "name": n}])
+                code, doc = self.run_vd("--ci-repaired-by", LATER)
+                self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        self.assertIsNone(self.pipeline.get("name"), "the recorded pipelines carry no name")
+        # a named pipeline that failed is repaired by the later commit's pipeline, named or not
+        self.serve(pipelines=lambda p: [{**p, "name": None}])
+        self.case.fake.overrides[f"/pipelines?sha={self.merged}"] = (
+            lambda req: Response(200, json.dumps([{**self.pipeline, "status": "failed", "name": "release"}]).encode()))
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        self.assertEqual(self.case.check(doc, "post_merge_ci")["repaired_by"]["failed_on_merge_commit"], ["release"])
+
+    def test_a_commit_answer_that_is_not_an_object_refuses(self):
+        self.serve()
+        self.case.fake.overrides[f"/repository/commits/{LATER}"] = lambda req: Response(200, b"[]")
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        ci = self.case.check(doc, "post_merge_ci")
+        self.assertEqual(ci["repaired_by"]["detail"], "AttributeError while reading the commit")
+        self.assertEqual([r["result"] for r in ci["runs"]], ["failed"])
+        self.assertNotIn("evidence", doc)
+
+    def test_the_later_pipelines_not_found(self):
+        self.serve()
+        self.case.fake.overrides[f"/pipelines?sha={LATER}"] = lambda req: (_ for _ in ()).throw(
+            urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b"{}")))
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        ci = self.case.check(doc, "post_merge_ci")
+        self.assertIn("the forge answered 404 while reading the commit's CI", ci["repaired_by"]["detail"])
+        self.assertTrue(ci["runs"])
+        self.assertNotIn("evidence", doc)
+
+    def test_the_merged_commit_is_read_as_check_2_reads_it(self):
+        """A merge commit equal to the head with a distinct squash commit: the squash commit is the merged one."""
+        both = lambda mr, merged: [{**mr, "merge_commit_sha": mr["sha"], "squash_commit_sha": merged}]
+        self.serve(requests=lambda mr: both(mr, LATER))
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (0, "confirmed_after_repair"), json.dumps(doc, indent=1))
+        # and the head, which a merge commit equal to it would have named, is not the merged commit
+        self.serve(requests=lambda mr: [{**mr, "sha": LATER, "merge_commit_sha": LATER, "squash_commit_sha": "c" * 40}])
+        code, doc = self.run_vd("--ci-repaired-by", LATER)
+        self.assertEqual((code, doc["verdict"]), (3, "not_confirmed"))
+        self.assertIn("is not the merge commit of another", self.case.check(doc, "post_merge_ci")["repaired_by"]["detail"])
+
+    def test_the_failed_pipeline_still_failing_or_absent(self):
+        # GitLab's one result is the latest pipeline: its name is the check that failed
+        cases = {"still failing": (lambda p: [{**p, "status": "failed"}], "is not green"),
+
+                 "still running": (lambda p: [{**p, "status": "running"}], "is not green"),
+                 "none": (lambda p: [], "has no CI results")}
+        for name, (pipelines, words) in cases.items():
+            with self.subTest(name):
+                self.assert_refused(words, pipelines=pipelines)
 
 
 class CredentialStore(unittest.TestCase):
