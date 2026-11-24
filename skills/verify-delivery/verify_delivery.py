@@ -945,8 +945,11 @@ def patch_identity(diff):
 # - system and global configuration and attributes are not read; the clone's own configuration is,
 #   so every key that changes the diff's text is overridden by an option or a -c below;
 # - replace refs, grafts and the commit-graph (a cache that git trusts for parents) are not used;
-# - nothing is fetched: lazy fetching is off, and a partial or shallow clone is refused (a shallow
-#   clone's merge base is not the real one; GIT_NO_LAZY_FETCH needs git 2.44).
+# - nothing is fetched: from git 2.44 GIT_NO_LAZY_FETCH stops every lazy fetch, so a partial clone
+#   that lacks an object fails; an older git ignores the variable, so there any partial-clone or
+#   promisor setting refuses, whatever its value. Git decides both by its own exit status: the
+#   helper never reads a setting's value.
+# - a shallow clone is refused: its merge base is not the real one.
 GIT_DIFF = ("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3",
             "--inter-hunk-context=0", "--diff-algorithm=myers", "--indent-heuristic", "--no-relative",
             "--ignore-submodules=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
@@ -966,25 +969,21 @@ def git_env():
     return {**{k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}, **GIT_ENV}
 
 
-def partial_clone(run):
-    """Is the clone a partial clone? extensions.partialClone or a remote's partialclonefilter, set
-    at all, or a remote's promisor that reads as true. Git skips a promisor set to false; a value it
-    cannot read as a boolean counts as true."""
-    names = run("config", "--name-only", "--get-regexp",
-                r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$")
-    for name in dict.fromkeys(names.stdout.decode("utf-8", "replace").split() if names.returncode == 0 else []):
-        if not name.endswith(".promisor"):
-            return True
-        value = run("config", "--type=bool", "--get", name)
-        if value.returncode != 0 or value.stdout.strip() != b"false":
-            return True
-    return False
+NO_LAZY_FETCH = (2, 44)  # the first git that honours GIT_NO_LAZY_FETCH
+PARTIAL_CLONE_KEYS = r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$"
+
+
+def git_version(run):
+    """(major, minor) of the git that runs, or None when its version cannot be read."""
+    m = re.match(rb"git version (\d+)\.(\d+)", run("version").stdout)
+    return (int(m[1]), int(m[2])) if m else None
 
 
 def git_change_identity(repo, base, sha):
     """patch_identity of SHA's change against its merge base with BASE, as git computes it in the
     clone at REPO. Both are full SHAs the forge named. Nothing is fetched: a commit the clone lacks
-    is a ValueError that says so, and so is a partial or a shallow clone."""
+    is a ValueError that says so, and so is a shallow clone, or, on a git older than 2.44, a clone
+    with a partial-clone or promisor setting."""
     for c in (base, sha):
         if not re.fullmatch(r"[0-9a-f]{40}", c or ""):
             raise ValueError(f"{c!r} is not a full 40-digit SHA")
@@ -1007,8 +1006,13 @@ def git_change_identity(repo, base, sha):
 
     if git("rev-parse", "--is-shallow-repository").strip() != b"false":
         raise ValueError(f"the clone at {repo} is shallow, so its merge base is not the real one: use a full clone")
-    if partial_clone(run):
-        raise ValueError(f"the clone at {repo} is a partial clone, which fetches what it lacks: use a full clone")
+    version = git_version(run)
+    if version is None or version < NO_LAZY_FETCH:
+        names = run("config", "-z", "--name-only", "--get-regexp", PARTIAL_CLONE_KEYS)
+        if names.returncode not in (0, 1) or names.stdout:
+            raise ValueError(f"the clone at {repo} has a partial-clone or promisor setting, and this git "
+                             f"(older than 2.44) cannot be kept from fetching: use a full clone without them, "
+                             f"or git 2.44 or later")
     for c in (base, sha):
         if run("cat-file", "-e", f"{c}^{{commit}}").returncode != 0:
             raise ValueError(f"the commit {c} is not in the clone at {repo}: fetch it, then run again")

@@ -24,9 +24,12 @@ content fixes inside existing skills. The current version is in `VERSION`.
   `gates` uses git for both identities it compares; the delivery check
   uses it only when the forge's trees show the merged content is the
   final head's, and never for the merged change itself. Nothing is
-  fetched: a partial or a shallow clone is refused, and a commit the
-  clone lacks is reported with "fetch it". Where the forge gives the
-  diff, nothing changes.
+  fetched: with git 2.44 or later lazy fetching is off, so a partial
+  clone that lacks an object fails; an older git cannot be kept from
+  fetching, so there a clone with any partial-clone or promisor setting
+  is refused, whatever its value. A shallow clone is refused, and a
+  commit the clone lacks is reported with "fetch it". Where the forge
+  gives the diff, nothing changes.
 
 ### Changed
 

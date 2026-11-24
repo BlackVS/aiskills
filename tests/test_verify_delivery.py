@@ -1994,25 +1994,71 @@ class GitIdentity(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "is shallow, so its merge base is not the real one"):
             self.identity("T", "H", repo=clone)
 
-    def test_a_partial_clone_is_refused(self):
-        # a promisor git cannot read as a boolean refuses, like true; one set to false is skipped by
-        # git, so that full clone gives the identity it gave before the setting
+    def configured_clone(self, name, entries):
+        """A full clone of the repository with ENTRIES ((key, value), ...) added to its configuration."""
+        clone = self.tmp / name
+        subprocess.run(["git", "clone", "-q", "--no-local", self.repo.resolve().as_uri(), str(clone)],
+                       env=self.env, check=True, capture_output=True)
+        for key, value in entries:
+            self.git("config", "--local", "--add", key, value, repo=clone)
+        return clone
+
+    PARTIAL_SETTINGS = {
+        "promisor true": [("remote.origin.promisor", "true")],
+        "promisor true then false": [("remote.origin.promisor", "true"), ("remote.origin.promisor", "false")],
+        "promisor false": [("remote.origin.promisor", "false")],
+        "promisor unreadable": [("remote.origin.promisor", "maybe")],
+        "a remote named with U+00A0, promisor false": [("remote.team\u00a0backup.promisor", "false")],
+        "partialclonefilter": [("remote.origin.partialclonefilter", "blob:none")],
+        "extensions.partialClone": [("extensions.partialClone", "origin")],
+    }
+
+    def test_before_git_2_44_any_partial_clone_setting_refuses(self):
+        # an older git ignores GIT_NO_LAZY_FETCH: whether git prints a matching key decides, whatever
+        # its value, so a full clone with promisor=false is refused there (to the safe side)
+        for version in (b"git version 2.43.7\n", b"git version 1.9.0\n", b"something else\n"):
+            for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items()):
+                with self.subTest(version=version, setting=name):
+                    clone = self.configured_clone(f"old-{len(version)}-{n}", entries)
+                    with mock.patch.object(vd, "git_version", return_value=vd.git_version(
+                            lambda *a: subprocess.CompletedProcess(a, 0, version, b""))):
+                        with self.assertRaisesRegex(ValueError, "partial-clone or promisor setting"):
+                            self.identity("T", "H", repo=clone)
+
+    def test_from_git_2_44_settings_alone_refuse_nothing(self):
+        # GIT_NO_LAZY_FETCH stops every lazy fetch, so a clone holding all the objects gives its
+        # identity, whatever the settings say; the helper reads none of them
         clean = self.identity("T", "H")
-        cases = [("remote.origin.promisor", "true", True), ("remote.origin.promisor", "yes", True),
-                 ("remote.origin.promisor", "maybe", True), ("remote.origin.partialclonefilter", "blob:none", True),
-                 ("extensions.partialClone", "origin", True), ("remote.origin.promisor", "false", False),
-                 ("remote.origin.promisor", "off", False)]
-        for n, (key, value, partial) in enumerate(cases):
-            with self.subTest(key=key, value=value):
-                clone = self.tmp / f"clone-{n}"
-                subprocess.run(["git", "clone", "-q", "--no-local", self.repo.resolve().as_uri(), str(clone)],
-                               env=self.env, check=True, capture_output=True)
-                self.git("config", "--local", key, value, repo=clone)
-                if partial:
-                    with self.assertRaisesRegex(ValueError, "partial clone"):
-                        self.identity("T", "H", repo=clone)
-                else:
-                    self.assertEqual(self.identity("T", "H", repo=clone), clean)
+        for n, (name, entries) in enumerate(self.PARTIAL_SETTINGS.items()):
+            with self.subTest(setting=name):
+                clone = self.configured_clone(f"new-{n}", entries)
+                with mock.patch.object(vd, "git_version", return_value=(2, 44)):
+                    if name == "promisor unreadable":  # git itself fails on it: unknown, by git's exit status
+                        with self.assertRaisesRegex(ValueError, "bad boolean"):
+                            self.identity("T", "H", repo=clone)
+                    else:
+                        self.assertEqual(self.identity("T", "H", repo=clone), clean)
+        with mock.patch.object(vd, "git_version", return_value=(2, 43)):
+            with self.assertRaisesRegex(ValueError, "partial-clone or promisor setting"):
+                self.identity("T", "H", repo=self.tmp / "new-0")
+
+    def test_a_real_partial_clone_fetches_nothing(self):
+        # a blob:none clone lacks the blobs of the change: with this git (2.44 or later) the diff
+        # fails, the identity is unknown, and the blob is still missing afterwards
+        version = vd.git_version(lambda *a: subprocess.run(["git", *a], capture_output=True, env=self.env))
+        if version is None or version < vd.NO_LAZY_FETCH:
+            self.skipTest("needs git 2.44 or later")
+        self.git("config", "uploadpack.allowFilter", "true")
+        clone = self.tmp / "partial"
+        subprocess.run(["git", "clone", "-q", "--no-checkout", "--filter=blob:none", "--no-local",
+                        self.repo.resolve().as_uri(), str(clone)], env=self.env, check=True, capture_output=True)
+        blob = self.git("rev-parse", f"{self.shas['H']}:app.py")
+        missing = lambda: subprocess.run(["git", "cat-file", "-e", blob], cwd=clone, capture_output=True,
+                                         env={**self.env, "GIT_NO_LAZY_FETCH": "1"}).returncode != 0
+        self.assertTrue(missing(), "the clone lacks the blob")
+        with self.assertRaisesRegex(ValueError, "git diff failed"):
+            self.identity("T", "H", repo=clone)
+        self.assertTrue(missing(), "nothing was fetched")
 
     def test_only_full_shas_and_commits_in_the_clone(self):
         with self.assertRaisesRegex(ValueError, "full 40-digit SHA"):
