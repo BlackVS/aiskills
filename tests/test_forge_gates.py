@@ -604,6 +604,7 @@ class RequestContract(Gates):
         code, doc = self.request("--dry-run")
         self.assertEqual((code, doc["outcome"], doc["request"]["added"]), (0, "dry_run", False))
         self.assertEqual(self.writes(), [])
+        self.assertIn("review-this would be added", self.output)
         self.assertEqual(self.clock.sleeps, [], "no wait")
         self.put_labels("hands-reviewing")
         code, doc = self.request("--dry-run")

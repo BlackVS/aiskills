@@ -1486,8 +1486,10 @@ def request_summary(doc):
     parts = [f"{c['name']}: {c['detail']}" for c in doc.get("checks", []) if c["status"] == "failed"]
     req = doc.get("request")
     if req:
-        parts.append(f"{req['label']} " + {True: "added", False: "not added"}.get(req["added"], "may or may not be on")
-                     + (f" ({req['detail']})" if req.get("detail") else ""))
+        said = {True: "added", False: "not added"}.get(req["added"], "may or may not be on")
+        if doc["outcome"] == "dry_run":
+            said = "would be added"
+        parts.append(f"{req['label']} {said}" + (f" ({req['detail']})" if req.get("detail") else ""))
     if doc.get("review"):
         parts.append(f"{doc['review']['verdict']} at {doc['review']['url']}")
     if doc.get("error"):
