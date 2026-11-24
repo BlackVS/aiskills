@@ -1,6 +1,6 @@
 ---
 name: verify-delivery
-description: Confirm from the forge (GitHub, Gitea or GitLab) that a pull request (a GitLab merge request) was actually delivered, before recording it as done. Checks that the required reviews are READY_FOR_HUMAN_MERGE at exactly the final head, that the pull request was merged by a person, that the merged content is the reviewed content (the same tree, or the same patch identity after a base-only update), and that CI on the merge commit is green. Read-only; returns JSON with a verdict and, only when confirmed, the evidence to record. Use when a coordinator or any agent must decide whether a PR counts as delivered.
+description: Confirm from the forge (GitHub, Gitea or GitLab) that a pull request (a GitLab merge request) was actually delivered, before recording it as done. Checks that the required reviews are READY_FOR_HUMAN_MERGE at exactly the final head, that the pull request was merged by a person, that the merged content is the reviewed content (the same tree, or the same patch identity after a base-only update), and that CI on the merge commit is green (or, with --ci-repaired-by, that a named later pull request's merge commit made it green). Read-only; returns JSON with a verdict and, only when confirmed, the evidence to record. Use when a coordinator or any agent must decide whether a PR counts as delivered.
 ---
 
 # Verify delivery
@@ -28,7 +28,7 @@ Before the merge, correct a slip with a new comment naming the head.
 
 ## What it checks
 
-All four must pass for the verdict `confirmed`:
+All four must pass for the verdict `confirmed` (check 4 may instead be `repaired`, for the verdict `confirmed_after_repair`):
 
 1. **Reviewed head.** The PR's final head commit is taken from the forge.
    The required reviews must be `READY_FOR_HUMAN_MERGE`: the latest review
@@ -139,10 +139,11 @@ All four must pass for the verdict `confirmed`:
    identity is never taken for the merged change itself. The entry says
    `identity_source: git`. Nothing is fetched: a commit the clone lacks
    fails with "fetch it". With git 2.46 or later lazy fetching is off, so a
-   partial clone that lacks an object of the change fails; an older git
-   cannot be kept from fetching, so there a clone with any partial-clone or
-   promisor setting fails, whatever its value (a full clone with
-   `promisor = false` included: use git 2.46 or later).
+   partial clone that lacks an object of the change fails. Below git 2.46,
+   the check refuses a clone with partial-clone or promisor settings,
+   because support varies by patch release: such a clone fails, whatever
+   the setting's value (a full clone with `promisor = false` included: use
+   git 2.46 or later).
 
    On GitLab commits carry no tree id, so `tree_equality` holds when a
    straight compare of the head and the merged commit has no diffs
@@ -213,6 +214,29 @@ All four must pass for the verdict `confirmed`:
    list with `--known-flaky` is reported separately as `failed: known flaky`,
    and the delivery is still **not confirmed**.
 
+   **A red merge commit repaired by a later pull request.** When CI failed on
+   the merge commit and the next pull request fixed it, the merge commit's
+   run stays red for good. Name that later pull request's merge commit with
+   `--ci-repaired-by SHA` (the full SHA; it is never inferred). The check is
+   then `repaired`, and the verdict `confirmed_after_repair`, only when each
+   of these holds, each answered by the forge itself:
+   - the commit descends from the merge commit: GitHub's compare status is
+     `ahead`, Gitea's compare lists no commit of the merge commit missing
+     from it (Gitea 1.22 or later), or GitLab's merge base of the two is the
+     merge commit;
+   - it is the merge commit of another merged pull request into the same
+     base branch, as the forge lists the pull requests of a commit (on
+     GitLab its merged commit, read as for check 2);
+   - every check that failed on the merge commit ran on it under the same
+     name, and all its checks passed, read as above (on GitLab its latest
+     push pipeline for the target branch).
+
+   Otherwise the check stays `failed`, and `repaired_by` says which condition
+   failed. The merge commit's failed runs stay listed in `runs` either way.
+   Without the flag nothing changes: a red merge commit is `not_confirmed`.
+   With the flag and a merge commit whose CI did not fail, the flag is not
+   used (`repaired_by.status` is `not used`).
+
 ## How to call it
 
 The helper is `verify_delivery.py` next to this file (Python 3, standard
@@ -281,32 +305,44 @@ Options for the checks:
 | `--accept-short-head-sha` | off | Accept a review that names the final head by an abbreviated SHA (posted before 1.32.1), skipping GitLab's uniqueness check too; reported as `"short_head_sha": "accepted"`. |
 | `--allow-bot-merge` | off | Accept a merge by a bot or app. |
 | `--known-flaky NAME` (repeatable) | none | Report this check's failure as `failed: known flaky` (still not confirmed). |
+| `--ci-repaired-by SHA` | none | The full SHA of a later pull request's merge commit whose green CI repairs the merge commit's failed CI; see check 4. The verdict is then `confirmed_after_repair`. |
 | `--repo DIR` | none | A full local clone in which git computes the patch identity of a review of an older head when the forge gives no diff (Gitea before 1.27). Never fetched; a shallow clone is refused, and on a git older than 2.46 a clone with a partial-clone or promisor setting; see check 3. |
 
 ## Reading the result
 
 One JSON document on stdout:
 
-- `verdict`: `confirmed`, `not_confirmed` or `pending`.
+- `verdict`: `confirmed`, `confirmed_after_repair`, `not_confirmed` or
+  `pending`.
 - `checks`: one entry per check (`reviewed_head`, `merge`, `tree_equality`,
-  `post_merge_ci`) with its `status` (`passed`, `failed`, `pending`) and the
+  `post_merge_ci`) with its `status` (`passed`, `failed`, `pending`, and for
+  `post_merge_ci` also `repaired`) and the
   details: SHAs, URLs, the reviews found (with the author rule that applied)
   and the comments ignored with the reason and, for an author reason, the
   login; `reviewed_head` also says `author_check` (`enabled` or `disabled`).
   Who merged and their account type, each CI run with its result.
-- `evidence`: present **only** when the verdict is `confirmed`: a list of
+  With `--ci-repaired-by`, `post_merge_ci` carries `repaired_by`: the
+  commit, its URL, its pull request, its runs, the names that failed on the
+  merge commit, and its `status` with the reason.
+- `evidence`: present **only** when the verdict is `confirmed` or
+  `confirmed_after_repair`: a list of
   `{kind, ref}` to record as they are, with at most 16 entries, each ref at
   most 512 bytes:
   - `reviewed_head`: the reviewed head commit's URL;
   - `human_merge`: the pull (or merge) request's URL;
   - `post_merge_ci`: the CI run URLs (on GitLab the pipeline's; the merge
-    commit's URL when there are too many runs to list).
+    commit's URL when there are too many runs to list);
+  - `post_merge_ci_repaired`, in place of `post_merge_ci` after a repair:
+    the later merge commit's CI run URLs, in the same form (that commit's
+    URL when there are too many). The merge commit's own red runs are never
+    `post_merge_ci` evidence.
 - `error`: present when the run could not complete, with its `kind`
   (`usage`, `unavailable`, `not_found`).
 
 | Exit code | Verdict | What to do |
 | --- | --- | --- |
 | 0 | `confirmed` | Record the `evidence` entries. |
+| 0 | `confirmed_after_repair` | Delivered, but CI on the merge commit failed and the later merge commit you named is green. Record the `evidence` entries; the repair is in `post_merge_ci_repaired`. A consumer that compares the verdict with `confirmed` sees a value it does not know and records nothing until it learns this one; one that reads only the exit code records the delivery. |
 | 3 | `not_confirmed` | Do not record delivery. Report the failed checks. |
 | 4 | `pending` | Do not record delivery. CI is running, the PR is not merged yet, or the forge (or a diff for the patch identity) was unavailable: check again later. |
 | 2 | (usage) | Fix the invocation: the reference, `--api-base`, the token (the credential helper's entry or the token file), a pattern. Also when the forge redirects or its next-page link points to another host (use the API base and repository name the forge uses now). Nothing was verified. |

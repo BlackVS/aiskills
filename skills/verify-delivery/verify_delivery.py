@@ -12,12 +12,15 @@ pushes. Standard library only.
         --api-base https://git.example.org/api/v1
     GITLAB_TOKEN_FILE=/path/to/token python3 verify_delivery.py --pr https://gitlab.example.org/GROUP/REPO/-/merge_requests/7
 
-Prints one JSON document on stdout. Exit codes: 0 confirmed, 3 not confirmed,
-4 pending or retryable (the API was unavailable), 2 usage error. See SKILL.md.
+Prints one JSON document on stdout. Exit codes: 0 confirmed (or confirmed_after_repair,
+with --ci-repaired-by), 3 not confirmed, 4 pending or retryable (the API was unavailable), 2 usage error. See SKILL.md.
 """
 import argparse, datetime, hashlib, json, os, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 EXIT_CONFIRMED, EXIT_USAGE, EXIT_NOT_CONFIRMED, EXIT_PENDING = 0, 2, 3, 4
+# confirmed_after_repair: the merge commit's own CI failed, and the later merge commit that
+# --ci-repaired-by names is green on every check; only the caller's own flag asks for this reading
+DELIVERED = ("confirmed", "confirmed_after_repair")
 TIMEOUT = 20        # seconds per request
 CREDENTIAL_TIMEOUT = 30  # seconds for Git's credential helper to answer
 MAX_PAGES = 20      # per listing; 20 pages of 50-100 items is far past any real pull request
@@ -255,7 +258,7 @@ class GitLabForge(Forge):
             merged_by = {"login": user.get("username"), "id": user.get("id"), "bot": account.get("bot")}
         return {"state": state, "merged": merged, "merged_at": mr.get("merged_at"), "merge_commit_sha": merged_sha,
                 "merged_as": merged_as, "merged_base": base, "html_url": mr.get("web_url"),
-                "head": {"sha": mr.get("sha")}, "merged_by": merged_by}
+                "head": {"sha": mr.get("sha")}, "base": {"ref": mr.get("target_branch")}, "merged_by": merged_by}
 
     def user(self, uid):
         if uid is None:
@@ -314,6 +317,22 @@ class GitLabForge(Forge):
         if not m:
             raise NotFound(path)
         return gitlab_diff(self.compare(m.group(1), m.group(2)))
+
+    def merge_base(self, a, b):
+        """GitLab's own merge base of commits A and B."""
+        return (super().get(f"/repository/merge_base?refs[]={a}&refs[]={b}").get("id") or "").lower()
+
+    def merged_requests(self, sha):
+        """The merged merge requests whose merged commit is SHA, as (iid, web URL, target branch):
+        the merge commit, else the squash commit, else (a fast-forward) the head."""
+        found = []
+        for mr in super().pages(f"/repository/commits/{sha}/merge_requests"):
+            if mr.get("state") != "merged":
+                continue
+            merged = mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or mr.get("sha")
+            if (merged or "").lower() == sha:
+                found.append((mr.get("iid"), mr.get("web_url") or "", mr.get("target_branch")))
+        return found
 
     def pipelines(self, sha):
         target = urllib.parse.quote(self.mr.get("target_branch") or "", safe="")
@@ -586,6 +605,74 @@ def ci_evidence(runs, fallback):
     return urls
 
 
+def descends(forge, kind, ancestor, sha):
+    """Whether commit SHA descends from commit ANCESTOR (and is not it), as the forge answers:
+    GitHub's compare status, GitLab's merge base, and on Gitea a compare that lists no commit of
+    ANCESTOR missing from SHA. (answer, how the forge said it)."""
+    if kind == "github":
+        status = forge.get(f"/compare/{ancestor}...{sha}").get("status")
+        return status == "ahead", f"GitHub's compare status is {status!r}"
+    if kind == "gitlab":
+        base = forge.merge_base(ancestor, sha)
+        return base == ancestor, f"GitLab's merge base of the two is {base or 'none'}"
+    try:
+        data = forge.get(f"/compare/{sha}...{ancestor}")
+    except NotFound:
+        return False, "this Gitea has no compare API (Gitea before 1.22)"
+    missing = data.get("total_commits", len(data.get("commits") or []))
+    return missing == 0, f"Gitea's compare lists {missing} commit(s) of the merge commit missing from it"
+
+
+def merged_pulls(forge, kind, sha):
+    """The merged pull requests whose merge commit is SHA, as the forge lists them: [(number, URL,
+    base branch)]. GitHub lists the pull requests of a commit, Gitea gives the one a commit merged,
+    GitLab the merge requests of a commit."""
+    if kind == "gitlab":
+        return forge.merged_requests(sha)
+    if kind == "github":
+        pulls = forge.pages(f"/commits/{sha}/pulls")
+    else:
+        pull = forge.get_or_none(f"/commits/{sha}/pull")
+        pulls = [pull] if pull else []
+    return [(p.get("number"), p.get("html_url") or "", (p.get("base") or {}).get("ref")) for p in pulls
+            if p.get("merged") or p.get("merged_at") if (p.get("merge_commit_sha") or "").lower() == sha]
+
+
+def ci_repair(forge, kind, pr, number, merge_sha, runs, sha):
+    """The --ci-repaired-by check: the merge commit's failed checks were made green by SHA, a later
+    pull request's merge commit on the same base branch. Every condition is the forge's own answer.
+    Returns the repaired_by record, with status passed or failed and the reason."""
+    failed = sorted({r["name"] for r in runs if r["result"] in ("failed", "failed: known flaky")})
+    rep = {"sha": sha, "failed_on_merge_commit": failed}
+    if sha == merge_sha:
+        return {**rep, "status": "failed", "detail": "--ci-repaired-by names the merge commit itself"}
+    commit = forge.get_or_none(f"/git/commits/{sha}")
+    if commit is None:
+        return {**rep, "status": "failed", "detail": "the forge does not know the commit --ci-repaired-by names"}
+    rep["url"] = commit.get("html_url") or ""
+    later, how = descends(forge, kind, merge_sha, sha)
+    rep["descends_from_merge_commit"] = later
+    if not later:
+        return {**rep, "status": "failed", "detail": f"the commit does not descend from the merge commit ({how})"}
+    base = (pr.get("base") or {}).get("ref")
+    pulls = [p for p in merged_pulls(forge, kind, sha) if p[0] != number and p[2] == base]
+    if not pulls:
+        return {**rep, "status": "failed", "detail": f"the commit is not the merge commit of another merged pull "
+                                                     f"request into {base or 'the same base branch'}"}
+    rep["pull_request"] = {"number": pulls[0][0], "url": pulls[0][1]}
+    later_runs = rep["runs"] = ci_results(kind, sha, forge, set())
+    if not later_runs:
+        return {**rep, "status": "failed", "detail": "the commit has no CI results"}
+    not_green = sorted({r["name"] for r in later_runs if r["result"] != "passed"})
+    if not_green:
+        return {**rep, "status": "failed", "detail": "the commit's CI is not green: " + ", ".join(map(str, not_green))}
+    absent = [n for n in failed if n not in {r["name"] for r in later_runs}]
+    if absent:
+        return {**rep, "status": "failed", "detail": "a check that failed on the merge commit did not run on the "
+                                                     "commit: " + ", ".join(map(str, absent))}
+    return {**rep, "status": "passed"}
+
+
 def verify(args, forge, kind, number):
     checks = []
     pr = forge.get_or_none(f"/pulls/{number}")
@@ -688,6 +775,18 @@ def verify(args, forge, kind, number):
         ci["status"], ci["detail"] = "pending", "CI is still running on the merge commit"
     else:
         ci["status"] = "passed"
+    repaired_by = getattr(args, "ci_repaired_by", None)
+    if repaired_by and ci["status"] == "failed":
+        rep = ci["repaired_by"] = ci_repair(forge, kind, pr, number, merge_sha, runs, repaired_by)
+        if rep["status"] == "passed":
+            ci["status"] = "repaired"
+            ci["detail"] = (f"the merge commit's CI failed, and the later merge commit {repaired_by} (--ci-repaired-by) "
+                            "is green on every check, those that failed here included")
+        else:
+            ci["detail"] = f"the merge commit's CI failed, and --ci-repaired-by does not repair it: {rep['detail']}"
+    elif repaired_by:
+        ci["repaired_by"] = {"sha": repaired_by, "status": "not used",
+                             "detail": "only a failed post-merge CI is read against --ci-repaired-by"}
     checks.append(ci)
     return checks, pr_url, head_url, merge_url, runs
 
@@ -1051,9 +1150,14 @@ def tree_of(commit):
     return (tree.get("sha") or "").lower() or None
 
 
-def evidence_for(pr_url, head_url, merge_url, runs):
+def evidence_for(pr_url, head_url, merge_url, runs, repaired=None):
+    """The evidence of a confirmed delivery. After a repair the merge commit's own runs are red, so
+    they are not post_merge_ci evidence: the later commit's runs are, as post_merge_ci_repaired."""
     ev = [{"kind": "reviewed_head", "ref": head_url}, {"kind": "human_merge", "ref": pr_url}]
-    ev += [{"kind": "post_merge_ci", "ref": u} for u in ci_evidence(runs, merge_url)]
+    if repaired:
+        ev += [{"kind": "post_merge_ci_repaired", "ref": u} for u in ci_evidence(repaired["runs"], repaired["url"])]
+    else:
+        ev += [{"kind": "post_merge_ci", "ref": u} for u in ci_evidence(runs, merge_url)]
     if len(ev) > MAX_EVIDENCE or any(not e["ref"] or len(e["ref"].encode()) > MAX_REF for e in ev):
         return None
     return ev
@@ -1089,6 +1193,9 @@ def add_arguments(p):
     p.add_argument("--merger", action="append", default=[], help="allowlist of accounts that may merge, repeatable")
     p.add_argument("--bot-account", action="append", default=[], help="treat this account as a bot, repeatable")
     p.add_argument("--known-flaky", action="append", default=[], help="check/status name to report as known flaky, repeatable")
+    p.add_argument("--ci-repaired-by", metavar="SHA",
+                   help="the full SHA of a later pull request's merge commit whose green CI repairs the merge commit's "
+                        "failed CI (verdict confirmed_after_repair); never inferred")
     p.add_argument("--repo", metavar="DIR",
                    help="a local clone: where the forge gives no diff, the patch identity that carries a review of an "
                         "older head over is computed by git there (never fetched; reported as identity_source git)")
@@ -1141,6 +1248,10 @@ def resolve(args, env, run=subprocess.run):
         args.verdict = re.compile(args.verdict_pattern)
     except re.error:
         raise UsageError("--verdict-pattern is not a valid regular expression")
+    if args.ci_repaired_by is not None:
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", args.ci_repaired_by):
+            raise UsageError("--ci-repaired-by takes the full 40-digit SHA of a merge commit")
+        args.ci_repaired_by = args.ci_repaired_by.lower()
     # Logins are case-insensitive on GitHub and Gitea: compared lowercased, as --review-author is.
     args.bot_accounts = {login.strip().lower() for login in args.bot_account}
     args.mergers = {login.strip().lower() for login in args.merger}
@@ -1255,17 +1366,19 @@ def deliver(args, forge, kind, owner, repo, number):
     except (UsageError, Unavailable, NotFound) as e:
         return failure(e)
     statuses = {c["status"] for c in checks}
-    verdict = "not_confirmed" if "failed" in statuses else "pending" if "pending" in statuses else "confirmed"
+    verdict = ("not_confirmed" if "failed" in statuses else "pending" if "pending" in statuses
+               else "confirmed_after_repair" if "repaired" in statuses else "confirmed")
     doc = {"verdict": verdict, "pr": {"forge": kind, "repo": f"{owner}/{repo}", "number": number, "url": pr_url},
            "checks": checks}
-    if verdict == "confirmed":
-        evidence = evidence_for(pr_url, head_url, merge_url, runs)
+    if verdict in DELIVERED:
+        ci = next(c for c in checks if c["name"] == "post_merge_ci")
+        evidence = evidence_for(pr_url, head_url, merge_url, runs, ci["repaired_by"] if verdict != "confirmed" else None)
         if evidence is None:
             verdict = doc["verdict"] = "not_confirmed"
             doc["error"] = {"kind": "evidence", "message": "the evidence would not fit its limits (16 entries, 512 bytes each)"}
         else:
             doc["evidence"] = evidence
-    return doc, {"confirmed": EXIT_CONFIRMED, "pending": EXIT_PENDING}.get(verdict, EXIT_NOT_CONFIRMED)
+    return doc, EXIT_CONFIRMED if verdict in DELIVERED else EXIT_PENDING if verdict == "pending" else EXIT_NOT_CONFIRMED
 
 
 if __name__ == "__main__":

@@ -1133,9 +1133,9 @@ class MergeCheck(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def both(self, forge, edit=None):
+    def both(self, forge, edit=None, extra=()):
         cfg = tvd.FORGES[forge]
-        argv = ["--pr", cfg["pr"], *cfg["args"], *cfg.get("authors", [])]
+        argv = ["--pr", cfg["pr"], *cfg["args"], *cfg.get("authors", []), *extra]
         env = {cfg["env"]: str(self.tmp / "token")}
         results = []
         for main, args in ((vd.main, argv), (fg.main, ["merge-check", *argv])):
@@ -1161,6 +1161,25 @@ class MergeCheck(unittest.TestCase):
                     else:
                         self.assertEqual(next(c for c in doc["checks"] if c["name"] == "tree_equality")["rule"],
                                          "patch_identity")
+
+
+    def test_confirmed_after_repair_passes_through(self):
+        class Repaired(tvd.Verify, tvd.RepairCases):
+            pass
+
+        def repaired(fake):
+            case = Repaired()
+            case.forge, case.fake = fake.forge, fake
+            case.ci_fail()
+            case.repair()
+
+        for forge in ("github", "gitea"):
+            with self.subTest(forge=forge):
+                for extra, verdict, code in (((), "not_confirmed", 3),
+                                             (("--ci-repaired-by", tvd.LATER), "confirmed_after_repair", 0)):
+                    (vd_code, doc), (fg_code, fg_doc) = self.both(forge, repaired, extra)
+                    self.assertEqual((fg_code, fg_doc), (vd_code, doc))
+                    self.assertEqual((fg_code, fg_doc["verdict"]), (code, verdict))
 
 
 class MissingSibling(unittest.TestCase):

@@ -11,6 +11,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ### Added
 
+- **`verify-delivery` and `forge-gates merge-check` take `--ci-repaired-by
+  SHA`, for a merge commit whose CI a later pull request made green.** The
+  merge commit's run stays red for good, so such a delivery was recorded by
+  hand. Naming the later pull request's merge commit (the full SHA, never
+  inferred) gives the new verdict `confirmed_after_repair` with exit code
+  0, when the forge answers that the commit descends from the merge
+  commit, that it is another merged pull request's merge commit on the
+  same base branch, and that every check that failed ran there under the
+  same name and all its checks are green. The merge commit's failed runs
+  stay listed, and the evidence names the later commit's runs under the
+  new kind `post_merge_ci_repaired`. A consumer that compares the verdict
+  with `confirmed` records nothing until it knows the new value. Without
+  the flag nothing changes.
+
 - **`forge-gates` and `verify-delivery` take `--repo DIR`, a local clone
   for a Gitea before 1.27.** Such a Gitea answers its compare API with
   JSON instead of a diff, so a review of an older head could not be
@@ -25,10 +39,10 @@ content fixes inside existing skills. The current version is in `VERSION`.
   uses it only when the forge's trees show the merged content is the
   final head's, and never for the merged change itself. Nothing is
   fetched: with git 2.46 or later lazy fetching is off, so a partial
-  clone that lacks an object fails; an older git cannot be kept from
-  fetching, so there a clone with any partial-clone or promisor setting
-  is refused, whatever its value. A shallow clone is refused, and a
-  commit the clone lacks is reported with "fetch it". Where the forge
+  clone that lacks an object fails. Below git 2.46, the check refuses a
+  clone with partial-clone or promisor settings, because support varies
+  by patch release, whatever the setting's value. A shallow clone is
+  refused, and a commit the clone lacks is reported with "fetch it". Where the forge
   gives the diff, nothing changes.
 
 ### Changed
