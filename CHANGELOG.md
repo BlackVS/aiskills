@@ -9,6 +9,23 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.46.0] - 2026-11-24
+
+Three changes to the gate and delivery tools, and three rules for the way
+into a review. A session requests the external review with one command,
+`forge_gates.py request-review --pr <PR> --head <full SHA>`, instead of
+adding the label by hand and starting `wait-review` (#151); its write on
+Gitea and GitLab follows their API documentation and was not run live. A
+delivery whose merge commit's CI a later pull request repaired is recorded
+with `verify_delivery.py --ci-repaired-by <SHA>` instead of by hand, as
+the verdict `confirmed_after_repair` (#150); a consumer that compares the
+verdict with `confirmed` records nothing until it knows the new value. On
+a Gitea before 1.27, `forge_gates.py gates --repo <DIR>` carries a review
+over a base-only update instead of asking for a re-review (#149); below git
+2.46 it refuses a clone with partial-clone or promisor settings. The
+review gates name the three rules and `oh-code-review` gives every probe
+line a verdict (#148): reinstall with `-a` to update the agents' block.
+
 ### Added
 
 - **`forge-gates request-review` requests the external review of a head and
