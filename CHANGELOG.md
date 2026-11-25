@@ -27,7 +27,7 @@ one-liner's default does, so the review-gates block in the agent
 instructions is updated too. To see that it took effect:
 
 - `.ai-skills.json` in each skills directory names `"version": "1.47.0"`;
-- `skills/oh-code-review/references/dispositions.md` there has a section
+- `oh-code-review/references/dispositions.md` there has a section
   `## Repeat reviews`;
 - the instructions file the block was written into (for a user install,
   `~/.claude/CLAUDE.md`) contains `OWNER-RISK:`.
