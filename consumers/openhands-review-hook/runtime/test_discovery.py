@@ -126,9 +126,9 @@ class DiscoveryTests(unittest.TestCase):
                 stores.return_value = (cipher, SimpleNamespace(get=get), None)
                 # The same origin, another path: the saved key may be reused.
                 self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://Provider.example:443/v2'})['ok'])
-                query.assert_called_with('https://Provider.example:443/v2', 'saved-key')
+                query.assert_called_with('https://Provider.example:443/v2', 'saved-key', 'openai')
                 self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://other.example', 'api_key': 'replacement'})['ok'])
-                query.assert_called_with('https://other.example', 'replacement')
+                query.assert_called_with('https://other.example', 'replacement', 'openai')
             self.assertEqual(opened, [('one', cipher)] * 2, 'the connection is opened by name with the server cipher')
 
     def test_probe_refuses_other_shapes_and_reports_timeouts_and_failures_safely(self):
@@ -177,7 +177,123 @@ class DiscoveryTests(unittest.TestCase):
         with patch('canvas_discovery.stores') as stores, patch('canvas_discovery.api_models', return_value=[{'id': 'm', 'label': 'm'}]) as query:
             stores.return_value = (None, SimpleNamespace(get=lambda *a, **kw: connection), None)
             self.assertTrue(probe({'provider': 'connection:one', 'base_url': 'https://api.openai.com/v1'})['ok'])
-            query.assert_called_with('https://api.openai.com/v1', 'saved-key')
+            query.assert_called_with('https://api.openai.com/v1', 'saved-key', 'openai')
+
+    def test_an_anthropic_connection_is_asked_for_its_models_in_anthropics_own_shape(self):
+        received = []
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                received.append((self.path, self.headers.get('x-api-key'), self.headers.get('anthropic-version'),
+                                 self.headers.get('Authorization')))
+                if self.path.startswith('/redirect/'):
+                    self.send_response(302); self.send_header('Location', '/stolen'); self.end_headers()
+                else:
+                    self.send_response(200); self.end_headers()
+                    self.wfile.write(json.dumps({'data': [{'id': 'claude-b', 'type': 'model'}, {'id': 'claude-a'}], 'has_more': False}).encode())
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}'
+        try:
+            # the base URL is the host, as Canvas stores it; one that already ends in /v1 gets no second one
+            for base in (url, url + '/', url + '/v1', url + '/v1/'):
+                with self.subTest(base=base):
+                    self.assertEqual([m['id'] for m in api_models(base, 'test-secret', 'anthropic')], ['claude-a', 'claude-b'])
+            with self.assertRaises(urllib.error.HTTPError): api_models(url + '/redirect', 'test-secret', 'anthropic')
+            self.assertEqual(received, [('/v1/models?limit=1000', 'test-secret', '2023-06-01', None)] * 4
+                             + [('/redirect/v1/models?limit=1000', 'test-secret', '2023-06-01', None)],
+                             'the key travels in x-api-key only, never as a bearer token, and never past a redirect')
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def test_an_anthropic_connection_is_tested_and_discovered_in_its_dialect(self):
+        from types import SimpleNamespace
+        import canvas_discovery
+        from canvas_discovery import connection_dialect, connection_url
+        anthropic = SimpleNamespace(id='a-1', api_key_value=lambda: 'saved-key', base_url='https://api.anthropic.com', provider='anthropic')
+        self.assertEqual([connection_dialect(SimpleNamespace(provider=kind)) for kind in ('anthropic', 'openai', 'custom', None)],
+                         ['anthropic', 'openai', 'openai', 'openai'])
+        self.assertEqual(connection_dialect(SimpleNamespace()), 'openai')
+        self.assertEqual(connection_url(SimpleNamespace(base_url=None, provider='anthropic')), 'https://api.anthropic.com')
+        models = [{'id': 'claude-a', 'label': 'claude-a'}]
+        with patch('canvas_discovery.stores') as stores, patch('canvas_discovery.api_models', return_value=models) as query:
+            stores.return_value = ('cipher', SimpleNamespace(get=lambda *a, **kw: anthropic), None)
+            # an edited URL on the same host, tested before it is saved
+            self.assertEqual(probe({'provider': 'connection:a-1', 'base_url': 'https://api.anthropic.com/v1'}), {'ok': True, 'models': models})
+            query.assert_called_with('https://api.anthropic.com/v1', 'saved-key', 'anthropic')
+            with patch('canvas_discovery.inventory', return_value={'providers': [{'id': 'connection:a-1'}]}):
+                self.assertEqual(canvas_discovery.discover('connection:a-1'), {'models': models})
+            query.assert_called_with('https://api.anthropic.com', 'saved-key', 'anthropic')
+            # an unsaved endpoint has no kind: it stays OpenAI-compatible
+            probe({'base_url': 'https://api.anthropic.com', 'api_key': 'new-key'})
+            query.assert_called_with('https://api.anthropic.com', 'new-key')
+
+    def test_a_profile_on_an_anthropic_connection_is_read_back_without_its_prefix(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from canvas_discovery import selections
+        agents = {'review-claude-a-high.json': SimpleNamespace(name='review-claude-a-high', agent_kind='openhands', llm_profile_ref='review-claude-a-high',
+                                                               enable_switch_llm_tool=False, tools=None),
+                  'hetzner.json': SimpleNamespace(name='hetzner', agent_kind='openhands', llm_profile_ref='hetzner', enable_switch_llm_tool=False, tools=None)}
+        llms = {'review-claude-a-high': SimpleNamespace(model='anthropic/claude-a', provider_connection_id='a-1', reasoning_effort='high'),
+                # on an OpenAI-compatible connection an id may itself start with `anthropic/`: it stays whole
+                'hetzner': SimpleNamespace(model='litellm_proxy/anthropic/claude-a', provider_connection_id='h-1', reasoning_effort='low')}
+        connections = SimpleNamespace(list=lambda cipher=None: [SimpleNamespace(id='a-1', provider='anthropic'), SimpleNamespace(id='h-1', provider='custom')])
+        acp = ModuleType('openhands.sdk.settings.acp_providers')
+        acp.detect_acp_provider_by_command = lambda argv: None
+        modules = {'openhands': ModuleType('openhands'), 'openhands.sdk': ModuleType('openhands.sdk'),
+                   'openhands.sdk.settings': ModuleType('openhands.sdk.settings'), 'openhands.sdk.settings.acp_providers': acp}
+        with patch.dict(sys.modules, modules), \
+             patch('canvas_discovery.stores', return_value=('cipher', connections, SimpleNamespace(load=lambda name, cipher=None: llms[name]))), \
+             patch('canvas_discovery.agent_store', return_value=SimpleNamespace(list=lambda: list(agents), load=agents.get)), \
+             patch('canvas_discovery.generated_origins', return_value={}), patch('canvas_discovery.has_switch', return_value=False):
+            result = selections()
+        self.assertEqual(result['review-claude-a-high'], {'provider': 'connection:a-1', 'model': 'claude-a', 'effort': 'high', 'switch': False})
+        self.assertEqual(result['hetzner']['model'], 'anthropic/claude-a')
+
+    def test_a_new_profile_on_an_anthropic_connection_uses_litellms_anthropic_provider(self):
+        import sys, types
+        import canvas_discovery
+        saved_llms, saved_agents = [], []
+        class Store:
+            def __init__(self, names=()): self.names = list(names)
+            def list(self): return [n + '.json' for n in self.names]
+            def save(self, name, llm, **kwargs): saved_llms.append((name, llm))
+            def load(self, name, **kwargs):
+                if name in existing: return existing[name]
+                raise FileNotFoundError(name)
+            def lock(self): return threading.Lock()
+        existing = {}
+        sdk = {name: types.ModuleType(name) for name in ['openhands', 'openhands.sdk', 'openhands.sdk.profiles', 'openhands.sdk.llm']}
+        sdk['openhands.sdk.profiles'].validate_agent_profile = lambda payload: payload
+        sdk['openhands.sdk.profiles'].save_profile_preserving_identity = lambda store, profile, **kw: saved_agents.append(profile)
+        sdk['openhands.sdk.profiles'].OpenHandsAgentProfile = types.SimpleNamespace(model_fields={'enable_switch_llm_tool': None})
+        sdk['openhands.sdk.llm'].LLM = lambda **kw: types.SimpleNamespace(**kw)
+        anthropic = types.SimpleNamespace(base_url='https://api.anthropic.com', provider='anthropic')
+        connections = types.SimpleNamespace(get=lambda source, cipher=None: anthropic)
+        with patch.dict(sys.modules, sdk), \
+             patch('canvas_discovery.discover', return_value={'models': [{'id': 'claude-a'}]}), \
+             patch('canvas_discovery.selections', return_value={}), \
+             patch('canvas_discovery.stores', return_value=('cipher', connections, Store())), \
+             patch('canvas_discovery.agent_store', return_value=Store()):
+            name = canvas_discovery.prepare({'provider': 'connection:a-1', 'model': 'claude-a', 'effort': 'high'})['profile']
+        self.assertEqual(name, 'review-claude-a-high')
+        (_, llm), = saved_llms
+        self.assertEqual((llm.model, llm.provider_connection_id, llm.reasoning_effort, llm.litellm_extra_body),
+                         ('anthropic/claude-a', 'a-1', 'high', {}), 'not the proxy prefix, and no effort copy in the extra body')
+        self.assertEqual(saved_agents[0]['llm_profile_ref'], name)
+        # the same choice again reuses that profile
+        saved_llms.clear(); saved_agents.clear()
+        existing.update({name: llm, 'agent': types.SimpleNamespace(llm_profile_ref=name)})
+        known = {name: {'provider': 'connection:a-1', 'model': 'claude-a', 'effort': 'high', 'switch': False}}
+        agents = Store([name]); agents.load = lambda n, **kw: types.SimpleNamespace(llm_profile_ref=name)
+        with patch.dict(sys.modules, sdk), \
+             patch('canvas_discovery.discover', return_value={'models': [{'id': 'claude-a'}]}), \
+             patch('canvas_discovery.selections', return_value=known), \
+             patch('canvas_discovery.stores', return_value=('cipher', connections, Store([name]))), \
+             patch('canvas_discovery.agent_store', return_value=agents):
+            self.assertEqual(canvas_discovery.prepare({'provider': 'connection:a-1', 'model': 'claude-a', 'effort': 'high'}), {'profile': name})
+        self.assertEqual((saved_llms, saved_agents), ([], []))
 
     def test_pinned_adapter_reads_a_fixed_package_version(self):
         from canvas_discovery import pinned_adapter
@@ -221,7 +337,7 @@ class DiscoveryTests(unittest.TestCase):
         acp.detect_acp_provider_by_command = lambda argv: SimpleNamespace(key='claude-code', binary_name='claude-agent-acp')
         modules = {'openhands': ModuleType('openhands'), 'openhands.sdk': ModuleType('openhands.sdk'),
                    'openhands.sdk.settings': ModuleType('openhands.sdk.settings'), 'openhands.sdk.settings.acp_providers': acp}
-        with patch.dict(sys.modules, modules), patch('canvas_discovery.stores', return_value=(None, None, None)), \
+        with patch.dict(sys.modules, modules), patch('canvas_discovery.stores', return_value=(None, SimpleNamespace(list=lambda cipher=None: []), None)), \
              patch('canvas_discovery.agent_store', return_value=agents), patch('canvas_discovery.generated_origins', return_value={}):
             result = selections()
         self.assertEqual(result['pinned']['provider'], 'acp:claude-code')
@@ -610,6 +726,9 @@ class DiscoveryTests(unittest.TestCase):
         for saved in ('litellm_proxy/gpt-6-astra', 'openai/gpt-6-astra', 'gpt-6-astra'):
             self.assertEqual(bare_model(saved), 'gpt-6-astra')
         self.assertEqual(bare_model('vendor/model'), 'vendor/model')  # unknown prefixes are part of the id
+        self.assertEqual(model_string('claude-a', proxied=False, dialect='anthropic'), 'anthropic/claude-a')
+        self.assertEqual(model_string('claude-a', proxied=True, dialect='anthropic'), 'anthropic/claude-a')
+        self.assertEqual((bare_model('anthropic/claude-a', 'anthropic'), bare_model('anthropic/claude-a')), ('claude-a', 'anthropic/claude-a'))
         self.assertEqual(effort_body('high', proxied=True), {'reasoning_effort': 'high'})
         self.assertEqual((effort_body('high', proxied=False), effort_body(None, proxied=True)), ({}, {}))
 

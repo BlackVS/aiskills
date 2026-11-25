@@ -137,11 +137,22 @@ No credentials enter review settings. Existing inline-key LLM profiles are also
 available; new model variants remain in Canvas's LLM profile store. New provider
 connections are preferable when credentials should rotate across model variants.
 
+A connection added in Canvas with the Anthropic provider is spoken to in
+Anthropic's own shape: its models are listed at `<base URL>/v1/models` with the
+key in `x-api-key` and the `anthropic-version` header (a base URL that already
+ends in `/v1` gets no second one), and Test uses the same request for an edited
+URL. Keep such a connection's base URL at the host, `https://api.anthropic.com`:
+Canvas adds `/v1/messages` to it for every chat. The form here adds
+OpenAI-compatible providers only; an endpoint tested before it is saved is asked
+the OpenAI way.
+
 Saving reuses a matching agent profile (same provider, model and effort; a
 secondary additionally needs the switch tool enabled) or creates a separate
 profile for the selected model. Its LLM profile addresses a custom endpoint
-(any connection or source profile with a base URL) as `litellm_proxy/<model>`
-and OpenAI itself as `openai/<model>`: with `openai/`, litellm reroutes every
+(any connection or source profile with a base URL) as `litellm_proxy/<model>`,
+an Anthropic connection as `anthropic/<model>` (litellm's own Anthropic
+provider, with no effort copy in the extra body) and OpenAI itself as
+`openai/<model>`: with `openai/`, litellm reroutes every
 tool-and-reasoning step for a model its cost map knows to a Responses endpoint
 that proxies do not serve (see UPDATING). For a proxied profile the effort is
 also written into litellm's extra body, because the proxy provider drops the
