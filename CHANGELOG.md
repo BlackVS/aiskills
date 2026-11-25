@@ -9,6 +9,47 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.47.0] - 2026-11-25
+
+One rule change in `oh-code-review` (#153). A finding names whether its
+failure path is plain (one documented command, with at most one interruption
+or failure of it) or a compound-fault state (two or more independent faults).
+A compound-fault state that fails safe is a FOLLOW_UP, not a BLOCKER. An
+unsafe one that needs more than two faults goes to the owner as an
+`OWNER-RISK:` line, and the owner may answer it with `OWNER-ROUNDS:`. A
+repeat review reads the earlier reviews and the scope owner's dispositions.
+The dispositions, the verdict rule and the review levels are unchanged.
+
+**After the release, on a machine with the skill set installed:** run the
+one-liner again (it installs the latest release), or `./install.sh` with
+the same flags after `git pull`. Include `-a` (`--agents-md`), which the
+one-liner's default does, so the review-gates block in the agent
+instructions is updated too. To see that it took effect:
+
+- `.ai-skills.json` in each skills directory names `"version": "1.47.0"`;
+- `oh-code-review/references/dispositions.md` there has a section
+  `## Repeat reviews`;
+- the instructions file the block was written into (for a user install,
+  `~/.claude/CLAUDE.md`) contains `OWNER-RISK:`.
+
+**After the release, on a site of the external reviewer:** follow the
+1.47.0 row of `consumers/openhands-review-hook/UPDATING.md`:
+
+1. Refresh the site's copy of the set. A site that reads the skill from a
+   local copy refreshes that copy too.
+2. Render the prompt again with `render.py` and install it. No service
+   restart is needed.
+3. Make sure the site's `CLONE_AND_FETCH` gives the reviewer a way to read
+   a pull request's comments. The example sites name one for each forge.
+
+To see that it took effect:
+
+- the installed prompt file contains `OWNER-ROUNDS:` and `Repeat reviews`;
+- the comment-reading command, run by hand with the reviewer's own
+  credentials on a pull request that has comments, lists them;
+- on a small pull request, a second `review-this` after a new commit gives a
+  review that refers to the earlier review.
+
 ### Changed
 
 - **`oh-code-review` tells a plain path from a compound-fault state.** Every
