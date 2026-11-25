@@ -99,9 +99,12 @@ model judges it.
 
 A repeat review keeps the first round's level and depth over the delta and what
 it touches. It first reads every earlier review of the pull request and the
-comments in which the scope owner disposed their findings. Such a comment counts
-only from an account the repository trusts, by the rule `verify-delivery` applies
-to review authors.
+comments in which the scope owner disposed their findings. Such a comment, and an
+`OWNER-ROUNDS:` line, counts only from the repository's owner or a maintainer: on
+GitHub an author association of OWNER, MEMBER or COLLABORATOR, on another forge
+an account the custom-codereview-guide names under "Scope owners", read from the
+guide on the base branch, never the pull request's head, so a pull request
+cannot name its own author. Without either, it does not bind.
 
 - REJECTED binds with its evidence: the finding is not raised again unless the
   reviewer shows the evidence wrong, and says how.
@@ -109,12 +112,14 @@ to review authors.
   binds for a compound-fault state that fails safe.
 - A plain-path failure returns the pull request on any round, whatever
   disposition it got. So does the same unsafe compound-fault state shown again at
-  the new head, unless the owner's RISK_ACCEPTED names that state. The review
-  says in one line that the disposition does not bind, and why.
+  the new head, when it returned the pull request as a BLOCKER before, unless
+  the owner's RISK_ACCEPTED names that state. The review says in one line that
+  the disposition does not bind, and why. A state the owner answered after an
+  `OWNER-RISK:` line follows that answer.
 - A **new** compound-fault finding on a surface already returned once for one
-  does not open another round: the review says so in one line and gives
-  READY_FOR_HUMAN_MERGE with the follow-up, and an unsafe one carries the
-  `OWNER-RISK:` line.
+  does not open another round: the review says so in one line, the finding is a
+  FOLLOW_UP, and an unsafe one carries the `OWNER-RISK:` line. The verdict is
+  computed from all dispositions as usual.
 
 A READY review that carries an `OWNER-RISK:` line is merged only by a person, and
 the owner answers it in one of three ways on the pull request:
@@ -132,12 +137,13 @@ the owner answers it in one of three ways on the pull request:
    state, and each external review of it counts as a round. While rounds
    remain, the reviewer reviews as usual and may return the pull request for
    that state or for a new compound-fault state of the fix. When they are used
-   up, it gives READY with the `OWNER-RISK:` line again and says in one line
-   that the owner's rounds are spent.
+   up, that state is a FOLLOW_UP with the `OWNER-RISK:` line again, and the
+   review says in one line that the owner's rounds are spent.
 
-The `OWNER-ROUNDS:` line counts only from the owner, and neither the author nor a
-coordinator sets the number. Without it, such a state opens no further round. A
-plain-path failure returns the pull request whatever the number.
+The `OWNER-ROUNDS:` line counts only from an account identified as above, and
+neither the author nor a coordinator sets the number. Without it, such a state
+opens no further round. A plain-path failure returns the pull request whatever
+the number.
 
 ## Follow-ups are grouped per surface
 
