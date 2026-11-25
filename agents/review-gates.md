@@ -95,11 +95,12 @@ Rules:
   most one interruption or failure of it) or compound-fault (two or more
   independent faults, or an object no command of the product makes). A
   compound-fault state blocks only when the product does not fail safe there:
-  data lost, a secret exposed, a half-written state misread later, or a false
-  success (`oh-code-review`'s dispositions reference). The same binds the
-  implementer's and a coordinator's own reviews and instructions: the answer
-  to a blocker is the smallest change that removes it, and "the whole class"
-  is asked for only where its siblings are on the plain path.
+  data lost or corrupted, a secret exposed, a half-written state misread
+  later, or a false success (`oh-code-review`'s dispositions reference). The
+  same binds the implementer's and a coordinator's own reviews and
+  instructions: the answer to a blocker is the smallest change that removes
+  it, and "the whole class" is asked for only where its siblings are on the
+  plain path.
 - A review that finds nothing says so in one line. Do not manufacture findings.
 - Repository-specific exceptions go in
   `.agents/skills/custom-codereview-guide/SKILL.md`, which the reviewer reads
@@ -180,7 +181,8 @@ Pull request lifecycle:
   its pre-merge row requires is `READY_FOR_HUMAN_MERGE` at the head and CI is
   green there. A pull request on a sensitive surface, a release preparation,
   and one whose review carries an `OWNER-RISK:` line stay with the person,
-  and the implementing agent never merges its own pull request. Without the declaration the merge is the person's.
+  and the implementing agent never merges its own pull request. Without the
+  declaration the merge is the person's.
   verify-delivery's merge check requires a person account: where the agent
   merges through a bot or app account, the delivery check runs with
   `--allow-bot-merge`, and `--merger <account>` pins the merge to that
