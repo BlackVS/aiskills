@@ -48,8 +48,9 @@ from:
 git describe --tags; cat VERSION            # the copy itself: `vX.Y.Z` alone when it is the release
 python3 consumers/openhands-review-hook/render.py <site file> | cmp - <PROMPT_FILE>   # each prompt
 head -4 <PROMPT_FILE>                       # step 1: where the reviewer reads the skill from
-cat ~/.claude/skills/.ai-skills.json        # the installed skills: "version" and "skills"
-for s in $(ls skills); do diff -rq skills/$s ~/.claude/skills/$s; done
+for s in oh-code-review oh-technical-writing; do diff -rq skills/$s <local copy>/skills/$s; done   # a site that reads it from a local copy
+cat <skills dir>/.ai-skills.json            # the installed skills: "version" and "skills"
+for s in $(ls skills); do diff -rq skills/$s <skills dir>/$s; done
 sed -n '/aiskills:review-gates start/,/aiskills:review-gates end/p' ~/.claude/CLAUDE.md |
   sed '1d;$d' | cmp - agents/review-gates.md           # each file that carries the block
 ```
@@ -58,10 +59,22 @@ sed -n '/aiskills:review-gates start/,/aiskills:review-gates end/p' ~/.claude/CL
   render of the site file, and the block is this release's. Run the last
   command for every instructions file the site's agents read
   (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, a repository's `AGENTS.md`).
-- `diff -rq` prints nothing for an installed skill that equals this release,
-  and names a skill that differs or is not installed. The manifest's `version`
-  is the release of the last install run and holds only for the skills in its
-  `skills` list: a skill that run did not select keeps the content it had.
+- `diff -rq` prints nothing for a skill that equals this release, and names
+  one that differs or is absent. Read what the loops print: a loop's exit
+  status is that of its last skill alone.
+- `<local copy>` is the directory step 1 of the prompt names, for a site that
+  reads the skill from a local copy (site B: `/opt/openhands/hooks/aiskills`).
+  Step 1 prints the same path whether that copy is this release or an older
+  one, so the copy is compared.
+- `<skills dir>` is a directory the installer wrote skills into:
+  `~/.claude/skills` (Claude Code), `~/.agents/skills` (Codex),
+  `~/.config/opencode/skills`, `~/.openhands/skills`. Run both commands for
+  every one the site uses. Each has its own manifest, and an install run
+  refreshes only the directories its `--tool` names, so one can be this
+  release while another is not.
+- The manifest's `version` is the release of the last install run into that
+  directory and holds only for the skills in its `skills` list: a skill that
+  run did not select keeps the content it had.
 - `~` is the home of the user the installer ran as. Where the agents run in a
   container as another user, their home is a directory of the host mounted
   into it, and the installer's home has to resolve to that directory.
@@ -79,20 +92,28 @@ client whose directory exists (`~/.codex/AGENTS.md`, for one). A site that
 was installed with other options repeats them at every update, or the run
 leaves it mixed: after a first install with `--skills all`, a run without it
 refreshes three skills, leaves the others at the old release and writes a
-manifest that lists only the three. For a site that holds every skill, for
-Claude Code only:
+manifest that lists only the three. In the same way a site that holds skills
+for two clients names both at every update (`--tool claude --tool codex`), or
+the directory of the one left out stays at the old release. For a site that
+holds every skill, for Claude Code only:
 
 ```sh
-./install.sh --user --agents-md --skills all --tool claude --dry-run   # lists each directory and file the run would write
+./install.sh --user --agents-md --skills all --tool claude --dry-run   # what the run would write
 ./install.sh --user --agents-md --skills all --tool claude
 ```
 
-`--tool` chooses where the skills go, not where the block goes: the block
-goes into the same instructions files with any `--tool`. The installer writes each
-instructions file anew, so the file then belongs to the user that ran it.
-Where a client runs as another user and writes to its own instructions file,
-give the file back to that user after the run (`chown`), and check that this
-user can read the installed skills.
+`--tool` chooses where the skills go. The block goes into
+`~/.claude/CLAUDE.md` and into the instructions file of each other client
+whose directory exists when the block is written, whatever `--tool` says.
+One case follows from that: a first install with `--tool opencode` creates
+OpenCode's directory for its skills, so the same run also writes the block
+into OpenCode's `AGENTS.md`, and the dry run before it does not list that
+file.
+
+The installer writes each instructions file anew, so the file then belongs
+to the user that ran it. Where a client runs as another user and writes to
+its own instructions file, give the file back to that user after the run
+(`chown`), and check that this user can read the installed skills.
 
 ### The skill the reviewer follows
 
