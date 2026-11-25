@@ -9,6 +9,50 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`oh-code-review` tells a plain path from a compound-fault state.** Every
+  failure path names its kind: plain (one documented command, with at most one
+  interruption or failure of it) or compound-fault (two or more independent
+  faults, or an object no command of the product makes). In a compound-fault
+  state the reviewer checks only that the product fails safe; if it does, the
+  finding is a FOLLOW_UP whatever its severity, and it names the state and
+  the evidence, never code. A plain-path failure, and a compound-fault state
+  that loses or corrupts data, exposes a secret, leaves a half-written state a
+  later operation misreads or claims a false success, stay BLOCKER. An unsafe
+  state that needs more than two faults goes to the owner as a fixed
+  `OWNER-RISK:` line in the review's RISK section, and a pull request whose
+  review carries one is merged by a person. The BLOCKER test's first condition
+  is sharpened; the dispositions, the verdict rule and the levels are
+  unchanged. The review gates carry the rule for the implementer's and a
+  coordinator's own reviews, and the review guide template has a place for a
+  repository's plain paths and its policy for compound-fault states.
+- **A repeat review reads the earlier reviews and the scope owner's
+  dispositions.** It keeps the first round's level and depth over the delta.
+  A disposition counts only from the repository's owner or a maintainer (a
+  GitHub repository's OWNER, or the scope owners its review guide names on
+  the base branch):
+  - REJECTED binds with its evidence;
+  - RISK_ACCEPTED binds when it names the owner's acceptance;
+  - FOLLOW_UP binds for a compound-fault state that fails safe.
+
+  A plain-path failure, and the same unsafe state that returned the pull
+  request before, still return it. A new compound-fault finding on a
+  surface already returned once for one is a FOLLOW_UP that opens no round;
+  the verdict is computed from all findings as before.
+
+  The owner answers a READY review that carries an `OWNER-RISK:` line in one
+  of three ways: merge with the risk accepted, leave the state to a follow-up
+  (a task that fixes it in code, or an entry in the operator's recovery
+  document that says how to see the state and recover from it) and merge, or
+  try a fix within a number of rounds stated in one
+  `OWNER-ROUNDS:` line. When the rounds are spent, the state is a FOLLOW_UP
+  with the risk line again. The external
+  reviewer's prompt says this, and the example Gitea sites name a way to
+  read the PR's comments: re-render the prompt
+  (`consumers/openhands-review-hook/UPDATING.md`). Reinstall with `-a`
+  (`--agents-md`) to update the block in an agent's instructions.
+
 ## [1.46.0] - 2026-11-24
 
 Three changes to the gate and delivery tools, and three rules for the way

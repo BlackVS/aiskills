@@ -18,6 +18,25 @@ and evidence-based; every entry names how it was established.
 
 - <directory or file patterns whose changes always take the ultra gate>
 
+## Plain paths and compound-fault states
+
+The documented users and the commands or requests that make this repository's
+plain paths, so a reviewer can tell them from a compound-fault state
+(`references/dispositions.md`, "Plain path and compound-fault state"):
+
+- <documented user — command or request, and the states its documented paths leave>
+
+Scope owners: <the accounts, besides a GitHub repository's OWNER, whose
+disposition comments and `OWNER-ROUNDS:` lines bind a repeat review; read from
+the base branch>
+
+The default form of a follow-up for a compound-fault state (a task that fixes it
+in code, or an entry in the operator's recovery document that says how to see the
+state and how to recover from it):
+
+- <for example: a recovery entry in docs/RECOVERY.md, no code; or a task per
+  surface; or nothing below a stated severity>
+
 ## Observed Runtime Contracts
 
 Do not infer runtime identity from image source or workflow YAML alone.

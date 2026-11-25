@@ -30,9 +30,11 @@ Steps:
    whatever its severity. No style nits. Do not manufacture findings if the
    code is clean. Do NOT execute repository code, tests or CI scripts;
    read-only inspection only. If earlier {marker} comments exist on the PR,
-   this is a RE-review: judge whether previous BLOCKERs were resolved at this
-   head and review newly changed code; do not re-raise items already
-   dispositioned as follow-up, rejected or risk-accepted.
+   this is a RE-review: read every earlier review on the PR and the scope
+   owner's comments disposing their findings, including an `OWNER-ROUNDS:`
+   line, judge whether previous BLOCKERs were resolved at this head, review
+   newly changed code, and apply the skill's "Repeat reviews" rule in
+   references/dispositions.md to what those dispositions and that line bind.
 4) Write the review in the output format the skill defines in
    references/dispositions.md, exactly as it specifies it (every section
    present, empty ones say "- None", verdict computed from blockers alone).

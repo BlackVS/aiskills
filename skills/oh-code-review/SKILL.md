@@ -129,7 +129,10 @@ against the workspace:
 6. Assign each surviving finding its disposition per `references/dispositions.md`.
    Apply the four-part BLOCKER test explicitly; a finding with no concrete
    failure path, or outside the named acceptance criteria, is not a BLOCKER
-   regardless of severity. Refuted findings that are worth recording become
+   regardless of severity. Name the kind of each failure path, plain or
+   compound-fault, and count the independent faults a compound one needs; in a
+   compound-fault state check only that the product fails safe ("Plain path and
+   compound-fault state"). Refuted findings that are worth recording become
    REJECTED with their evidence.
 
 At levels low and medium the same disposition rule applies; only the re-grounding
@@ -282,6 +285,12 @@ to look for; the disposition defines *what it does to this PR*):
   (with its surface and the outcome that closes it; follow-ups on one surface
   are one task, `references/dispositions.md`) or, for design taste, an
   OBSERVATION.
+- A state reached only through two or more independent faults, or through an
+  object no command of the product makes, is a FOLLOW_UP when the product fails
+  safe there, whatever its severity; a missing message, hint or automatic
+  recovery in it never blocks. The finding names the state and the evidence,
+  never code or the form of the answer (`references/dispositions.md`, "Plain
+  path and compound-fault state").
 - Simplifications, eliminated special cases and pragmatism notes are
   CURRENT_SCOPE_IMPROVEMENT when small and related to the objective, else FOLLOW_UP.
 - Style is not reported at all. Linters exist for a reason. Never post "fine" or

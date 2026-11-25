@@ -50,7 +50,9 @@ conversation is still running, so leave a `hands-reviewing` PR alone.
 - Any later commit or rebase makes the review stale: re-trigger by adding
   `review-this` again and clear the stale `hands-reviewed` when you do. The
   reviewer is told to treat a PR with earlier `[hands-bot review]` comments as
-  a RE-review (did the previous findings get addressed? what changed?).
+  a RE-review (did the previous findings get addressed? what changed?), and
+  to read the scope owner's dispositions of them (`dispositions.md`,
+  "Repeat reviews").
 - The exception is a **base-only update** whose **patch identity** (the git
   patch-id of the change against its merge base) is unchanged:
   `git diff $(git merge-base <base> <head>) <head> | git patch-id --stable`,

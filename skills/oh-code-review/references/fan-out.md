@@ -62,7 +62,7 @@ one object per finding, in the structured-finding shape of
   "disposition": "BLOCKER|CURRENT_SCOPE_IMPROVEMENT|FOLLOW_UP|OBSERVATION|REJECTED|RISK_ACCEPTED",
   "category": "data-structure|complexity|breaking-change|security|pragmatism|testing|dependency",
   "summary": "<one sentence>",
-  "failure_path": "<concrete inputs/state -> observed failure, or null>",
+  "failure_path": "<plain: | compound, <n> faults:> <concrete inputs/state -> observed failure>, or null",
   "acceptance_criterion": "<named criterion a BLOCKER violates, else null>",
   "surface": "<the component/contract a reviewer reads as a whole, required for FOLLOW_UP, else null>",
   "outcome": "<the complete, verifiable result that closes it, required for FOLLOW_UP, else null>",

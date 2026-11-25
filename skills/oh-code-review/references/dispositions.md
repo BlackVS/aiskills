@@ -25,11 +25,12 @@ failure path.
 ## BLOCKER test — all four must hold
 
 1. There is a concrete failure path: specific input or state → observed failure,
-   established by the reviewed source (`CONFIRMED`) or reproduced at the runtime
-   boundary (`CONFIRMED-RUNTIME`). A `PLAUSIBLE-RUNTIME` finding, one resting on
-   an unverified external fact, is not a BLOCKER unless leaving that fact
-   unverified is itself a stated acceptance-criteria failure (see SKILL.md,
-   "Runtime-dependent findings").
+   on the **plain path** or in a **compound-fault state that does not fail
+   safe** (next section), established by the reviewed source (`CONFIRMED`) or
+   reproduced at the runtime boundary (`CONFIRMED-RUNTIME`). A
+   `PLAUSIBLE-RUNTIME` finding, one resting on an unverified external fact, is
+   not a BLOCKER unless leaving that fact unverified is itself a stated
+   acceptance-criteria failure (see SKILL.md, "Runtime-dependent findings").
 2. It violates a **named** acceptance criterion of this PR (quote it).
 3. It can be fixed without materially expanding the frozen scope.
 4. Left unresolved, the candidate does not work, or cannot work safely under the
@@ -37,9 +38,112 @@ failure path.
 
 Generalized hardening, architectural redesign, compatibility expansion, extra
 recovery mechanisms, unrelated refactoring, and speculative edge cases fail test 3
-or 4 and are therefore FOLLOW_UP or OBSERVATION, whatever their severity.
+or 4 and are therefore FOLLOW_UP or OBSERVATION, whatever their severity. So does
+a compound-fault state that fails safe, and a missing message, hint or automatic
+recovery in one.
 
 A finding without a concrete failure path can never be BLOCKER.
+
+Test 1 is sharpened rather than a test added: it named a specific state but not
+how the state is reached, so a state that needs several independent faults met
+it as fully as a single command did.
+
+## Plain path and compound-fault state
+
+Every failure path names its kind, first on the finding's `Failure path` line
+(`plain:` or `compound, <n> faults:`).
+
+- **Plain path:** one command or request by a documented user, on a state the
+  product's own documented paths lead to, including one interruption or one
+  failure of that command. Example: an upgrade interrupted once.
+- **Compound-fault state:** a state that needs two or more independent faults
+  (an interrupted run and then a second interrupted, refused or failed run; a
+  fault during the recovery from a fault; a process stopped at one exact point
+  for longer than a stated time), or an object no command of the product makes
+  (a foreign file under the product's own name, a hand edit of its state).
+  Example: an upgrade interrupted, and its rollback interrupted too.
+
+In a compound-fault state the reviewer checks only that the product **fails
+safe**: no data lost or corrupted, no secret exposed, nothing half-written that a
+later plain operation would silently misread, no claim of a success that did not
+happen. If it does, the finding is a FOLLOW_UP, whatever its severity and
+whatever sentence of a document it contradicts. The finding names the state and
+the evidence that it fails safe, and proposes neither code nor the form of the
+answer. A follow-up for such a state takes one of two forms: a task that fixes
+the state in code, or an entry in the operator's recovery document that says how
+to see the state and how to recover from it. Which one, or none, is the
+project's choice, and its custom-codereview-guide may set a default. Where the
+pull request already changes that document, the entry may go into it before the
+merge as a CURRENT_SCOPE_IMPROVEMENT.
+
+What stays BLOCKER is a failure on the plain path and a compound-fault state that
+does not fail safe. An unsafe state that needs more than two independent faults
+does not return the pull request: it is a FOLLOW_UP, and the review's RISK
+section names it to the owner in one line of a fixed form, so a person or a
+readiness check cannot miss it:
+
+    OWNER-RISK: <the unsafe state, one sentence> CHANGELOG: <the sentence the changelog needs>
+
+A sentence of a document or of the acceptance criteria that promises more than
+the plain path gives ("always recovers", "every refusal names the way back") is
+a finding of its own. It does not make a compound-fault state a BLOCKER; how the
+sentence is narrowed is the project's.
+
+Security is not rarity. A fault that an attacker inside the documented threat
+model can cause on purpose is not independent of the attack: if the threat model
+admits a second local user who can write the product's state directory, a
+half-written file planted there is that attacker's plain path, and the threat
+model judges it.
+
+## Repeat reviews
+
+A repeat review keeps the first round's level and depth over the delta and what
+it touches. It first reads every earlier review of the pull request and the
+comments in which the scope owner disposed their findings. Such a comment, and an
+`OWNER-ROUNDS:` line, counts only from the repository's owner or a maintainer: on
+GitHub an author association of OWNER, and on any forge an account the
+custom-codereview-guide names under "Scope owners", read from the guide on the
+base branch, never the pull request's head, so a pull request cannot name its
+own author. Without either, it does not bind.
+
+- REJECTED binds with its evidence: the finding is not raised again unless the
+  reviewer shows the evidence wrong, and says how.
+- RISK_ACCEPTED binds when the comment names the owner's acceptance. FOLLOW_UP
+  binds for a compound-fault state that fails safe.
+- A plain-path failure returns the pull request on any round, whatever
+  disposition it got. So does the same unsafe compound-fault state shown again at
+  the new head, when it returned the pull request as a BLOCKER before, unless
+  the owner's RISK_ACCEPTED names that state. The review says in one line that
+  the disposition does not bind, and why. A state the owner answered after an
+  `OWNER-RISK:` line follows that answer.
+- A **new** compound-fault finding on a surface already returned once for one
+  does not open another round: the review says so in one line, the finding is a
+  FOLLOW_UP, and an unsafe one carries the `OWNER-RISK:` line. The verdict is
+  computed from all dispositions as usual.
+
+A READY review that carries an `OWNER-RISK:` line is merged only by a person, and
+the owner answers it in one of three ways on the pull request:
+
+1. merge as it stands, naming the RISK_ACCEPTED;
+2. leave the state to a follow-up, in one of the two forms above (a code fix, or
+   a recovery entry that says how to see the state and recover from it), and
+   merge;
+3. try a fix within a stated number of rounds, in one line of a fixed form beside
+   the risk line:
+
+       OWNER-ROUNDS: <n> for <the unsafe state, as the OWNER-RISK line names it>
+
+   The pull request goes back to a draft. The fix is the smallest one for that
+   state, and each external review of it counts as a round. While rounds
+   remain, the reviewer reviews as usual and may return the pull request for
+   that state or for a new compound-fault state of the fix. When they are used
+   up, that state is a FOLLOW_UP with the `OWNER-RISK:` line again, and the
+   review says in one line that the owner's rounds are spent.
+
+The `OWNER-ROUNDS:` line counts only from an account identified as above, and
+neither the author nor a coordinator sets the number. Without it, such a state
+opens no further round. A plain-path failure returns the pull request whatever
+the number.
 
 ## Follow-ups are grouped per surface
 
@@ -93,7 +197,7 @@ invalidate the review of the reviewed head.
  "severity": "critical|high|medium|low",
  "disposition": "BLOCKER|CURRENT_SCOPE_IMPROVEMENT|FOLLOW_UP|OBSERVATION|REJECTED|RISK_ACCEPTED",
  "summary": "<one sentence>",
- "failure_path": "<concrete state/input -> observed failure, or null>",
+ "failure_path": "<plain: | compound, <n> faults:> <concrete state/input -> observed failure>, or null",
  "acceptance_criterion": "<the named criterion a BLOCKER violates, else null>",
  "surface": "<the component/contract a reviewer reads as a whole, required for FOLLOW_UP>",
  "outcome": "<the complete, verifiable result that closes it, required for FOLLOW_UP>",
@@ -150,6 +254,7 @@ READY_FOR_HUMAN_MERGE | RETURN_TO_IMPLEMENTATION | REVIEW_COULD_NOT_RUN
 
 RISK
 LOW | MEDIUM | HIGH — <short reason>
+OWNER-RISK: <only for an unsafe compound-fault state that opens no round> CHANGELOG: <sentence>
 ```
 
 Write the verdict word on the line right after `VERDICT`. `verify-delivery`
