@@ -7,12 +7,16 @@ only the rendered prompt does, and sometimes the agent-facing gates block.
 ## Every release
 
 ```sh
-cd aiskills && git pull                       # or refresh the local copy on hosts that cannot reach the repo
+cd aiskills && git fetch --tags && git checkout vX.Y.Z             # the release; or refresh the local copy on hosts that cannot reach the repo
 python3 consumers/openhands-review-hook/render.py --check          # every example site must print OK
 python3 consumers/openhands-review-hook/render.py \
         <site file> > <PROMPT_FILE>   # per prompt the receiver uses
 ```
 
+- The copy is checked out at the release tag, so that the prompt is rendered
+  from the release's template and the installer takes the release's skills
+  and block. `git pull` on the default branch instead gives whatever has been
+  merged since, released or not.
 - `<PROMPT_FILE>` is the receiver's `PROMPT_FILE` (site A: `review_prompt.txt`
   and, for the GitHub poller, `github_review_prompt.txt`; site B:
   `/opt/openhands/hooks/review_prompt.txt`). The new `runtime/` receiver reads
@@ -41,7 +45,7 @@ an update, read each part from the copy of the repository the update ran
 from:
 
 ```sh
-git describe --tags; cat VERSION            # the copy itself
+git describe --tags; cat VERSION            # the copy itself: `vX.Y.Z` alone when it is the release
 python3 consumers/openhands-review-hook/render.py <site file> | cmp - <PROMPT_FILE>   # each prompt
 head -4 <PROMPT_FILE>                       # step 1: where the reviewer reads the skill from
 cat ~/.claude/skills/.ai-skills.json        # the installed skills: "version" and "skills"

@@ -16,7 +16,8 @@ content fixes inside existing skills. The current version is in `VERSION`.
   review-gates block and the installed skills are updated by different steps,
   and one site had the last two at a release six weeks older than its prompts
   with nothing reporting it. The checklist now gives one command per part that
-  shows whether the part is the release of the copy the update ran from. It
+  shows whether the part is the release of the copy the update ran from, and
+  the copy itself is checked out at the release tag instead of pulled. It
   says what `install.sh --user --agents-md` writes without another option, and
   that a site repeats the options of its first install (`--skills`, `--tool`).
   It also describes naming a release tag in the clone of `SKILL_SOURCE`, so
