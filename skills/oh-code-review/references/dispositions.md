@@ -69,8 +69,12 @@ later plain operation would silently misread, no claim of a success that did not
 happen. If it does, the finding is a FOLLOW_UP, whatever its severity and
 whatever sentence of a document it contradicts. The finding names the state and
 the evidence that it fails safe, and proposes neither code nor the form of the
-answer: a fix, an entry in the operator's recovery document, or nothing is the
-project's decision, and its custom-codereview-guide may state a policy for it.
+answer. A follow-up for such a state takes one of two forms: a task that fixes
+the state in code, or an entry in the operator's recovery document that says how
+to see the state and how to recover from it. Which one, or none, is the
+project's choice, and its custom-codereview-guide may set a default. Where the
+pull request already changes that document, the entry may go into it before the
+merge as a CURRENT_SCOPE_IMPROVEMENT.
 
 What stays BLOCKER is a failure on the plain path and a compound-fault state that
 does not fail safe. An unsafe state that needs more than two independent faults
@@ -111,6 +115,29 @@ to review authors.
   does not open another round: the review says so in one line and gives
   READY_FOR_HUMAN_MERGE with the follow-up, and an unsafe one carries the
   `OWNER-RISK:` line.
+
+A READY review that carries an `OWNER-RISK:` line is merged only by a person, and
+the owner answers it in one of three ways on the pull request:
+
+1. merge as it stands, naming the RISK_ACCEPTED;
+2. leave the state to a follow-up, in one of the two forms above (a code fix, or
+   a recovery entry that says how to see the state and recover from it), and
+   merge;
+3. try a fix within a stated number of rounds, in one line of a fixed form beside
+   the risk line:
+
+       OWNER-ROUNDS: <n> for <the unsafe state, as the OWNER-RISK line names it>
+
+   The pull request goes back to a draft. The fix is the smallest one for that
+   state, and each external review of it counts as a round. While rounds
+   remain, the reviewer reviews as usual and may return the pull request for
+   that state or for a new compound-fault state of the fix. When they are used
+   up, it gives READY with the `OWNER-RISK:` line again and says in one line
+   that the owner's rounds are spent.
+
+The `OWNER-ROUNDS:` line counts only from the owner, and neither the author nor a
+coordinator sets the number. Without it, such a state opens no further round. A
+plain-path failure returns the pull request whatever the number.
 
 ## Follow-ups are grouped per surface
 

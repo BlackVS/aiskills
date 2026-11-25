@@ -36,7 +36,15 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
   A plain-path failure, and the same unsafe state shown again, still return
   the pull request. A new compound-fault finding on a surface already
-  returned once for one gives READY with the follow-up. The external
+  returned once for one gives READY with the follow-up.
+
+  The owner answers a READY review that carries an `OWNER-RISK:` line in one
+  of three ways: merge with the risk accepted, leave the state to a follow-up
+  (a task that fixes it in code, or an entry in the operator's recovery
+  document that says how to see the state and recover from it) and merge, or
+  try a fix within a number of rounds stated in one
+  `OWNER-ROUNDS:` line. When the rounds are spent, the reviewer gives READY
+  with the risk line again. The external
   reviewer's prompt says this, and the example Gitea sites name a way to
   read the PR's comments: re-render the prompt
   (`consumers/openhands-review-hook/UPDATING.md`). Reinstall with `-a`

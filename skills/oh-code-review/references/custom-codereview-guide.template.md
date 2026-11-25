@@ -26,9 +26,11 @@ plain paths, so a reviewer can tell them from a compound-fault state
 
 - <documented user — command or request, and the states its documented paths leave>
 
-What this project does with a compound-fault state that fails safe:
+The default form of a follow-up for a compound-fault state (a task that fixes it
+in code, or an entry in the operator's recovery document that says how to see the
+state and how to recover from it):
 
-- <for example: a recovery entry in the operator's guide, no code; or a task per
+- <for example: a recovery entry in docs/RECOVERY.md, no code; or a task per
   surface; or nothing below a stated severity>
 
 ## Observed Runtime Contracts
