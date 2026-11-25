@@ -18,6 +18,19 @@ and evidence-based; every entry names how it was established.
 
 - <directory or file patterns whose changes always take the ultra gate>
 
+## Plain paths and compound-fault states
+
+The documented users and the commands or requests that make this repository's
+plain paths, so a reviewer can tell them from a compound-fault state
+(`references/dispositions.md`, "Plain path and compound-fault state"):
+
+- <documented user — command or request, and the states its documented paths leave>
+
+What this project does with a compound-fault state that fails safe:
+
+- <for example: a recovery entry in the operator's guide, no code; or a task per
+  surface; or nothing below a stated severity>
+
 ## Observed Runtime Contracts
 
 Do not infer runtime identity from image source or workflow YAML alone.
