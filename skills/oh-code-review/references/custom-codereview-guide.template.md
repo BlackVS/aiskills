@@ -26,9 +26,9 @@ plain paths, so a reviewer can tell them from a compound-fault state
 
 - <documented user — command or request, and the states its documented paths leave>
 
-Scope owners: <the accounts whose disposition comments and `OWNER-ROUNDS:` lines
-bind a repeat review on a forge without author associations; read from the base
-branch>
+Scope owners: <the accounts, besides a GitHub repository's OWNER, whose
+disposition comments and `OWNER-ROUNDS:` lines bind a repeat review; read from
+the base branch>
 
 The default form of a follow-up for a compound-fault state (a task that fixes it
 in code, or an entry in the operator's recovery document that says how to see the

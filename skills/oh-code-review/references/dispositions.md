@@ -101,10 +101,10 @@ A repeat review keeps the first round's level and depth over the delta and what
 it touches. It first reads every earlier review of the pull request and the
 comments in which the scope owner disposed their findings. Such a comment, and an
 `OWNER-ROUNDS:` line, counts only from the repository's owner or a maintainer: on
-GitHub an author association of OWNER, MEMBER or COLLABORATOR, on another forge
-an account the custom-codereview-guide names under "Scope owners", read from the
-guide on the base branch, never the pull request's head, so a pull request
-cannot name its own author. Without either, it does not bind.
+GitHub an author association of OWNER, and on any forge an account the
+custom-codereview-guide names under "Scope owners", read from the guide on the
+base branch, never the pull request's head, so a pull request cannot name its
+own author. Without either, it does not bind.
 
 - REJECTED binds with its evidence: the finding is not raised again unless the
   reviewer shows the evidence wrong, and says how.

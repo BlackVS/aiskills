@@ -29,9 +29,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
   repository's plain paths and its policy for compound-fault states.
 - **A repeat review reads the earlier reviews and the scope owner's
   dispositions.** It keeps the first round's level and depth over the delta.
-  A disposition counts only from the repository's owner or a maintainer (on
-  a forge without author associations, the scope owners its review guide
-  names on the base branch):
+  A disposition counts only from the repository's owner or a maintainer (a
+  GitHub repository's OWNER, or the scope owners its review guide names on
+  the base branch):
   - REJECTED binds with its evidence;
   - RISK_ACCEPTED binds when it names the owner's acceptance;
   - FOLLOW_UP binds for a compound-fault state that fails safe.
