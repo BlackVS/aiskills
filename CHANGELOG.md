@@ -9,6 +9,20 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+
+- hands: Auto Reviews can use an Anthropic API connection. Canvas offers
+  Anthropic as a provider connection kind, and the page listed such a
+  connection, but it asked every connection for its models the
+  OpenAI-compatible way, at `<base URL>/models` with a bearer token. Anthropic
+  answered 404, or 400 for a base URL ending in `/v1` because the
+  `anthropic-version` header was missing, so the connection had no models
+  and its Test failed with "Model endpoint not found". A connection of the
+  Anthropic kind is now asked at `/v1/models` with `x-api-key` and
+  `anthropic-version`, and a reviewer chosen from it gets the model string
+  `anthropic/<model>` instead of the proxy prefix. A hands site:
+  `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
+
 ## [1.47.0] - 2026-11-25
 
 One rule change in `oh-code-review` (#153). A finding names whether its

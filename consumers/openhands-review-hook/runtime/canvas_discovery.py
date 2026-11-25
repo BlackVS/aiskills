@@ -90,13 +90,32 @@ def normalize_effort(provider, effort):
     return effort
 
 
-def api_models(base_url, key):
-    """Query the configured provider only; never forward its key on redirects."""
+ANTHROPIC_VERSION = '2023-06-01'  # the API version Anthropic requires on every request
+
+
+def connection_dialect(connection):
+    """How a Canvas provider connection is spoken to: `anthropic` for Anthropic's own API, else
+    `openai`, the OpenAI-compatible shape every other connection kind uses."""
+    return 'anthropic' if getattr(connection, 'provider', None) == 'anthropic' else 'openai'
+
+
+def api_models(base_url, key, dialect='openai'):
+    """Query the configured provider only; never forward its key on redirects.
+
+    `openai`: GET <base>/models with a bearer token (the base URL carries its own version
+    path, `.../v1`). `anthropic`: GET <base>/v1/models with `x-api-key` and
+    `anthropic-version` (the base URL is the host, as Canvas stores it and litellm expects;
+    one that already ends in `/v1` gets no second one)."""
     parsed = urlsplit(base_url or '')
     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError('Invalid provider URL')
-    request = urllib.request.Request(base_url.rstrip('/') + '/models',
-        headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json'})
+    base = base_url.rstrip('/')
+    if dialect == 'anthropic':
+        request = urllib.request.Request(base + ('/models' if base.endswith('/v1') else '/v1/models') + '?limit=1000',
+            headers={'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION, 'Accept': 'application/json'})
+    else:
+        request = urllib.request.Request(base + '/models',
+            headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json'})
     with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
         raw = response.read(2_000_001)
     if len(raw) > 2_000_000:
@@ -432,9 +451,10 @@ def pin_warning(command, binary):
 def selections():
     from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
     import shlex
-    cipher, _, llms = stores()
+    cipher, connections, llms = stores()
     agents = agent_store()
     origins = generated_origins()
+    dialects = {c.id: connection_dialect(c) for c in connections.list(cipher=cipher)}
     result = {}
     for filename in agents.list():
         agent = agents.load(filename)
@@ -462,7 +482,7 @@ def selections():
                 continue
             provider = ('connection:' + llm.provider_connection_id if llm.provider_connection_id
                 else 'profile:' + origins.get(agent.llm_profile_ref, agent.llm_profile_ref))
-            model = bare_model(llm.model)
+            model = bare_model(llm.model, dialects.get(llm.provider_connection_id, 'openai'))
             effort = getattr(llm, 'reasoning_effort', None) or API_DEFAULT_EFFORT
             switch = has_switch(agent)
         result[agent.name] = {'provider': provider, 'model': model, 'effort': effort, 'switch': switch}
@@ -475,26 +495,29 @@ def kind_of(provider):
     return provider.split(':', 1)[0]
 
 
-MODEL_PREFIXES = ('litellm_proxy/', 'openai/')
+MODEL_PREFIXES = {'openai': ('litellm_proxy/', 'openai/'), 'anthropic': ('anthropic/',)}
 
 
-def bare_model(model):
+def bare_model(model, dialect='openai'):
     """The advertised model id behind a saved LLM profile's model string."""
-    for prefix in MODEL_PREFIXES:
+    for prefix in MODEL_PREFIXES[dialect]:
         if model.startswith(prefix):
             return model[len(prefix):]
     return model
 
 
-def model_string(model, proxied):
+def model_string(model, proxied, dialect='openai'):
     """Model string for a generated LLM profile.
 
     A custom endpoint (any base_url) is addressed as `litellm_proxy/<model>`:
     with `openai/`, litellm's chat-to-Responses bridge reroutes every step that
     carries tools and a reasoning effort for a model its cost map knows to
     `/responses`, which such proxies do not serve (every gpt-6-astra review died
-    on a 404). `openai/` stays for OpenAI itself.
+    on a 404). `openai/` stays for OpenAI itself. An Anthropic connection is
+    `anthropic/<model>`, litellm's own Anthropic provider, whatever its URL.
     """
+    if dialect == 'anthropic':
+        return 'anthropic/' + model
     return ('litellm_proxy/' if proxied else 'openai/') + model
 
 
@@ -597,10 +620,13 @@ def prepare(selection, switch=False, discovered=None):
     cipher, connections, llms = stores()
     agents = agent_store()
     kind, source = provider.split(':', 1)
+    dialect = 'openai'
     if kind == 'profile':
         proxied = bool(llms.load(source, cipher=cipher, resolve_provider=False).base_url)
     elif kind == 'connection':
-        proxied = bool(connections.get(source, cipher=cipher).base_url)
+        connection = connections.get(source, cipher=cipher)
+        dialect = connection_dialect(connection)
+        proxied = dialect == 'openai' and bool(connection.base_url)  # litellm speaks to Anthropic itself
     else:
         proxied = False
     for name, existing in known.items():
@@ -611,7 +637,7 @@ def prepare(selection, switch=False, discovered=None):
                 saved = llms.load(agents.load(name).llm_profile_ref, cipher=cipher, resolve_provider=False)
             except (ValueError, FileNotFoundError):
                 continue
-            if saved.model != model_string(model, proxied):
+            if saved.model != model_string(model, proxied, dialect):
                 continue
             if (getattr(saved, 'litellm_extra_body', None) or {}).get('reasoning_effort') != effort_body(effort, proxied).get('reasoning_effort'):
                 continue  # a proxied variant without the effort in its extra body cannot run tool calls
@@ -632,7 +658,7 @@ def prepare(selection, switch=False, discovered=None):
             extra = dict(getattr(llm, 'litellm_extra_body', None) or {}, **effort_body(effort, proxied))
             llm = llm.model_copy(update={'model': model_string(model, proxied), 'reasoning_effort': effort, 'litellm_extra_body': extra})
         else:
-            llm = LLM(model=model_string(model, proxied), provider_connection_id=source, reasoning_effort=effort,
+            llm = LLM(model=model_string(model, proxied, dialect), provider_connection_id=source, reasoning_effort=effort,
                       litellm_extra_body=effort_body(effort, proxied))
         # An existing inline-key profile stays in Canvas's existing LLM store.
         try:
@@ -661,9 +687,11 @@ class TokenRequired(ValueError):
 
 
 def connection_url(connection):
-    """The URL a stored connection's key belongs to (OpenAI's default when it has none)."""
+    """The URL a stored connection's key belongs to (OpenAI's or Anthropic's default when it has none)."""
     if not connection.base_url and getattr(connection, 'provider', None) == 'openai':
         return 'https://api.openai.com/v1'
+    if not connection.base_url and getattr(connection, 'provider', None) == 'anthropic':
+        return 'https://api.anthropic.com'
     return connection.base_url
 
 
@@ -691,16 +719,17 @@ def discover(provider):
                 model['efforts'] = [effort for effort in options if effort in listed]
         return {'models': models}
     cipher, connections, profiles = stores()
+    dialect = 'openai'
     if kind == 'connection':
         connection = connections.get(name, cipher=cipher)
-        url, key = connection_url(connection), connection.api_key_value()
+        url, key, dialect = connection_url(connection), connection.api_key_value(), connection_dialect(connection)
     else:
         profile = profiles.load(name, cipher=cipher)
         url = profile.base_url
         key = profile.api_key.get_secret_value() if profile.api_key else None
     if not key:
         raise ValueError('Provider credential unavailable')
-    return {'models': api_models(url, key)}
+    return {'models': api_models(url, key, dialect)}
 
 
 # The request shapes a connection test accepts: a saved provider, a saved connection with
@@ -736,7 +765,8 @@ def probe(request):
             saved = origin(connection_url(connection))
             if 'api_key' not in request and (saved is None or origin(request['base_url']) != saved):
                 raise TokenRequired()
-            models = api_models(request['base_url'], request.get('api_key') or connection.api_key_value())
+            models = api_models(request['base_url'], request.get('api_key') or connection.api_key_value(),
+                                connection_dialect(connection))
         else:
             models = api_models(request['base_url'], request['api_key'])
         if not models:

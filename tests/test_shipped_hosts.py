@@ -29,6 +29,7 @@ PUBLIC = {
     "gitea.com": "the public Gitea where the helpers' Gitea behaviour was observed",
     "gitlab.com": "the public GitLab where verify-delivery's GitLab fixtures were recorded",
     "api.openai.com": "the provider endpoint the review hook's example sites use",
+    "api.anthropic.com": "Anthropic's API, the default of an Anthropic provider connection in the review hook",
     "developers.openai.com": "Codex documentation cited in README",
     "opencode.ai": "OpenCode documentation cited in README",
     "claude.ai": "a hosted agent service named in forge-gates and the changelog",
