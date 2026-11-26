@@ -7,25 +7,132 @@ only the rendered prompt does, and sometimes the agent-facing gates block.
 ## Every release
 
 ```sh
-cd aiskills && git pull                       # or refresh the local copy on hosts that cannot reach the repo
+cd aiskills && git fetch --tags && git checkout vX.Y.Z             # the release; or refresh the local copy on hosts that cannot reach the repo
 python3 consumers/openhands-review-hook/render.py --check          # every example site must print OK
 python3 consumers/openhands-review-hook/render.py \
         <site file> > <PROMPT_FILE>   # per prompt the receiver uses
 ```
 
+- The copy is checked out at the release tag, so that the prompt is rendered
+  from the release's template and the installer takes the release's skills
+  and block. `git pull` on the default branch instead gives whatever has been
+  merged since, released or not.
 - `<PROMPT_FILE>` is the receiver's `PROMPT_FILE` (site A: `review_prompt.txt`
   and, for the GitHub poller, `github_review_prompt.txt`; site B:
   `/opt/openhands/hooks/review_prompt.txt`). The new `runtime/` receiver reads
   it per trigger; no restart. Legacy receivers load it at module startup:
   restart those services while idle after replacing their prompt files.
 - Hosts that read the skill from a local copy (site B) also refresh that copy
-  (`skills/oh-code-review`, `skills/oh-technical-writing`).
-- Re-apply the review-gates managed block wherever the site's agents read it:
-  `./install.sh --user --agents-md` (or `--agents-md <repo>`). It tells the agent
-  that *receives* a review what the verdict and dispositions mean.
+  (`skills/oh-code-review`, `skills/oh-technical-writing`). A site whose
+  `SKILL_SOURCE` names a release tag changes the tag in its site file before
+  it renders ("The skill the reviewer follows" below).
+- Re-apply the review-gates managed block wherever the site's agents read it,
+  and refresh the skills installed beside it: `./install.sh --user --agents-md`
+  with the options of the site's first install ("The block and the installed
+  skills" below), or `--agents-md <repo>`. The block tells the agent that
+  *receives* a review what the verdict and dispositions mean.
+- Read which release each part of the site is at now (the next section).
 - Verify with one `review-this` on a small PR: the comment starts with the
   marker line, then the skill's first section, and ends with a verdict the skill
   defines. Watch the receiver journal for `review done`.
+
+## Which release each part of a site is at
+
+Different steps update the parts of a site, so one part can stay behind
+without an error anywhere: one site had current prompts while its managed
+block and its installed skills were those of a release six weeks older. After
+an update, read each part from the copy of the repository the update ran
+from:
+
+```sh
+git describe --tags; cat VERSION            # the copy itself: `vX.Y.Z` alone when it is the release
+python3 consumers/openhands-review-hook/render.py <site file> | cmp - <PROMPT_FILE>   # each prompt
+head -4 <PROMPT_FILE>                       # step 1: where the reviewer reads the skill from
+for s in oh-code-review oh-technical-writing; do diff -rq skills/$s <local copy>/skills/$s; done   # a site that reads it from a local copy
+cat <skills dir>/.ai-skills.json            # the installed skills: "version" and "skills"
+for s in $(ls skills); do diff -rq skills/$s <skills dir>/$s; done
+sed -n '/aiskills:review-gates start/,/aiskills:review-gates end/p' ~/.claude/CLAUDE.md |
+  sed '1d;$d' | cmp - agents/review-gates.md           # each file that carries the block
+```
+
+- `cmp` prints nothing when the two are equal: the prompt is this copy's
+  render of the site file, and the block is this release's. Run the last
+  command for every instructions file the site's agents read
+  (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, a repository's `AGENTS.md`).
+- `diff -rq` prints nothing for a skill that equals this release, and names
+  one that differs or is absent. Read what the loops print: a loop's exit
+  status is that of its last skill alone.
+- `<local copy>` is the directory step 1 of the prompt names, for a site that
+  reads the skill from a local copy (site B: `/opt/openhands/hooks/aiskills`).
+  Step 1 prints the same path whether that copy is this release or an older
+  one, so the copy is compared.
+- `<skills dir>` is a directory the installer wrote skills into:
+  `~/.claude/skills` (Claude Code), `~/.agents/skills` (Codex),
+  `~/.config/opencode/skills`, `~/.openhands/skills`. Run both commands for
+  every one the site uses. Each has its own manifest, and an install run
+  refreshes only the directories its `--tool` names, so one can be this
+  release while another is not.
+- The manifest's `version` is the release of the last install run into that
+  directory and holds only for the skills in its `skills` list: a skill that
+  run did not select keeps the content it had.
+- `~` is the home of the user the installer ran as. Where the agents run in a
+  container as another user, their home is a directory of the host mounted
+  into it, and the installer's home has to resolve to that directory.
+- The runtime modules and the app are compared file by file, as "Runtime
+  code and the Canvas app" below describes.
+
+### The block and the installed skills
+
+`./install.sh --user --agents-md` without another option replaces the three
+core skills (`architecture-review`, `oh-code-review`, `oh-technical-writing`)
+in `~/.claude/skills` and in `~/.agents/skills`, creates either directory
+when it is absent, and writes a manifest into each. It then writes the block
+into `~/.claude/CLAUDE.md` and into the instructions file of every other
+client whose directory exists (`~/.codex/AGENTS.md`, for one). A site that
+was installed with other options repeats them at every update, or the run
+leaves it mixed: after a first install with `--skills all`, a run without it
+refreshes three skills, leaves the others at the old release and writes a
+manifest that lists only the three. In the same way a site that holds skills
+for two clients names both at every update (`--tool claude --tool codex`), or
+the directory of the one left out stays at the old release. For a site that
+holds every skill, for Claude Code only:
+
+```sh
+./install.sh --user --agents-md --skills all --tool claude --dry-run   # what the run would write
+./install.sh --user --agents-md --skills all --tool claude
+```
+
+`--tool` chooses where the skills go. The block goes into
+`~/.claude/CLAUDE.md` and into the instructions file of each other client
+whose directory exists when the block is written, whatever `--tool` says.
+One case follows from that: a first install with `--tool opencode` creates
+OpenCode's directory for its skills, so the same run also writes the block
+into OpenCode's `AGENTS.md`, and the dry run before it does not list that
+file.
+
+The installer writes each instructions file anew, so the file then belongs
+to the user that ran it. Where a client runs as another user and writes to
+its own instructions file, give the file back to that user after the run
+(`chown`), and check that this user can read the installed skills.
+
+### The skill the reviewer follows
+
+`SKILL_SOURCE` in the site file becomes step 1 of the prompt: where the
+reviewer reads the skill at every run. It takes one of three forms:
+
+- A clone with no branch named (the `site-a` examples). The reviewer follows
+  the default branch as it is at the moment of the review, so the skill
+  changes with every merge here, released or not, while the prompt stays the
+  one last rendered. The skill can then name a step that the installed prompt
+  does not yet ask for.
+- A clone of a release tag:
+  `git clone --branch vX.Y.Z --depth 1 https://github.com/BlackVS/aiskills.git`.
+  The skill and the prompt are then the same release, and the skill changes
+  only when the operator changes the tag in the site file and renders again.
+  A site that misses a release stays whole on the release before it.
+- A local copy (site B): the release that copy was last refreshed to.
+
+Name the release tag unless the site is meant to follow unreleased work.
 
 ## If the site's plumbing changes
 
@@ -71,7 +178,7 @@ expected and are not drift; a differing module is.
 
 | Release | What a site must do |
 | --- | --- |
-| Unreleased | A Canvas provider connection of the Anthropic kind lists its models and passes Test on the Auto Reviews page, and a reviewer chosen from it runs as `anthropic/<model>`. Deploy `canvas_discovery.py` and restart `review-control`; the app is unchanged. Keep the connection's base URL at `https://api.anthropic.com` (no `/v1`): Canvas chats on the same connection add `/v1/messages` themselves. |
+| Unreleased | A Canvas provider connection of the Anthropic kind lists its models and passes Test on the Auto Reviews page, and a reviewer chosen from it runs as `anthropic/<model>`. Deploy `canvas_discovery.py` and restart `review-control`; the app is unchanged. Keep the connection's base URL at `https://api.anthropic.com` (no `/v1`): Canvas chats on the same connection add `/v1/messages` themselves. Also read which release each part of the site is at ("Which release each part of a site is at" above): a managed block or installed skills left at an older release are re-applied with the options of the site's first install, and a site that clones the skill without a branch can name the release tag instead. |
 | 1.47.0 | A repeat review reads every earlier review on the PR and the scope owner's comments disposing their findings, and applies the skill's new "Repeat reviews" rule (`references/dispositions.md`). Re-render the prompt (`render.py`) and install it; no service restart. Check that the site's `CLONE_AND_FETCH` gives the reviewer a way to read the PR's comments: the example sites now name one for each forge (GitHub: `gh pr view --comments`; Gitea: `tea api '/repos/{repo}/issues/{num}/comments'`). A site that reads the skill from a local copy refreshes it. To see that it took effect: the installed prompt contains `OWNER-ROUNDS:`; the comment-reading command, run by hand with the reviewer's credentials, lists a PR's comments; and a second `review-this` on a small PR after a new commit gives a review that refers to the earlier one. |
 | 1.45.1 | A save the provider refuses now tells the person which role was refused and whether its model or its effort is no longer offered, in place of the general "discovery or settings unavailable" text. Deploy `canvas_discovery.py` and `review_control.py` together and restart `review-control`; the app is unchanged. Nothing to configure. Also in this row, in the same two files: the service answers a save whose role is no selection (no model, a provider that is no `kind:name`, an unknown field) as 400 before it asks the helper, and takes a `refused` answer for a refused selection only on a save. |
 | 1.45.0 | The Auto Reviews page shows how each account connection's login stands (valid until when, ending within a week, ended, missing, unreadable), and a review that fails because its account agent could not authenticate says so on the PR and names the fix. Deploy `canvas_discovery.py` and `review_runner.py`, then restart `review-hook`, `github-review-poller` and `review-control` while idle; re-install the Auto Reviews app (`extension.js`) for the login lines. After the restart, the provider list shows a login line under each account connection. Nothing to configure: the helper reads the adapters' own login files inside the Canvas container, presence and dates only. Also in this row: the Codex account connection offers the efforts `max` and `ultra` beside `low`–`xhigh`, each model only those the adapter lists for it. Deploy `canvas_discovery.py` and `review_control.py`, restart `review-control` and re-install the app (`extension.js`). A save now sends all its roles to the helper in one call, which asks each provider for its models once and checks every role before the first profile is written. `max` and `ultra` need an agent-canvas whose SDK takes them as the suffix of a `model/effort` id (observed with agent-canvas 1.41.0); verify with a no-tools conversation on the saved profile, whose agent state names the effort it ran at. A Codex profile without an effort runs at the adapter default, which can be `low`: check the saved primary. |
