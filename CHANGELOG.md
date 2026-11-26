@@ -9,6 +9,45 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.48.0] - 2026-11-26
+
+A refinement of the 1.47.0 review rule, and two changes for hands sites.
+`oh-code-review`'s fail-safe test protects the data the product is documented
+to keep, so losing only a rotated log, a cache or a temporary file in a
+compound-fault state is a FOLLOW_UP, unless a repository's guide lists it. A
+disposition from an account the repository does not trust is reported in a
+`SCOPE-OWNERS:` line that names the remedy (#157). `UPDATING.md` says which
+release each part of a site is at (#156), and Auto Reviews can use an
+Anthropic API connection (#155).
+
+**After the release, on a machine with the skill set installed:** run the
+one-liner again, or `./install.sh` with the same flags from a checkout of the
+release (`git fetch --tags && git checkout v1.48.0`).
+Include `-a` (`--agents-md`), as the one-liner's default does, because the
+review-gates block changed. To see that it took effect:
+
+- `.ai-skills.json` in each skills directory names `"version": "1.48.0"`;
+- where the manifest lists `oh-code-review`,
+  `oh-code-review/references/dispositions.md` there contains `SCOPE-OWNERS:`;
+- the instructions file the block was written into (for a user install,
+  `~/.claude/CLAUDE.md`) contains `protected data lost or corrupted`.
+
+**After the release, on a site of the external reviewer:** follow the 1.48.0
+row of `consumers/openhands-review-hook/UPDATING.md`. The prompt template is
+unchanged, so what a site does for the rule depends on its `SKILL_SOURCE`:
+
+- a clone with no branch named does nothing;
+- a clone of a release tag changes the tag in the site file to `v1.48.0`,
+  renders the prompt again and installs it;
+- a local copy is refreshed.
+
+For #155, deploy `canvas_discovery.py` and restart `review-control`. A
+repository on a forge that reports no owner role (Gitea, GitLab) names its
+scope owners in its review guide on the base branch before its first
+disposition. To see that it took effect, read the source the installed
+prompt names (`head -4 <PROMPT_FILE>`): its
+`skills/oh-code-review/references/dispositions.md` contains `SCOPE-OWNERS:`.
+
 ### Changed
 
 - **`oh-code-review`'s fail-safe test protects the data the product is
@@ -59,7 +98,7 @@ content fixes inside existing skills. The current version is in `VERSION`.
   Anthropic kind is now asked at `/v1/models` with `x-api-key` and
   `anthropic-version`, and a reviewer chosen from it gets the model string
   `anthropic/<model>` instead of the proxy prefix. A hands site:
-  `consumers/openhands-review-hook/UPDATING.md`, row Unreleased.
+  `consumers/openhands-review-hook/UPDATING.md`, row 1.48.0.
 
 ## [1.47.0] - 2026-11-25
 
