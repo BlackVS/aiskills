@@ -22,9 +22,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
 - hands: Auto Reviews lists every model of an Anthropic API connection, not
   only the first page. The discovery helper follows the list's `has_more`
   with `after_id`, on the same endpoint with the same headers, and still
-  refuses a redirect on any page. It reads at most 10 pages within 30
-  seconds, and refuses a list that does not end or does not say where it
-  continues. Deploy `canvas_discovery.py`
+  refuses a redirect on any page. It asks for at most 10 pages and starts
+  none after 30 seconds, and refuses a list that does not end or does not
+  say where it continues. Deploy `canvas_discovery.py`
   (`consumers/openhands-review-hook/UPDATING.md`, row Unreleased).
 
 ## [1.49.0] - 2026-11-26

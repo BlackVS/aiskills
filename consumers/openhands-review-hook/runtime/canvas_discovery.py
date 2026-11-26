@@ -92,7 +92,9 @@ def normalize_effort(provider, effort):
 
 ANTHROPIC_VERSION = '2023-06-01'  # the API version Anthropic requires on every request
 ANTHROPIC_MAX_PAGES = 10  # of up to 1000 models each; a list that never ends is refused
-API_MODELS_BUDGET = 30  # seconds for every page of one list, well inside review-control's 55 s for the helper
+# Seconds after which no further page of a list is started. A page in flight is not cut: a slow one
+# may end later, and review-control's 55 s for the whole helper is the hard limit.
+API_MODELS_BUDGET = 30
 
 
 def _now():
@@ -100,7 +102,9 @@ def _now():
 
 
 def _model_page(url, headers, deadline):
-    """One GET of a model list, never past a redirect, within what is left of `deadline`."""
+    """One GET of a model list, never past a redirect. It is not started once `deadline` has passed,
+    and each wait on the socket is bounded by what was left then (15 s at most); the read as a whole
+    is not, so the caller's own timeout stays the hard limit."""
     remaining = min(15, deadline - _now())
     if remaining <= 0:
         raise TimeoutError('Model list took too long')
@@ -135,7 +139,7 @@ def api_models(base_url, key, dialect='openai'):
     deadline = _now() + API_MODELS_BUDGET
     if dialect == 'anthropic':
         # Anthropic pages the list: follow `has_more` with `after_id=<last_id>`, on the same
-        # endpoint with the same headers, for a bounded number of pages and seconds
+        # endpoint with the same headers, for a bounded number of pages, none started past the deadline
         url = base + ('/models' if base.endswith('/v1') else '/v1/models') + '?limit=1000'
         headers = {'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION, 'Accept': 'application/json'}
         rows, after = [], None
