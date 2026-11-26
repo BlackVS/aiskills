@@ -64,17 +64,30 @@ Every failure path names its kind, first on the finding's `Failure path` line
   Example: an upgrade interrupted, and its rollback interrupted too.
 
 In a compound-fault state the reviewer checks only that the product **fails
-safe**: no data lost or corrupted, no secret exposed, nothing half-written that a
-later plain operation would silently misread, no claim of a success that did not
-happen. If it does, the finding is a FOLLOW_UP, whatever its severity and
-whatever sentence of a document it contradicts. The finding names the state and
-the evidence that it fails safe, and proposes neither code nor the form of the
-answer. A follow-up for such a state takes one of two forms: a task that fixes
-the state in code, or an entry in the operator's recovery document that says how
-to see the state and how to recover from it. Which one, or none, is the
-project's choice, and its custom-codereview-guide may set a default. Where the
-pull request already changes that document, the entry may go into it before the
-merge as a CURRENT_SCOPE_IMPROVEMENT.
+safe**: no protected data lost or corrupted, no secret exposed, nothing
+half-written that a later plain operation would silently misread, no claim of a
+success that did not happen. If it does, the finding is a FOLLOW_UP, whatever
+its severity and whatever sentence of a document it contradicts. The finding
+names the state and the evidence that it fails safe, and proposes neither code
+nor the form of the answer. A follow-up for such a state takes one of two forms:
+a task that fixes the state in code, or an entry in the operator's recovery
+document that says how to see the state and how to recover from it. Which one,
+or none, is the project's choice, and its custom-codereview-guide may set a
+default. Where the pull request already changes that document, the entry may go
+into it before the merge as a CURRENT_SCOPE_IMPROVEMENT.
+
+Protected data is what the product is documented to keep for its user or
+operator: its stores, configuration and credentials, and anything a documented
+command reads back as the truth. A diagnostic by-product that the product itself
+rotates, expires or rebuilds (a rotated log, a cache, a temporary file) is not
+protected, unless the repository's custom-codereview-guide lists it; without a
+list the reviewer decides from the product's documents and names in the finding
+the sentence it relied on. Example: a compound-fault state in which the next
+rotation overwrites the older rotated log fails safe, and the FOLLOW_UP names
+what is lost; the same state overwriting the configuration does not. A loss on
+the plain path, of anything, is judged by the BLOCKER test as before, and a
+secret exposed, a half-written state misread later and a false success stay
+unsafe whatever file they touch.
 
 What stays BLOCKER is a failure on the plain path and a compound-fault state that
 does not fail safe. An unsafe state that needs more than two independent faults
@@ -104,7 +117,13 @@ comments in which the scope owner disposed their findings. Such a comment, and a
 GitHub an author association of OWNER, and on any forge an account the
 custom-codereview-guide names under "Scope owners", read from the guide on the
 base branch, never the pull request's head, so a pull request cannot name its
-own author. Without either, it does not bind.
+own author. Without either, it does not bind, and the review says so in an
+OBSERVATION of one line in a fixed form that names the remedy:
+
+    SCOPE-OWNERS: <account> does not bind here; name scope owners in the "Scope owners" line of the guide on the base branch
+
+No agent's account is named there by default, since an agent whose disposition
+binds would accept its own risks; naming one is the owner's own decision.
 
 - REJECTED binds with its evidence: the finding is not raised again unless the
   reviewer shows the evidence wrong, and says how.
@@ -119,7 +138,10 @@ own author. Without either, it does not bind.
 - A **new** compound-fault finding on a surface already returned once for one
   does not open another round: the review says so in one line, the finding is a
   FOLLOW_UP, and an unsafe one carries the `OWNER-RISK:` line. The verdict is
-  computed from all dispositions as usual.
+  computed from all dispositions as usual. The surface is the component or
+  contract, as a FOLLOW_UP names it, not the file, the line or the state: after
+  a return for one fault of a log writer, a second about the same writer's
+  rotation is on the same surface.
 
 A READY review that carries an `OWNER-RISK:` line is merged only by a person, and
 the owner answers it in one of three ways on the pull request:
