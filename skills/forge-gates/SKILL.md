@@ -107,8 +107,8 @@ template's placeholder) or `unknown` (the guide could not be read), with a
 information only, never a reason to refuse, and the command writes no guide:
 on `missing`, ask the operator which accounts to name and land the line on
 the base branch before the first disposition. GitHub is not read, since its
-OWNER counts without the line. The check costs one read per request and
-nothing when the line is there.
+OWNER counts without the line. The check costs one read of the forge per
+request, and when the line is there the summary line says nothing about it.
 
 The one write, never retried:
 
