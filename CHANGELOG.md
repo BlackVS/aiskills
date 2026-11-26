@@ -9,6 +9,14 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Changed
+
+- hands: `UPDATING.md` gives OpenCode's skills directory as
+  `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills`, as the installer
+  resolves it, and names the four clients the installer writes the
+  review-gates block for (Claude Code always; OpenCode, Codex and Gemini CLI
+  when their directory exists). OpenHands gets no block.
+
 ## [1.49.0] - 2026-11-26
 
 Where a repository names its scope owners, and when an agent asks for them
