@@ -17,6 +17,16 @@ content fixes inside existing skills. The current version is in `VERSION`.
   review-gates block for (Claude Code always; OpenCode, Codex and Gemini CLI
   when their directory exists). OpenHands gets no block.
 
+### Fixed
+
+- hands: Auto Reviews lists every model of an Anthropic API connection, not
+  only the first page. The discovery helper follows the list's `has_more`
+  with `after_id`, on the same endpoint with the same headers, and still
+  refuses a redirect on any page. It reads at most 10 pages within 30
+  seconds, and refuses a list that does not end or does not say where it
+  continues. Deploy `canvas_discovery.py`
+  (`consumers/openhands-review-hook/UPDATING.md`, row Unreleased).
+
 ## [1.49.0] - 2026-11-26
 
 Where a repository names its scope owners, and when an agent asks for them

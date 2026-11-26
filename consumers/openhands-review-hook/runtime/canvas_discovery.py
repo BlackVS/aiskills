@@ -8,7 +8,7 @@ import signal
 import time
 import urllib.request
 import urllib.error
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from pathlib import Path
 
 
@@ -91,6 +91,28 @@ def normalize_effort(provider, effort):
 
 
 ANTHROPIC_VERSION = '2023-06-01'  # the API version Anthropic requires on every request
+ANTHROPIC_MAX_PAGES = 10  # of up to 1000 models each; a list that never ends is refused
+API_MODELS_BUDGET = 30  # seconds for every page of one list, well inside review-control's 55 s for the helper
+
+
+def _now():
+    return time.monotonic()  # its own name, so a test can move this clock and no other
+
+
+def _model_page(url, headers, deadline):
+    """One GET of a model list, never past a redirect, within what is left of `deadline`."""
+    remaining = min(15, deadline - _now())
+    if remaining <= 0:
+        raise TimeoutError('Model list took too long')
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=remaining) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise ValueError('Model response too large')
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not isinstance(data.get('data'), list):
+        raise ValueError('Provider did not return a model list')
+    return data
 
 
 def connection_dialect(connection):
@@ -110,20 +132,27 @@ def api_models(base_url, key, dialect='openai'):
     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError('Invalid provider URL')
     base = base_url.rstrip('/')
+    deadline = _now() + API_MODELS_BUDGET
     if dialect == 'anthropic':
-        request = urllib.request.Request(base + ('/models' if base.endswith('/v1') else '/v1/models') + '?limit=1000',
-            headers={'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION, 'Accept': 'application/json'})
+        # Anthropic pages the list: follow `has_more` with `after_id=<last_id>`, on the same
+        # endpoint with the same headers, for a bounded number of pages and seconds
+        url = base + ('/models' if base.endswith('/v1') else '/v1/models') + '?limit=1000'
+        headers = {'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION, 'Accept': 'application/json'}
+        rows, after = [], None
+        for _ in range(ANTHROPIC_MAX_PAGES):
+            data = _model_page(url + ('&after_id=' + quote(after, safe='') if after else ''), headers, deadline)
+            rows += data['data']
+            if data.get('has_more') is not True:
+                break
+            last = data.get('last_id')
+            if not isinstance(last, str) or not last or last == after:
+                raise ValueError('Provider did not say where its model list continues')
+            after = last
+        else:
+            raise ValueError('Model list has too many pages')
     else:
-        request = urllib.request.Request(base + '/models',
-            headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json'})
-    with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
-        raw = response.read(2_000_001)
-    if len(raw) > 2_000_000:
-        raise ValueError('Model response too large')
-    data = json.loads(raw)
-    rows = data.get('data')
-    if not isinstance(rows, list):
-        raise ValueError('Provider did not return a model list')
+        rows = _model_page(base + '/models', {'Authorization': 'Bearer ' + key, 'Accept': 'application/json'},
+                           deadline)['data']
     return [{'id': model, 'label': model} for model in sorted({
         row['id'] for row in rows if isinstance(row, dict)
         and isinstance(row.get('id'), str) and 0 < len(row['id']) <= 256})]
