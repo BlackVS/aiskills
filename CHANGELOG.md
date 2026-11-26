@@ -15,18 +15,20 @@ A refinement of the 1.47.0 review rule, and two changes for hands sites.
 `oh-code-review`'s fail-safe test protects the data the product is documented
 to keep, so losing only a rotated log, a cache or a temporary file in a
 compound-fault state is a FOLLOW_UP, unless a repository's guide lists it. A
-disposition that does not bind is reported in a `SCOPE-OWNERS:` line that
-names the remedy (#157). `UPDATING.md` says which release each part of a
-site is at (#156), and Auto Reviews can use an Anthropic API connection
-(#155).
+disposition from an account the repository does not trust is reported in a
+`SCOPE-OWNERS:` line that names the remedy (#157). `UPDATING.md` says which
+release each part of a site is at (#156), and Auto Reviews can use an
+Anthropic API connection (#155).
 
 **After the release, on a machine with the skill set installed:** run the
-one-liner again, or `./install.sh` with the same flags after `git pull`.
+one-liner again, or `./install.sh` with the same flags from a checkout of the
+release (`git fetch --tags && git checkout v1.48.0`).
 Include `-a` (`--agents-md`), as the one-liner's default does, because the
 review-gates block changed. To see that it took effect:
 
 - `.ai-skills.json` in each skills directory names `"version": "1.48.0"`;
-- `oh-code-review/references/dispositions.md` there contains `SCOPE-OWNERS:`;
+- where the manifest lists `oh-code-review`,
+  `oh-code-review/references/dispositions.md` there contains `SCOPE-OWNERS:`;
 - the instructions file the block was written into (for a user install,
   `~/.claude/CLAUDE.md`) contains `protected data lost or corrupted`.
 
