@@ -163,6 +163,18 @@ class BlockerGatingTests(unittest.TestCase):
             self.assertNotIn("smallest first increment", text, rel)
         d = open(os.path.join(root, "skills/oh-code-review/references/dispositions.md"), encoding="utf-8").read()
         self.assertIn("## Follow-ups are grouped per surface", d); self.assertIn('"surface"', d); self.assertIn('"outcome"', d)
+    def test_every_reader_learns_where_scope_owners_are_named(self):
+        # the reviewer's rule, the guide a repository fills in, and the block every agent reads name the same line
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        for rel in ("skills/oh-code-review/references/dispositions.md",
+                    "skills/oh-code-review/references/custom-codereview-guide.template.md", "agents/review-gates.md"):
+            text = " ".join(open(os.path.join(root, rel), encoding="utf-8").read().split())
+            self.assertIn("Scope owners", text, rel)
+        gates = " ".join(open(os.path.join(root, "agents/review-gates.md"), encoding="utf-8").read().split())
+        self.assertIn("On a forge that reports no owner role (Gitea, GitLab)", gates)
+        self.assertIn("before its first disposition", gates)
+        self.assertIn("only a named account's disposition counts", gates)
+        self.assertIn("asks the operator what to write there", gates)  # an agent never names the accounts itself
     def test_disposition_is_an_enum_not_prose(self):
         with self.assertRaises(AssertionError): validate(F("blocker-ish", **BLOCK))
         with self.assertRaises(AssertionError): validate(F("Needs rework", **BLOCK))

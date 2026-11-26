@@ -51,6 +51,20 @@ requests; three of the projects came to the same rules on their own.
   finding gets the disposition of whoever owns the scope (the architect or
   coordinator session, or the person) before any code is written for it.
   Each round's blockers were in the code written for the round before.
+  A repeat review counts a disposition only from the repository's owner (on
+  GitHub, an author association of OWNER) or from an account named in the
+  "Scope owners" line of `.agents/skills/custom-codereview-guide/SKILL.md`
+  on the base branch. On a forge that reports no owner role (Gitea, GitLab)
+  only a named account's disposition counts, even the person's, so the
+  repository writes that line on its base branch before its first
+  disposition. Which accounts are
+  named is the operator's decision for each repository, a coordinator
+  session's or another agent's account included: an agent that finds the
+  line absent or empty asks the operator what to write there, and never
+  fills it in on its own. Where the `forge-gates` skill is installed, its
+  `request-review` reads the line at every request and reports
+  `scope_owners` `missing`; that report is when to ask, and no other check
+  is needed.
 - **Run it before asking.** Every command line and every statement that the
   change adds to a document or a script is run once for real before the
   first external request and before a run on a host. Host runs stopped on a

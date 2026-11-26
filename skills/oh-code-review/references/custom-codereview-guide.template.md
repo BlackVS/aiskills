@@ -32,7 +32,8 @@ credentials), and any by-product to treat as protected, such as an audit log>
 Scope owners: <the accounts, besides a GitHub repository's OWNER, whose
 disposition comments and `OWNER-ROUNDS:` lines bind a repeat review; read from
 the base branch. On a forge that reports no owner role, name them before the
-first disposition; an agent's account only by the owner's own decision>
+first disposition; an agent's account only by the owner's own decision. The
+operator chooses the accounts: an agent writing this guide asks for them>
 
 The default form of a follow-up for a compound-fault state (a task that fixes it
 in code, or an entry in the operator's recovery document that says how to see the

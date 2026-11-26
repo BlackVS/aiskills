@@ -96,6 +96,20 @@ removes nothing. `reviews` reports how many of the gate row's reviews are
 READY, as `gates` counts them (`--review`, `--required-reviews`): "k of n
 READY". It is information only and never a reason to refuse.
 
+On Gitea and GitLab, which report no owner role, `scope_owners` says whether
+the review guide (`.agents/skills/custom-codereview-guide/SKILL.md`) on the
+pull request's base branch names the scope owners: a repeat review counts a
+disposition there only from an account its "Scope owners" line names
+(`oh-code-review`'s dispositions reference). `status` is `named` with the
+line's `accounts`, `missing` (no guide, no line, an empty line or the
+template's placeholder) or `unknown` (the guide could not be read), with a
+`detail`; the summary line repeats a `missing` or `unknown` one. It is
+information only, never a reason to refuse, and the command writes no guide:
+on `missing`, ask the operator which accounts to name and land the line on
+the base branch before the first disposition. GitHub is not read, since its
+OWNER counts without the line. The check costs one read per request and
+nothing when the line is there.
+
 The one write, never retried:
 
 | Forge | Request | The token needs |
