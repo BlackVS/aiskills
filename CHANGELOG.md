@@ -16,23 +16,23 @@ content fixes inside existing skills. The current version is in `VERSION`.
   diagnostic by-product the product itself rotates, expires or rebuilds (a
   rotated log, a cache, a temporary file): the finding is a FOLLOW_UP that
   names what is lost. Stores, configuration, credentials and anything a
-  documented command reads back are protected, and a repository's review
-  guide may list more (a new "Protected data" line in the guide template).
-  A loss on the plain path, a secret exposed, a half-written state misread
-  later and a false success are judged as before. The rule that a new compound-fault
-  finding on a surface already returned once opens no round says that the
-  surface is the component, not the file or the state. The review-gates
-  block says "protected data": reinstall with `-a` to update it.
+  documented command reads back as the truth are protected, and a repository's
+  review guide may list more (a new "Protected data" line in the guide
+  template). A loss on the plain path, a secret exposed, a half-written state
+  misread later and a false success are judged as before. The rule that a new
+  compound-fault finding on a surface already returned once opens no round
+  says that the surface is the component or contract, not the file or the
+  state. The review-gates block says "protected data": reinstall with `-a` to
+  update it.
 - **A disposition that does not bind says how to fix it.** On a forge that
-  reports no owner role, a disposition counts only from an account the
-  guide's "Scope owners" line names on the base branch. A review that does
-  not count one now says so in an OBSERVATION of one fixed line,
-  `SCOPE-OWNERS: <account> does not bind here; name scope owners in the
-  "Scope owners" line of the guide on the base branch`. **A repository on
-  such a forge (Gitea, GitLab) names its scope owners in that line before its
-  first disposition.** No agent's account is named by default, since an
-  agent would accept its own risks; naming one is the owner's decision. Who
-  is trusted does not change.
+  reports no owner role, a disposition counts only from an account the guide's
+  "Scope owners" line names on the base branch. A review that does not count
+  one now says so in an OBSERVATION of one fixed line, `SCOPE-OWNERS:
+  <account> does not bind here; name scope owners in the "Scope owners" line
+  of the guide on the base branch`. **A repository on such a forge (Gitea,
+  GitLab) names its scope owners in that line before its first disposition.**
+  No agent's account is named by default, since an agent would accept its own
+  risks; naming one is the owner's decision. Who is trusted does not change.
 - hands: `consumers/openhands-review-hook/UPDATING.md` says which release each
   part of a site is at. A site's prompts, the skill its reviewer follows, the
   review-gates block and the installed skills are updated by different steps,
