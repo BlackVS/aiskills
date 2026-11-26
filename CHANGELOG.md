@@ -15,8 +15,7 @@ content fixes inside existing skills. The current version is in `VERSION`.
   `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills`, as the installer
   resolves it, and names the four clients the installer writes the
   review-gates block for (Claude Code always; OpenCode, Codex and Gemini CLI
-  when their directory exists). OpenHands gets no block, so `--tool
-  openhands` installs only its skills.
+  when their directory exists). OpenHands gets no block.
 
 ## [1.49.0] - 2026-11-26
 
