@@ -616,23 +616,26 @@ def scope_owners(forge, kind, pr):
             raw = vd.Forge.get(forge, f"/repository/files/{urllib.parse.quote(GUIDE, safe='')}?ref={ref}")
         else:
             raw = forge.get(f"/contents/{GUIDE}?ref={ref}")
-        text = base64.b64decode(raw["content"]).decode("utf-8") if isinstance(raw, dict) and vd.text(raw.get("content")) \
-            else None
+        content = raw.get("content") if isinstance(raw, dict) else None
+        if not isinstance(content, str):
+            entry["detail"] = "the forge's answer for the guide has no content"
+            return entry
+        # strict: line breaks are allowed; any other character outside base64 makes the answer unreadable
+        text = base64.b64decode(re.sub(r"[\r\n]", "", content), validate=True).decode("utf-8")
     except vd.NotFound:
-        text = ""  # no guide on the base branch
+        text = None  # no guide on the base branch
     except Exception as e:  # information only: an outage or a surprise here never blocks the request
         entry["detail"] = f"the guide could not be read ({type(e).__name__})"
         return entry
-    if text is None:
-        entry["detail"] = "the forge's answer for the guide has no content"
-        return entry
-    m = SCOPE_OWNERS.search(text)
+    m = SCOPE_OWNERS.search(text or "")
     value = m.group(1).strip() if m else ""
     if value and not value.startswith("<"):
         entry.update(status="named", accounts=value[:200])
         return entry
-    found = "no review guide" if not text else "no Scope owners line in the guide" if not m else \
-        "the guide's Scope owners line is still the template's placeholder" if value else "the Scope owners line is empty"
+    found = ("no review guide" if text is None else "the guide is empty" if not text.strip() else
+             "no Scope owners line in the guide" if not m else
+             "the guide's Scope owners line is still the template's placeholder" if value else
+             "the Scope owners line is empty")
     entry.update(status="missing", detail=(
         f"{found} on {base}: on this forge a repeat review counts a disposition only from an account named there. "
         "Ask the operator which accounts to name, and land the line on the base branch before the first disposition"))

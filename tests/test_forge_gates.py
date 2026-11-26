@@ -601,7 +601,8 @@ class RequestContract(Gates):
         path = ".agents/skills/custom-codereview-guide/SKILL.md"
         route = (f"{self.repo}/repository/files/{urllib.parse.quote(path, safe='')}?ref=main" if self.forge == "gitlab"
                  else f"{self.repo}/contents/{path}?ref=main")
-        body = {"content": base64.b64encode(text.encode()).decode(), "encoding": "base64"} if status == 200 else {}
+        body = text if isinstance(text, dict) else \
+            {"content": base64.b64encode(text.encode()).decode(), "encoding": "base64"} if status == 200 else {}
         self.fake.set(route, body, status)
         return route
 
@@ -614,12 +615,19 @@ class RequestContract(Gates):
                  ("placeholder", placeholder, 200, "missing", "template's placeholder"),
                  ("named", named, 200, "named", None),
                  ("named in a bullet, bold", "- **Scope owners:** alice, planner-bot\n", 200, "named", None),
-                 ("unreadable", "x", 500, "unknown", "could not be read")]
+                 ("unreadable", "x", 500, "unknown", "could not be read"),
+                 ("empty file", "", 200, "missing", "the guide is empty on main"),
+                 ("wrapped base64", {"content": "U2NvcGUgb3duZXJz\nOiBhbGljZQ==\n", "encoding": "base64"}, 200,
+                  "named", None),
+                 # a lenient decoder drops the stray `!` and reads "Scope owners: alice": strict decoding refuses it
+                 ("malformed base64", {"content": "U2NvcGUgb3duZXJzOiBhbGljZQ==!", "encoding": "base64"}, 200,
+                  "unknown", "could not be read"),
+                 ("no content field", {"encoding": "base64"}, 200, "unknown", "has no content")]
         for name, text, status, expected, detail in cases:
             with self.subTest(name):
                 self.fake.drop(self.guide("")); self.fake.requests.clear()  # dry runs write nothing
                 if text is not None or status != 404:
-                    self.guide(text or "", status)
+                    self.guide(text if text is not None else "", status)
                 code, doc = self.request("--dry-run")
                 self.assertEqual((code, doc["outcome"]), (0, "dry_run"), "never a refusal: " + json.dumps(doc, indent=1))
                 if self.forge == "github":
@@ -629,7 +637,7 @@ class RequestContract(Gates):
                 owners = doc["scope_owners"]
                 self.assertEqual((owners["status"], owners["base"]), (expected, "main"))
                 if expected == "named":
-                    self.assertEqual(owners["accounts"], "alice, planner-bot")
+                    self.assertEqual(owners["accounts"], "alice" if name == "wrapped base64" else "alice, planner-bot")
                     self.assertNotIn("scope owners", self.stderr_of(doc))
                 else:
                     self.assertIn(detail, owners["detail"])
