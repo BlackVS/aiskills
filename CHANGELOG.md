@@ -34,9 +34,12 @@ block changed. To see that it took effect:
 
 **After the release, on a site of the external reviewer:** follow the 1.49.0
 row of `consumers/openhands-review-hook/UPDATING.md`. The prompt template,
-the skill the reviewer follows and the runtime are unchanged; a site
-re-applies the block, and one whose `SKILL_SOURCE` clones a release tag
-changes the tag to `v1.49.0` and renders the prompt again.
+the review rules and the runtime are unchanged; inside `oh-code-review`, only
+the guide template's "Scope owners" line changed. A site re-applies the
+block; one whose `SKILL_SOURCE` clones a release tag changes the tag to
+`v1.49.0` and renders the prompt again, and a legacy receiver is then
+restarted while idle; one that reads the skill from a local copy refreshes
+that copy.
 
 ### Added
 
