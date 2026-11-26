@@ -95,8 +95,9 @@ Rules:
   most one interruption or failure of it) or compound-fault (two or more
   independent faults, or an object no command of the product makes). A
   compound-fault state blocks only when the product does not fail safe there:
-  data lost or corrupted, a secret exposed, a half-written state misread
-  later, or a false success (`oh-code-review`'s dispositions reference). The
+  protected data lost or corrupted, a secret exposed, a half-written state
+  misread later, or a false success (`oh-code-review`'s dispositions
+  reference). The
   same binds the implementer's and a coordinator's own reviews and
   instructions: the answer to a blocker is the smallest change that removes
   it, and "the whole class" is asked for only where its siblings are on the
