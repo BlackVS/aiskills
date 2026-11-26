@@ -206,6 +206,59 @@ class DiscoveryTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
+    def test_an_anthropic_model_list_is_read_page_by_page_within_bounds(self):
+        import canvas_discovery
+        received, pages = [], {}
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                received.append((self.path, self.headers.get('x-api-key'), self.headers.get('anthropic-version')))
+                status, body = pages.get(self.path, (404, {}))
+                self.send_response(status)
+                if status == 302:
+                    self.send_header('Location', '/stolen')
+                self.end_headers()
+                if status == 200:
+                    self.wfile.write(json.dumps(body).encode())
+        server = LocalHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}'
+        first, second = '/v1/models?limit=1000', '/v1/models?limit=1000&after_id=claude-b'
+        try:
+            # two pages: the second page's model is in the answer, asked of the same endpoint with the same headers
+            pages.update({first: (200, {'data': [{'id': 'claude-b'}, {'id': 'claude-a'}], 'has_more': True, 'last_id': 'claude-b'}),
+                          second: (200, {'data': [{'id': 'claude-c'}], 'has_more': False, 'last_id': 'claude-c'})})
+            self.assertEqual([m['id'] for m in api_models(url, 'test-secret', 'anthropic')], ['claude-a', 'claude-b', 'claude-c'])
+            self.assertEqual(received, [(first, 'test-secret', '2023-06-01'), (second, 'test-secret', '2023-06-01')])
+            # a redirect on a later page is refused, not followed
+            received.clear(); pages[second] = (302, {})
+            with self.assertRaises(urllib.error.HTTPError): api_models(url, 'test-secret', 'anthropic')
+            self.assertEqual([path for path, *_ in received], [first, second], 'nothing past the redirect')
+            # `has_more` without a new `last_id` (none, empty, or the one just used) is refused, not looped on
+            for last in (None, '', 'claude-b'):
+                with self.subTest(last_id=last):
+                    pages[second] = (200, {'data': [], 'has_more': True, 'last_id': last})
+                    if last is None:
+                        pages[first] = (200, {'data': [{'id': 'claude-a'}], 'has_more': True})
+                    else:
+                        pages[first] = (200, {'data': [{'id': 'claude-a'}], 'has_more': True, 'last_id': 'claude-b'})
+                    with self.assertRaises(ValueError): api_models(url, 'test-secret', 'anthropic')
+            # a list that always has more is cut at ANTHROPIC_MAX_PAGES requests and refused
+            received.clear(); pages.clear()
+            pages[first] = (200, {'data': [{'id': 'm0'}], 'has_more': True, 'last_id': 'm0'})
+            for n in range(1, 20):
+                pages[f'/v1/models?limit=1000&after_id=m{n - 1}'] = (200, {'data': [{'id': f'm{n}'}], 'has_more': True, 'last_id': f'm{n}'})
+            with self.assertRaises(ValueError): api_models(url, 'test-secret', 'anthropic')
+            self.assertEqual(len(received), canvas_discovery.ANTHROPIC_MAX_PAGES)
+            # and the pages share one time budget: once it is spent, no further page is asked for
+            received.clear()
+            clock = iter([0, 0, 31])  # the deadline, the first page, the second page past the 30 s budget
+            with patch('canvas_discovery._now', side_effect=lambda: next(clock)):
+                with self.assertRaises(TimeoutError): api_models(url, 'test-secret', 'anthropic')
+            self.assertEqual(len(received), 1)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
     def test_an_anthropic_connection_is_tested_and_discovered_in_its_dialect(self):
         from types import SimpleNamespace
         import canvas_discovery
