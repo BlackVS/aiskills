@@ -9,6 +9,35 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.49.0] - 2026-11-26
+
+Where a repository names its scope owners, and when an agent asks for them
+(#159). The review-gates block says that a repeat review counts a
+disposition only from the repository's owner on GitHub, or from an account
+named in the "Scope owners" line of the review guide on the base branch,
+which on Gitea and GitLab is the only way. The operator chooses those
+accounts for each repository, and an agent asks rather than fills the line
+in. forge-gates `request-review` reports the line's state on Gitea and
+GitLab at every request, so that report is when to ask.
+
+**After the release, on a machine with the skill set installed:** run the
+one-liner again, or `./install.sh` with the same flags from a checkout of the
+release (`git fetch --tags && git checkout v1.49.0`). Include `-a`
+(`--agents-md`), as the one-liner's default does, because the review-gates
+block changed. To see that it took effect:
+
+- `.ai-skills.json` in each skills directory names `"version": "1.49.0"`;
+- where the manifest lists `forge-gates`,
+  `forge-gates/scripts/forge_gates.py` there contains `scope_owners`;
+- the instructions file the block was written into (for a user install,
+  `~/.claude/CLAUDE.md`) contains `asks the operator what to write there`.
+
+**After the release, on a site of the external reviewer:** follow the 1.49.0
+row of `consumers/openhands-review-hook/UPDATING.md`. The prompt template,
+the skill the reviewer follows and the runtime are unchanged; a site
+re-applies the block, and one whose `SKILL_SOURCE` clones a release tag
+changes the tag to `v1.49.0` and renders the prompt again.
+
 ### Added
 
 - forge-gates: `request-review` reports whether the review guide on the
