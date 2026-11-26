@@ -68,8 +68,9 @@ sed -n '/aiskills:review-gates start/,/aiskills:review-gates end/p' ~/.claude/CL
   one, so the copy is compared.
 - `<skills dir>` is a directory the installer wrote skills into:
   `~/.claude/skills` (Claude Code), `~/.agents/skills` (Codex),
-  `~/.config/opencode/skills`, `~/.openhands/skills`. Run both commands for
-  every one the site uses. Each has its own manifest, and an install run
+  `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills` (OpenCode, which reads
+  `$XDG_CONFIG_HOME` when it is set), `~/.openhands/skills` (OpenHands). Run
+  both commands for every one the site uses. Each has its own manifest, and an install run
   refreshes only the directories its `--tool` names, so one can be this
   release while another is not.
 - The manifest's `version` is the release of the last install run into that
@@ -87,8 +88,13 @@ sed -n '/aiskills:review-gates start/,/aiskills:review-gates end/p' ~/.claude/CL
 core skills (`architecture-review`, `oh-code-review`, `oh-technical-writing`)
 in `~/.claude/skills` and in `~/.agents/skills`, creates either directory
 when it is absent, and writes a manifest into each. It then writes the block
-into `~/.claude/CLAUDE.md` and into the instructions file of every other
-client whose directory exists (`~/.codex/AGENTS.md`, for one). A site that
+for four clients: always into `~/.claude/CLAUDE.md` (Claude Code), and into
+the instructions file of each of the other three whose directory exists:
+`${XDG_CONFIG_HOME:-$HOME/.config}/opencode/AGENTS.md` (OpenCode),
+`~/.codex/AGENTS.md` (Codex) and `~/.gemini/GEMINI.md` (Gemini CLI).
+OpenHands gets no block: `--tool openhands` installs its skills, and an agent
+there reads the block only from one of those four files or from a
+repository's `AGENTS.md`. A site that
 was installed with other options repeats them at every update, or the run
 leaves it mixed: after a first install with `--skills all`, a run without it
 refreshes three skills, leaves the others at the old release and writes a
