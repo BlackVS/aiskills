@@ -21,7 +21,7 @@ merge-check verify-delivery's; post-review 0 posted (or, with --dry-run, would p
 refused, 4 not posted for a forge error; request-review as wait-review once the label is on, 3
 refused, 4 the label write failed or its answer was lost, 0 with --dry-run; 2 usage error. See SKILL.md.
 """
-import copy, datetime, http.client, json, os, pathlib, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import base64, copy, datetime, http.client, json, os, pathlib, re, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 sys.dont_write_bytecode = True  # no __pycache__ inside an installed skill
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "verify-delivery"))
@@ -593,6 +593,55 @@ def review_count(args, forge, kind, number, pr):
             "summary": f"{gate['ready']} of {gate['required']} READY"}
 
 
+GUIDE = ".agents/skills/custom-codereview-guide/SKILL.md"
+SCOPE_OWNERS = re.compile(r"^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Scope owners:(?:\*\*)?[ \t]*(.*)$", re.M)  # plain, a bullet, bold
+
+
+def scope_owners(forge, kind, pr):
+    """Whether the review guide on the pull request's base branch names its scope owners: reported,
+    never a ground for a refusal. A forge with an owner role (GitHub) is not read: its OWNER counts
+    without the line. On Gitea and GitLab a repeat review counts a disposition only from an account
+    the line names, so a missing line, or the guide template's placeholder, is reported with what
+    to do. The operator chooses the accounts; the command writes nothing."""
+    if kind == "github":
+        return None
+    base = pr.get("base")
+    entry = {"status": "unknown", "guide": GUIDE, "base": base}
+    if not vd.text(base):
+        entry["detail"] = "the pull request names no base branch"
+        return entry
+    ref = urllib.parse.quote(base, safe="")
+    try:
+        if kind == "gitlab":
+            raw = vd.Forge.get(forge, f"/repository/files/{urllib.parse.quote(GUIDE, safe='')}?ref={ref}")
+        else:
+            raw = forge.get(f"/contents/{GUIDE}?ref={ref}")
+        content = raw.get("content") if isinstance(raw, dict) else None
+        if not isinstance(content, str):
+            entry["detail"] = "the forge's answer for the guide has no content"
+            return entry
+        # strict: line breaks are allowed; any other character outside base64 makes the answer unreadable
+        text = base64.b64decode(re.sub(r"[\r\n]", "", content), validate=True).decode("utf-8")
+    except vd.NotFound:
+        text = None  # no guide on the base branch
+    except Exception as e:  # information only: an outage or a surprise here never blocks the request
+        entry["detail"] = f"the guide could not be read ({type(e).__name__})"
+        return entry
+    m = SCOPE_OWNERS.search(text or "")
+    value = m.group(1).strip() if m else ""
+    if value and not value.startswith("<"):
+        entry.update(status="named", accounts=value[:200])
+        return entry
+    found = ("no review guide" if text is None else "the guide is empty" if not text.strip() else
+             "no Scope owners line in the guide" if not m else
+             "the guide's Scope owners line is still the template's placeholder" if value else
+             "the Scope owners line is empty")
+    entry.update(status="missing", detail=(
+        f"{found} on {base}: on this forge a repeat review counts a disposition only from an account named there. "
+        "Ask the operator which accounts to name, and land the line on the base branch before the first disposition"))
+    return entry
+
+
 def request_review(args, forge, kind, owner, repo, number, token, opener, clock, sleep):
     """Add the request label for --head, once every refusal was decided, then wait as wait-review.
     Nothing is written when a read fails: an outage or a usage error passes up as for every command,
@@ -617,6 +666,9 @@ def request_review(args, forge, kind, owner, repo, number, token, opener, clock,
         return doc, EXIT_NOT_READY
     doc["pr"].update(url=pr["url"], head_sha=pr["head"])
     doc.update(checks=checks, reviewed_label=reviewed, reviews=review_count(args, forge, kind, number, pr))
+    owners = scope_owners(forge, kind, pr)
+    if owners:
+        doc["scope_owners"] = owners
     if any(c["status"] == "failed" for c in checks):
         doc["outcome"] = "refused"
         return doc, EXIT_NOT_READY
@@ -1516,6 +1568,9 @@ def request_summary(doc):
         parts.append(doc["reviews"]["summary"])
     if doc.get("reviewed_label", {}).get("on"):
         parts.append(f"{doc['reviewed_label']['name']} is on: remove it by hand")
+    owners = doc.get("scope_owners") or {}
+    if owners.get("status") in ("missing", "unknown"):
+        parts.append(f"scope owners {owners['status']}: {owners['detail']}")
     return line + (": " + "; ".join(parts) if parts else "")
 
 

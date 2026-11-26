@@ -9,6 +9,36 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+### Added
+
+- forge-gates: `request-review` reports whether the review guide on the
+  base branch names the scope owners, on Gitea and GitLab. A new
+  `scope_owners` entry says `named` (with the line's accounts), `missing` (no
+  guide, no line, an empty line or the template's placeholder, with what to
+  do) or `unknown` (the guide could not be read), and the summary line
+  repeats a `missing` or `unknown` one. It never refuses a request and
+  writes nothing; GitHub is not read. An agent learns that it must ask the
+  operator at the moment it requests a review, from a script, instead of
+  reading the guide itself before every review.
+
+### Changed
+
+- The review-gates block says where a repository names its scope owners.
+  Since 1.47.0 a repeat review counts a disposition only from a GitHub
+  repository's OWNER or from an account named in the "Scope owners" line of
+  the repository's review guide on the base branch, and on Gitea or GitLab,
+  which report no owner role, only from the latter. The rule was in the
+  skill's reference and in the guide template, which only a new guide is made
+  from, so a repository learned it from the first review that did not count
+  its owner's disposition, when the line can no longer reach the base branch
+  in time. The block, which the agents in every repository read, now says so.
+  It also says who fills the line in: the operator decides for each
+  repository which accounts are named, an agent's account included, and an
+  agent that finds the line absent or empty asks the operator what to write
+  instead of choosing the accounts itself. Reinstall with `-a`
+  (`--agents-md`) to update it. The guide template's "Scope owners" line says
+  the same to an agent that writes a guide.
+
 ## [1.48.0] - 2026-11-26
 
 A refinement of the 1.47.0 review rule, and two changes for hands sites.

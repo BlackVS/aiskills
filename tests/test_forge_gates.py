@@ -5,7 +5,7 @@ was run.
 
 Run: python3 -m unittest tests/test_forge_gates.py
 """
-import datetime, http.client, io, json, socket, pathlib, shutil, subprocess, sys, tempfile, unittest, urllib.error, urllib.parse
+import base64, datetime, http.client, io, json, socket, pathlib, shutil, subprocess, sys, tempfile, unittest, urllib.error, urllib.parse
 
 from tests.test_install import ROOT
 from tests import test_verify_delivery as tvd  # the module, so its test cases are not collected twice here
@@ -595,6 +595,64 @@ class RequestContract(Gates):
         self.assertEqual((doc["review"]["verdict"], doc["polls"]), ("READY_FOR_HUMAN_MERGE", 2))
         self.assertEqual(doc["reviews"], {"ready": 1, "required": 2, "summary": "1 of 2 READY"})
         self.assertEqual(doc["reviewed_label"], {"name": "hands-reviewed", "on": False})
+
+    def guide(self, text, status=200):
+        """The review guide on the base branch (main), as the forge serves a file's contents."""
+        path = ".agents/skills/custom-codereview-guide/SKILL.md"
+        route = (f"{self.repo}/repository/files/{urllib.parse.quote(path, safe='')}?ref=main" if self.forge == "gitlab"
+                 else f"{self.repo}/contents/{path}?ref=main")
+        body = text if isinstance(text, dict) else \
+            {"content": base64.b64encode(text.encode()).decode(), "encoding": "base64"} if status == 200 else {}
+        self.fake.set(route, body, status)
+        return route
+
+    def test_scope_owners_are_reported_where_the_forge_has_no_owner_role_and_never_refuse(self):
+        named = "# Guide\n\nScope owners: alice, planner-bot\n"
+        placeholder = "Scope owners: <the accounts, besides a GitHub repository's OWNER, whose\ndisposition comments>\n"
+        cases = [("no guide", None, 404, "missing", "no review guide on main"),
+                 ("no line", "# Guide\n", 200, "missing", "no Scope owners line"),
+                 ("empty line", "Scope owners:\n", 200, "missing", "the Scope owners line is empty"),
+                 ("placeholder", placeholder, 200, "missing", "template's placeholder"),
+                 ("named", named, 200, "named", None),
+                 ("named in a bullet, bold", "- **Scope owners:** alice, planner-bot\n", 200, "named", None),
+                 ("unreadable", "x", 500, "unknown", "could not be read"),
+                 ("empty file", "", 200, "missing", "the guide is empty on main"),
+                 ("wrapped base64", {"content": "U2NvcGUgb3duZXJz\nOiBhbGljZQ==\n", "encoding": "base64"}, 200,
+                  "named", None),
+                 # a lenient decoder drops the stray `!` and reads "Scope owners: alice": strict decoding refuses it
+                 ("malformed base64", {"content": "U2NvcGUgb3duZXJzOiBhbGljZQ==!", "encoding": "base64"}, 200,
+                  "unknown", "could not be read"),
+                 ("no content field", {"encoding": "base64"}, 200, "unknown", "has no content")]
+        for name, text, status, expected, detail in cases:
+            with self.subTest(name):
+                self.fake.drop(self.guide("")); self.fake.requests.clear()  # dry runs write nothing
+                if text is not None or status != 404:
+                    self.guide(text if text is not None else "", status)
+                code, doc = self.request("--dry-run")
+                self.assertEqual((code, doc["outcome"]), (0, "dry_run"), "never a refusal: " + json.dumps(doc, indent=1))
+                if self.forge == "github":
+                    self.assertNotIn("scope_owners", doc)  # OWNER counts there: the guide is not read
+                    self.assertFalse(any("custom-codereview-guide" in r["url"] for r in self.fake.requests))
+                    continue
+                owners = doc["scope_owners"]
+                self.assertEqual((owners["status"], owners["base"]), (expected, "main"))
+                if expected == "named":
+                    self.assertEqual(owners["accounts"], "alice" if name == "wrapped base64" else "alice, planner-bot")
+                    self.assertNotIn("scope owners", self.stderr_of(doc))
+                else:
+                    self.assertIn(detail, owners["detail"])
+                    if expected == "missing":
+                        self.assertIn("Ask the operator which accounts to name", owners["detail"])
+                    self.assertIn(f"scope owners {expected}", self.stderr_of(doc))
+
+    def stderr_of(self, doc):
+        return fg.summary("request-review", doc)
+
+    def test_a_missing_guide_still_adds_the_label(self):
+        code, doc = self.request()
+        self.assertEqual((code, doc["outcome"]), (0, "review_found"), json.dumps(doc, indent=1))
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(doc.get("scope_owners", {}).get("status"), None if self.forge == "github" else "missing")
 
     def test_the_write_comes_after_every_read_of_the_refusals(self):
         self.request()
