@@ -92,10 +92,8 @@ for four clients: always into `~/.claude/CLAUDE.md` (Claude Code), and into
 the instructions file of each of the other three whose directory exists:
 `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/AGENTS.md` (OpenCode),
 `~/.codex/AGENTS.md` (Codex) and `~/.gemini/GEMINI.md` (Gemini CLI).
-OpenHands gets no block: `--tool openhands` installs its skills, and an agent
-there reads the block only from one of those four files or from a
-repository's `AGENTS.md`. A site that
-was installed with other options repeats them at every update, or the run
+OpenHands gets no block: `--tool openhands` installs only its skills. A site
+that was installed with other options repeats them at every update, or the run
 leaves it mixed: after a first install with `--skills all`, a run without it
 refreshes three skills, leaves the others at the old release and writes a
 manifest that lists only the three. In the same way a site that holds skills
