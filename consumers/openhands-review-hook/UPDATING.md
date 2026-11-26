@@ -93,8 +93,8 @@ the instructions file of each of the other three whose directory exists:
 `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/AGENTS.md` (OpenCode),
 `~/.codex/AGENTS.md` (Codex) and `~/.gemini/GEMINI.md` (Gemini CLI).
 OpenHands gets no block. A site that was installed with other options
-repeats them at every update, or the run leaves it mixed: after a first install with `--skills all`, a run without it
-refreshes three skills, leaves the others at the old release and writes a
+repeats them at every update, or the run leaves it mixed: after a first
+install with `--skills all`, a run without it refreshes three skills, leaves the others at the old release and writes a
 manifest that lists only the three. In the same way a site that holds skills
 for two clients names both at every update (`--tool claude --tool codex`), or
 the directory of the one left out stays at the old release. For a site that
