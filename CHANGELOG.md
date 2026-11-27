@@ -13,9 +13,9 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 - README: the note that `~/.config/opencode` stands for
   `$XDG_CONFIG_HOME/opencode` when `XDG_CONFIG_HOME` is set now comes right
-  after the clients table, before the first path that depends on it; it was
-  in the OpenCode section, below the table and the instructions-file list
-  that already used the path. The 1.49.1 heading carries the date of its
+  after the clients table, where the path is first used; it was in the
+  OpenCode section, below the table and the instructions-file list that
+  already used the path. The 1.49.1 heading carries the date of its
   tag, 2026-11-27 (UTC), not the day the release was prepared.
 
 ## [1.49.1] - 2026-11-27
