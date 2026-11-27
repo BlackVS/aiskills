@@ -271,6 +271,10 @@ install, a Claude Code only install, a user-level install with
 | OpenCode v2 | 2.2.6 | all of the above; prompts as `/` commands | `~/.config/opencode/AGENTS.md`; `AGENTS.md` |
 | Gemini CLI | 0.67.0 | `~/.agents/skills`, `<repo>/.agents/skills` (project skills in trusted folders only) | `~/.gemini/GEMINI.md`; `GEMINI.md` → `@AGENTS.md` |
 
+Here and below, `~/.config/opencode` stands for OpenCode's config directory:
+`$XDG_CONFIG_HOME/opencode` when `XDG_CONFIG_HOME` is set, `~/.config/opencode`
+otherwise. OpenCode reads it there, and the installers write there too.
+
 ### Cloud agents (Claude Code on the web, other hosted sessions)
 
 A cloud session starts from a fresh container, so a user-level install from
@@ -523,7 +527,7 @@ observed. 1.x and v2 keep their data in the same place, and 1.x refuses to
 start on data v2 has written ("Database is not empty and has no session
 table"): use one version per home directory. Both read their config from
 `$XDG_CONFIG_HOME/opencode` when `XDG_CONFIG_HOME` is set, and the installers
-write there too; `~/.config/opencode` below stands for that directory.
+write there too, as the note under the clients table says.
 
 ## Enabling in Codex CLI
 
