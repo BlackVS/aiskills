@@ -9,6 +9,29 @@ content fixes inside existing skills. The current version is in `VERSION`.
 
 ## [Unreleased]
 
+## [1.49.1] - 2026-11-26
+
+Two fixes for hands sites. Auto Reviews lists every model of an Anthropic API
+connection, not only the first page of its model list (#162), and
+`UPDATING.md` describes the installer as it behaves for OpenCode's skills
+directory and for the clients that get the review-gates block (#161).
+
+**After the release, on a machine with the skill set installed:** nothing to
+do. The skills, the prompts and the review-gates block are the ones of
+1.49.0; running the installer again only moves the version in each
+`.ai-skills.json` to 1.49.1.
+
+**After the release, on a site of the external reviewer:** follow the 1.49.1
+row of `consumers/openhands-review-hook/UPDATING.md`: deploy
+`canvas_discovery.py`, for which `review-control` needs no restart. The
+prompt template and the skill the reviewer follows are unchanged, so the
+"Every release" steps change only the release they name: a site whose
+`SKILL_SOURCE` clones a release tag changes the tag to `v1.49.1`, renders
+again and installs the prompt, and a legacy receiver is then restarted while
+idle. To see that it took effect: `cmp` of the deployed
+`canvas_discovery.py` against the release's prints nothing, and the Auto
+Reviews page lists the connection's models as before.
+
 ### Changed
 
 - hands: `UPDATING.md` gives OpenCode's skills directory as
@@ -25,7 +48,7 @@ content fixes inside existing skills. The current version is in `VERSION`.
   refuses a redirect on any page. It asks for at most 10 pages and starts
   none after 30 seconds, and refuses a list that does not end or does not
   say where it continues. Deploy `canvas_discovery.py`
-  (`consumers/openhands-review-hook/UPDATING.md`, row Unreleased).
+  (`consumers/openhands-review-hook/UPDATING.md`, row 1.49.1).
 
 ## [1.49.0] - 2026-11-26
 
